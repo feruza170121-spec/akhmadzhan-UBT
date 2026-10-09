@@ -154,13 +154,19 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
       <h2 id="uv-name">User</h2>
       <p class="sub" id="uv-info">—</p>
     </div>
-    <div class="card"><h3 style="margin-bottom:10px">📋 Тест тарихы</h3><div id="uv-hist" class="list"></div></div>
-    <div class="card"><h3 style="margin-bottom:10px">❌ Қателері</h3><div id="uv-mist" class="list"></div></div>
+    <div class="card">
+      <h3 style="margin-bottom:12px">👤 Аккаунт деректері</h3>
+      <div class="fg"><label>Логин</label><input id="uv-login" readonly style="background:#f1f5f9"></div>
+      <div class="fg"><label>Телефон нөмірі</label><input id="uv-phone" readonly style="background:#f1f5f9"></div>
+      <div class="fg"><label>Қазіргі пароль</label><input id="uv-curpass" readonly style="background:#f1f5f9"></div>
+    </div>
     <div class="card" id="uv-pass-card">
       <h3 style="margin-bottom:10px">🔑 Парольді өзгерту</h3>
-      <div class="fg"><label>Жаңа пароль</label><input id="uv-newpass" type="password" placeholder="Жаңа пароль"></div>
-      <button class="btn btn-p btn-sm" onclick="adminChangeUserPass()">Сақтау</button>
+      <div class="fg"><label>Жаңа пароль</label><input id="uv-newpass" type="text" placeholder="Жаңа пароль жазыңыз"></div>
+      <button class="btn btn-p btn-sm" onclick="adminChangeUserPass()">Парольді сақтау</button>
     </div>
+    <div class="card"><h3 style="margin-bottom:10px">📋 Тест тарихы</h3><div id="uv-hist" class="list"></div></div>
+    <div class="card"><h3 style="margin-bottom:10px">❌ Қателері</h3><div id="uv-mist" class="list"></div></div>
     <div class="row"><button class="btn btn-s" onclick="showAdmin()">Артқа</button></div>
   </div>
 </div>
@@ -745,7 +751,10 @@ function adminViewUser(id){
   const s=getUserStats(id);
   document.getElementById('uv-avatar').textContent=(p.name||'?')[0].toUpperCase();
   document.getElementById('uv-name').textContent=p.name+(s.verified?' ✓':'');
-  document.getElementById('uv-info').textContent=`${p.phone||'тел жоқ'} · ⭐ ${s.points||0} · ${s.title||'атақ жоқ'} · ${starStr(s.stars||0)}`;
+  document.getElementById('uv-info').textContent=`⭐ ${s.points||0} · ${s.title||'атақ жоқ'} · ${starStr(s.stars||0)}`;
+  document.getElementById('uv-login').value=p.name||'';
+  document.getElementById('uv-phone').value=p.phone||'Тіркелмеген';
+  document.getElementById('uv-curpass').value=p.password||'(пароль жоқ)';
   const hist=LS.get('ubt_hist_'+id,[]);
   document.getElementById('uv-hist').innerHTML=hist.length?hist.map(h=>`
     <div class="item"><div class="info"><h4>${h.topic||'Тест'}</h4><p>${h.date}</p></div>
@@ -764,6 +773,7 @@ function adminChangeUserPass(){
   Object.keys(profiles).forEach(k=>{if(profiles[k].id===viewingUserId)profiles[k].password=pass});
   LS.set('ubt_profiles',profiles);
   document.getElementById('uv-newpass').value='';
+  document.getElementById('uv-curpass').value=pass;
   alert('Пароль өзгертілді!');
 }
 function adminDelFormula(i){
