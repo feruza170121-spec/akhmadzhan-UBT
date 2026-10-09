@@ -1,4 +1,3 @@
-
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -127,10 +126,14 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 <div id="s-home" class="screen">
   <div class="profile-bar">
     <div style="display:flex;align-items:center;gap:12px;cursor:pointer" onclick="showMyProfile()">
-      <div class="avatar" id="avatar" style="width:44px;height:44px;font-size:16px;border:3px solid #93c5fd">?</div>
+      <div style="position:relative">
+        <div class="avatar" id="avatar" style="width:44px;height:44px;font-size:16px;border:3px solid #93c5fd">?</div>
+        <span id="p-verified" style="display:none;position:absolute;bottom:-2px;right:-2px;background:#2563eb;color:#fff;width:18px;height:18px;border-radius:50%;font-size:11px;line-height:18px;text-align:center;border:2px solid #fff">✓</span>
+      </div>
       <div>
         <div class="name" id="pname">User</div>
         <div class="sub" id="p-title" style="font-size:11px">—</div>
+        <div id="p-stars" style="font-size:13px;letter-spacing:2px;color:#f59e0b;line-height:1.2">☆☆☆☆☆</div>
       </div>
       <div style="margin-left:8px;background:#eff6ff;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:700;color:var(--p)">
         ⭐ <span id="p-points">0</span>
@@ -159,10 +162,14 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 <div id="s-profile" class="screen">
   <div class="wrap">
     <div class="hdr">
-      <div class="avatar" id="prof-avatar" style="width:80px;height:80px;font-size:32px;margin:0 auto 12px;border:4px solid #93c5fd">?</div>
+      <div style="position:relative;width:80px;margin:0 auto 12px">
+        <div class="avatar" id="prof-avatar" style="width:80px;height:80px;font-size:32px;border:4px solid #93c5fd">?</div>
+        <span id="prof-verified" style="display:none;position:absolute;bottom:0;right:0;background:#2563eb;color:#fff;width:24px;height:24px;border-radius:50%;font-size:14px;line-height:24px;text-align:center;border:2px solid #fff">✓</span>
+      </div>
       <h2 id="prof-name">User</h2>
       <p class="sub" id="prof-title">Атақ жоқ</p>
-      <div style="margin-top:12px;font-size:22px;font-weight:700;color:var(--p)">⭐ <span id="prof-points">0</span> ұпай</div>
+      <div id="prof-stars" style="font-size:22px;letter-spacing:3px;color:#f59e0b;margin:8px 0">☆☆☆☆☆</div>
+      <div style="margin-top:8px;font-size:22px;font-weight:700;color:var(--p)">⭐ <span id="prof-points">0</span> ұпай</div>
       <p class="sub" id="prof-rank" style="margin-top:6px">Рейтинг: —</p>
     </div>
     <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
@@ -388,8 +395,9 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 </div>
 
 <script>
-const ADMIN_PASS='admin123';
 const LS={get(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch{}}};
+function getAdminPass(){return LS.get('ubt_admin_pass','admin123')}
+function setAdminPass(p){LS.set('ubt_admin_pass',p)}
 let user=null;
 function checkAdminName(){
   const n=document.getElementById('login-name').value.trim().toLowerCase();
@@ -401,7 +409,7 @@ function doLogin(){
   const key=name.toLowerCase();
   if(key==='админ'||key==='admin'){
     const pass=document.getElementById('login-pass').value;
-    if(pass!==ADMIN_PASS){alert('Қате пароль!');return}
+    if(pass!==getAdminPass()){alert('Қате пароль!');return}
     user={name:'Админ',id:'admin',isAdmin:true};
     LS.set('ubt_current',user);enterApp();return;
   }
@@ -417,8 +425,12 @@ function doLogin(){
 function doLogout(){LS.set('ubt_current',null);user=null;showScr('s-login')}
 function getUserStats(id){
   const all=LS.get('ubt_user_stats',{});
-  if(!all[id]) all[id]={points:0,title:'',stars:0};
+  if(!all[id]) all[id]={points:0,title:'',stars:0,verified:false};
   return all[id];
+}
+function starStr(n){
+  n=Math.max(0,Math.min(5,n||0));
+  return '★'.repeat(n)+'☆'.repeat(5-n);
 }
 function setUserStats(id,stats){
   const all=LS.get('ubt_user_stats',{});
@@ -435,9 +447,12 @@ function refreshProfileBar(){
   if(!user)return;
   document.getElementById('pname').textContent=user.name;
   document.getElementById('avatar').textContent=user.name[0].toUpperCase();
-  const s=user.isAdmin?{points:0,title:'👑 Админ',stars:5}:getUserStats(user.id);
+  const s=user.isAdmin?{points:0,title:'👑 Админ',stars:5,verified:true}:getUserStats(user.id);
   document.getElementById('p-points').textContent=s.points||0;
-  document.getElementById('p-title').textContent=s.title||(s.stars?('⭐'.repeat(Math.min(s.stars,5))):'Жаңа ойыншы');
+  document.getElementById('p-title').textContent=s.title||'Жаңа ойыншы';
+  document.getElementById('p-stars').textContent=starStr(s.stars||0);
+  const v=document.getElementById('p-verified');
+  if(v){v.style.display=s.verified?'block':'none'}
   document.getElementById('admin-btn').style.display=user.isAdmin?'inline-flex':'none';
 }
 function enterApp(){
@@ -445,11 +460,14 @@ function enterApp(){
   showScr('s-home');
 }
 function showMyProfile(){
-  const s=user.isAdmin?{points:0,title:'👑 Админ',stars:5}:getUserStats(user.id);
+  const s=user.isAdmin?{points:0,title:'👑 Админ',stars:5,verified:true}:getUserStats(user.id);
   document.getElementById('prof-avatar').textContent=user.name[0].toUpperCase();
-  document.getElementById('prof-name').textContent=user.name;
-  document.getElementById('prof-title').textContent=s.title||(s.stars?('⭐'.repeat(Math.min(s.stars,5))+' жұлдыз'):'Атақ жоқ');
+  document.getElementById('prof-name').textContent=user.name+(s.verified?' ✓':'');
+  document.getElementById('prof-title').textContent=s.title||'Атақ жоқ';
+  document.getElementById('prof-stars').textContent=starStr(s.stars||0);
   document.getElementById('prof-points').textContent=s.points||0;
+  const pv=document.getElementById('prof-verified');
+  if(pv) pv.style.display=s.verified?'block':'none';
   const rank=getRankPosition(user.id);
   document.getElementById('prof-rank').textContent=rank?('Рейтинг: #'+rank):'Рейтинг: —';
   showScr('s-profile');
@@ -513,13 +531,31 @@ function showAdmin(){
   document.getElementById('admin-users').innerHTML=users.length?users.map(p=>{
     const s=getUserStats(p.id);
     return `<div class="item" style="flex-wrap:wrap">
-      <div style="width:40px;height:40px;border-radius:50%;background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0">${(p.name||'?')[0].toUpperCase()}</div>
-      <div class="info"><h4>${p.name}</h4><p>⭐ ${s.points||0} · ${s.title||'Атақ жоқ'} · ${'⭐'.repeat(Math.min(s.stars||0,5))||'—'}</p></div>
+      <div style="position:relative">
+        <div style="width:40px;height:40px;border-radius:50%;background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700">${(p.name||'?')[0].toUpperCase()}</div>
+        ${s.verified?'<span style="position:absolute;bottom:-2px;right:-2px;background:#2563eb;color:#fff;width:16px;height:16px;border-radius:50%;font-size:10px;line-height:16px;text-align:center">✓</span>':''}
+      </div>
+      <div class="info"><h4>${p.name}</h4><p>⭐ ${s.points||0} · ${s.title||'Атақ жоқ'} · <span style="color:#f59e0b">${starStr(s.stars||0)}</span></p></div>
       <div class="acts">
+        <button class="btn btn-ok btn-sm" onclick="adminToggleVerify('${p.id}')">${s.verified?'✓ Бар':'Галочка'}</button>
         <button class="btn btn-w btn-sm" onclick="adminSetTitle('${p.id}')">Атақ</button>
         <button class="btn btn-s btn-sm" onclick="adminSetStars('${p.id}')">Жұлдыз</button>
         <button class="btn btn-d btn-sm" onclick="adminDelUser('${p.id}','${(p.name||'').replace(/'/g,'')}')">Өшіру</button>
       </div></div>`}).join(''):'<p class="sub">Профиль жоқ</p>';
+  // password change block
+  let passBox=document.getElementById('admin-pass-box');
+  if(!passBox){
+    const wrap=document.getElementById('admin-users').parentElement;
+    passBox=document.createElement('div');
+    passBox.id='admin-pass-box';
+    passBox.className='card';
+    passBox.style.padding='20px';
+    passBox.style.marginTop='12px';
+    passBox.innerHTML=`<h3 style="margin-bottom:12px">🔑 Админ паролі</h3>
+      <div class="fg"><label>Жаңа пароль</label><input id="new-admin-pass" type="password" placeholder="Жаңа пароль"></div>
+      <button class="btn btn-p btn-sm" onclick="changeAdminPass()">Парольді өзгерту</button>`;
+    wrap.appendChild(passBox);
+  }
 
   document.getElementById('admin-tests').innerHTML=tests.length?tests.map(t=>`
     <div class="item"><div class="info"><h4>${t.topic}</h4>
@@ -561,6 +597,18 @@ function adminSetStars(id){
   const n=prompt('Жұлдыз саны (0-5):',String(s.stars||0));
   if(n===null)return;
   s.stars=Math.max(0,Math.min(5,parseInt(n)||0));setUserStats(id,s);showAdmin();
+}
+function adminToggleVerify(id){
+  const s=getUserStats(id);
+  s.verified=!s.verified;
+  setUserStats(id,s);showAdmin();
+}
+function changeAdminPass(){
+  const p=document.getElementById('new-admin-pass').value.trim();
+  if(!p||p.length<4){alert('Пароль кемінде 4 таңба болсын!');return}
+  setAdminPass(p);
+  document.getElementById('new-admin-pass').value='';
+  alert('Админ паролі өзгертілді!');
 }
 function adminDelFormula(i){
   if(!confirm('Формуланы өшіру?'))return;
