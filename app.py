@@ -115,7 +115,8 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
   <div class="wrap">
     <div class="hdr"><div class="logo">ҰБТ</div><h1>ҰБТ Тренажер</h1><p class="sub">Профиліңізге кіріңіз немесе тіркеліңіз</p></div>
     <div class="card">
-      <div class="fg"><label>Атыңыз / Никнейм</label><input id="login-name" placeholder="Мысалы: Айгүл" maxlength="30"></div>
+      <div class="fg"><label>Атыңыз / Никнейм</label><input id="login-name" placeholder="Мысалы: Айгүл" maxlength="30" oninput="checkAdminName()"></div>
+      <div class="fg" id="admin-pass-wrap" style="display:none"><label>Админ паролі</label><input id="login-pass" type="password" placeholder="Пароль"></div>
       <button class="btn btn-p" style="width:100%" onclick="doLogin()">Кіру / Тіркелу</button>
     </div>
     <p class="sub" style="text-align:center;margin-top:16px">Профиль осы құрылғыда сақталады</p>
@@ -141,6 +142,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
     <div class="row">
       <button class="btn btn-s btn-sm" onclick="showHistory()">📋 Тарих</button>
       <button class="btn btn-s btn-sm" onclick="startQuickSubject()">⚡ Жылдам жаттығу</button>
+      <button class="btn btn-w btn-sm" id="admin-btn" style="display:none" onclick="showAdmin()">🛠 Админ</button>
     </div>
   </div>
 </div>
@@ -168,15 +170,37 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
   <div class="wrap">
     <div class="hdr"><h2>➕ Тест құру</h2><p class="sub">Тақырып жазып, сұрақтар қосыңыз</p></div>
     <div class="card">
-      <div class="fg"><label>Тақырып / Пән атауы *</label><input id="c-topic" placeholder="Мысалы: Қазақстан тарихы — 15 ғ."></div>
+      <div class="fg"><label>Пән *</label>
+        <select id="c-subject">
+          <option value="">— Пәнді таңдаңыз —</option>
+          <option value="history">Қазақстан тарихы</option>
+          <option value="reading">Оқу сауаттылығы</option>
+          <option value="mathlit">Математикалық сауаттылық</option>
+          <option value="math">Математика</option>
+          <option value="physics">Физика</option>
+          <option value="chemistry">Химия</option>
+          <option value="biology">Биология</option>
+          <option value="geography">География</option>
+          <option value="informatics">Информатика</option>
+          <option value="english">Ағылшын тілі</option>
+          <option value="kazakh">Қазақ тілі</option>
+          <option value="worldhistory">Дүниежүзі тарихы</option>
+          <option value="law">Құқық негіздері</option>
+          <option value="other">Басқа</option>
+        </select>
+      </div>
+      <div class="fg"><label>Тақырып * <span class="sub">(мыс: «15 ғасыр», «Ньютон заңдары»)</span></label><input id="c-topic" placeholder="Тақырыпты міндетті түрде жазыңыз"></div>
       <div class="fg"><label>Сипаттама (міндетті емес)</label><input id="c-desc" placeholder="Қысқаша сипаттама"></div>
       <div class="fg"><label class="switch"><input type="checkbox" id="c-public"> 🌐 Интернетке шығару (барлыққа көрінеді)</label></div>
+      <p class="sub" id="pub-hint" style="display:none;color:var(--err)">⚠ Жариялау үшін тақырып міндетті толтырылуы керек</p>
     </div>
     <div class="card">
       <h3 style="margin-bottom:12px">Сұрақ қосу</h3>
       <div class="fg"><label>Сұрақ мәтіні</label><textarea id="c-qtext" placeholder="Сұрақты жазыңыз..."></textarea></div>
-      <div class="fg">
-        <label>Нұсқалар (дұрысын белгілеңіз)</label>
+      <div class="fg"><label>Дұрыс жауап ғана</label><input id="c-correct" placeholder="Тек дұрыс жауапты жазыңыз"></div>
+      <button class="btn btn-w btn-sm" onclick="genWrong()" style="margin-bottom:12px">✨ Қате нұсқаларды жасау</button>
+      <div class="fg" id="opts-block" style="display:none">
+        <label>Нұсқалар (қажетінше өзгертіңіз, дұрысын белгілеңіз)</label>
         <div class="opt"><input type="radio" name="c-cor" value="0" checked><input type="text" id="c-o0" placeholder="A"></div>
         <div class="opt"><input type="radio" name="c-cor" value="1"><input type="text" id="c-o1" placeholder="B"></div>
         <div class="opt"><input type="radio" name="c-cor" value="2"><input type="text" id="c-o2" placeholder="C"></div>
@@ -289,21 +313,59 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
   </div>
 </div>
 
+<div id="s-admin" class="screen">
+  <div class="wrap wide">
+    <div class="hdr"><h2>🛠 Админ панелі</h2><p class="sub">Барлық тесттер мен профильдер</p></div>
+    <div class="card"><h3>Статистика</h3><p id="admin-stats" class="sub"></p></div>
+    <div class="card"><h3>Барлық тесттер</h3><div id="admin-tests" class="list"></div></div>
+    <div class="card"><h3>Профильдер</h3><div id="admin-users" class="list"></div></div>
+    <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+  </div>
+</div>
+
 <script>
+const ADMIN_PASS='admin123';
 const LS={get(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch{}}};
 let user=null;
+function checkAdminName(){
+  const n=document.getElementById('login-name').value.trim().toLowerCase();
+  document.getElementById('admin-pass-wrap').style.display=(n==='админ'||n==='admin')?'block':'none';
+}
 function doLogin(){
   const name=document.getElementById('login-name').value.trim();
   if(!name||name.length<2){alert('Атыңызды жазыңыз (кемінде 2 әріп)');return}
-  const profiles=LS.get('ubt_profiles',{});
   const key=name.toLowerCase();
+  if(key==='админ'||key==='admin'){
+    const pass=document.getElementById('login-pass').value;
+    if(pass!==ADMIN_PASS){alert('Қате пароль!');return}
+    user={name:'Админ',id:'admin',isAdmin:true};
+    LS.set('ubt_current',user);enterApp();return;
+  }
+  const profiles=LS.get('ubt_profiles',{});
   if(profiles[key]) user=profiles[key];
-  else{user={name,id:'u_'+key.replace(/\s+/g,'_')+'_'+Date.now().toString(36).slice(-4)};profiles[key]=user;LS.set('ubt_profiles',profiles)}
+  else{user={name,id:'u_'+key.replace(/\s+/g,'_')+'_'+Date.now().toString(36).slice(-4),isAdmin:false};profiles[key]=user;LS.set('ubt_profiles',profiles)}
   LS.set('ubt_current',user);enterApp();
 }
 function doLogout(){LS.set('ubt_current',null);user=null;showScr('s-login')}
-function enterApp(){document.getElementById('pname').textContent=user.name;document.getElementById('avatar').textContent=user.name[0].toUpperCase();showScr('s-home')}
+function enterApp(){
+  document.getElementById('pname').textContent=user.name;
+  document.getElementById('avatar').textContent=user.name[0].toUpperCase();
+  document.getElementById('admin-btn').style.display=user.isAdmin?'inline-flex':'none';
+  showScr('s-home');
+}
 (function(){const u=LS.get('ubt_current');if(u&&u.name){user=u;enterApp()}})();
+
+function showAdmin(){
+  if(!user||!user.isAdmin){alert('Қолжетімсіз');return}
+  const tests=allTests();const profiles=LS.get('ubt_profiles',{});
+  document.getElementById('admin-stats').textContent='Тесттер: '+tests.length+' · Жария: '+tests.filter(t=>t.isPublic).length+' · Профильдер: '+Object.keys(profiles).length;
+  document.getElementById('admin-tests').innerHTML=tests.length?tests.map(t=>`<div class="item"><div class="info"><h4>${t.topic}</h4>
+    <p>${t.subjectName||''} · ${t.questions.length} сұрақ · ${t.authorName||''} · ${t.isPublic?'🌐':'🔒'}</p></div>
+    <div class="acts"><button class="btn btn-d btn-sm" onclick="adminDelTest('${t.id}')">Өшіру</button></div></div>`).join(''):'<p class="sub">Тест жоқ</p>';
+  document.getElementById('admin-users').innerHTML=Object.values(profiles).map(p=>`<div class="item"><div class="info"><h4>${p.name}</h4><p>${p.id}</p></div></div>`).join('')||'<p class="sub">Профиль жоқ</p>';
+  showScr('s-admin');
+}
+function adminDelTest(id){if(!confirm('Өшіру?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showAdmin()}
 
 function showScr(id){document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));document.getElementById(id).classList.add('active')}
 function goHome(){stopTimer();st=baseState();showScr('s-home')}
@@ -323,17 +385,79 @@ function publicTests(){return allTests().filter(t=>t.isPublic&&t.questions.lengt
 let draft={questions:[]};
 function showCreate(){
   draft={questions:[]};
+  document.getElementById('c-subject').value='';
   document.getElementById('c-topic').value='';document.getElementById('c-desc').value='';document.getElementById('c-public').checked=false;
-  document.getElementById('c-qtext').value='';['c-o0','c-o1','c-o2','c-o3'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('c-qtext').value='';document.getElementById('c-correct').value='';
+  ['c-o0','c-o1','c-o2','c-o3'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('opts-block').style.display='none';
+  document.getElementById('pub-hint').style.display='none';
   document.querySelector('input[name="c-cor"][value="0"]').checked=true;renderDraftQs();showScr('s-create');
+}
+function genWrong(){
+  const correct=document.getElementById('c-correct').value.trim();
+  if(!correct){alert('Алдымен дұрыс жауапты жазыңыз!');return}
+  const wrongs=makeDistractors(correct);
+  // shuffle: put correct at random position
+  const pos=Math.floor(Math.random()*4);
+  const opts=['','','',''];
+  opts[pos]=correct;
+  let wi=0;
+  for(let i=0;i<4;i++){if(i!==pos)opts[i]=wrongs[wi++]}
+  opts.forEach((o,i)=>document.getElementById('c-o'+i).value=o);
+  document.querySelector('input[name="c-cor"][value="'+pos+'"]').checked=true;
+  document.getElementById('opts-block').style.display='block';
+}
+function makeDistractors(ans){
+  const out=[];
+  // Year like 1465 / 1465 ж.
+  const yearM=ans.match(/(\d{3,4})/);
+  if(yearM){
+    const y=+yearM[1];
+    const deltas=[-10,-5,-1,1,2,3,5,10,15,20,50,100].sort(()=>Math.random()-0.5);
+    for(const d of deltas){
+      const ny=y+d;if(ny===y||ny<100)continue;
+      out.push(ans.replace(String(y),String(ny)));
+      if(out.length>=3)break;
+    }
+  }
+  // Pure number
+  const numM=ans.match(/^-?\d+([.,]\d+)?$/);
+  if(numM&&out.length<3){
+    const n=parseFloat(ans.replace(',','.'));
+    const cands=[n+1,n-1,n+2,n-2,n*2,Math.round(n/2),n+10,n-10,n+5].filter(x=>x!==n&&!isNaN(x));
+    for(const c of cands){out.push(String(c));if(out.length>=3)break}
+  }
+  // Short text distractors (common alternatives)
+  if(out.length<3){
+    const pool=['дұрыс емес','басқа нұсқа','белгісіз','ешқайсысы','барлығы','ешқашан','әрқашан','кейде','жиі','сирек'];
+    // character tweak
+    if(ans.length>2){
+      const arr=ans.split('');
+      const i=Math.floor(Math.random()*(arr.length-1))+1;
+      arr[i]=arr[i]==='а'?'ә':(arr[i]==='е'?'ё':String.fromCharCode(arr[i].charCodeAt(0)+1));
+      out.push(arr.join(''));
+    }
+    while(out.length<3){
+      const p=pool[Math.floor(Math.random()*pool.length)];
+      if(!out.includes(p)&&p!==ans)out.push(p);
+    }
+  }
+  // unique
+  return [...new Set(out)].filter(x=>x!==ans).slice(0,3);
 }
 function addQToDraft(){
   const text=document.getElementById('c-qtext').value.trim();
+  const correctOnly=document.getElementById('c-correct').value.trim();
+  // auto-gen if options empty
+  if(correctOnly&&!document.getElementById('c-o0').value.trim()){genWrong()}
   const opts=[0,1,2,3].map(i=>document.getElementById('c-o'+i).value.trim());
   const correct=+document.querySelector('input[name="c-cor"]:checked').value;
-  if(!text){alert('Сұрақ жазыңыз!');return}if(opts.some(o=>!o)){alert('4 нұсқаны толтырыңыз!');return}
+  if(!text){alert('Сұрақ жазыңыз!');return}
+  if(opts.some(o=>!o)){alert('Алдымен «Қате нұсқаларды жасау» басыңыз немесе 4 нұсқаны толтырыңыз!');return}
   draft.questions.push({id:'q_'+Date.now(),text,options:opts,correct,points:1});
-  document.getElementById('c-qtext').value='';['c-o0','c-o1','c-o2','c-o3'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('c-qtext').value='';document.getElementById('c-correct').value='';
+  ['c-o0','c-o1','c-o2','c-o3'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('opts-block').style.display='none';
   document.querySelector('input[name="c-cor"][value="0"]').checked=true;renderDraftQs();
 }
 function renderDraftQs(){
@@ -344,9 +468,16 @@ function renderDraftQs(){
     <div class="acts"><button class="btn btn-d btn-sm" onclick="draft.questions.splice(${i},1);renderDraftQs()">✕</button></div></div>`).join('');
 }
 function saveTest(){
+  const subjEl=document.getElementById('c-subject');
+  const subject=subjEl.value;
+  const subjectName=subjEl.options[subjEl.selectedIndex]?.text||'';
   const topic=document.getElementById('c-topic').value.trim();
-  if(!topic){alert('Тақырып жазыңыз!');return}if(!draft.questions.length){alert('Кемінде 1 сұрақ қосыңыз!');return}
-  const test={id:'t_'+Date.now(),topic,desc:document.getElementById('c-desc').value.trim(),isPublic:document.getElementById('c-public').checked,
+  const isPublic=document.getElementById('c-public').checked;
+  if(!subject){alert('Пәнді таңдаңыз!');return}
+  if(!topic){alert('Тақырыпты міндетті түрде жазыңыз!');document.getElementById('pub-hint').style.display='block';return}
+  if(isPublic&&!topic){alert('Жариялау үшін тақырып міндетті!');return}
+  if(!draft.questions.length){alert('Кемінде 1 сұрақ қосыңыз!');return}
+  const test={id:'t_'+Date.now(),subject,subjectName,topic,desc:document.getElementById('c-desc').value.trim(),isPublic,
     authorId:user.id,authorName:user.name,questions:draft.questions,createdAt:new Date().toISOString()};
   const all=allTests();all.unshift(test);saveAllTests(all);
   alert(test.isPublic?'✅ Тест сақталды және жарияланды!':'✅ Тест сақталды!');showMyTests();
@@ -356,7 +487,7 @@ function showMyTests(){
   const list=document.getElementById('my-list');const tests=myTests();
   if(!tests.length){list.innerHTML='<div class="empty"><div class="ic">📭</div><p>Сізде әзірге тест жоқ.<br>«Тест құру» арқылы жасаңыз.</p></div>'}
   else{list.innerHTML=tests.map(t=>`<div class="item"><div class="info"><h4>${t.topic}</h4>
-    <p>${t.questions.length} сұрақ · ${t.isPublic?'<span class="badge badge-pub">🌐 Жария</span>':'<span class="badge badge-priv">🔒 Жеке</span>'}</p></div>
+    <p>${t.subjectName||''} · ${t.questions.length} сұрақ · ${t.isPublic?'<span class="badge badge-pub">🌐 Жария</span>':'<span class="badge badge-priv">🔒 Жеке</span>'}</p></div>
     <div class="acts">
       <button class="btn btn-p btn-sm" onclick="startUserTest('${t.id}')">Бастау</button>
       <button class="btn btn-s btn-sm" onclick="editTest('${t.id}')">+ Сұрақ</button>
@@ -372,7 +503,7 @@ function showPublicTests(){
   const list=document.getElementById('public-list');const tests=publicTests();
   if(!tests.length){list.innerHTML='<div class="empty"><div class="ic">🌐</div><p>Әзірге жария тест жоқ.<br>Өзіңіз құрып, «Интернетке шығару» белгілеңіз.</p></div>'}
   else{list.innerHTML=tests.map(t=>`<div class="item"><div class="info"><h4>${t.topic}</h4>
-    <p>${t.questions.length} сұрақ · Автор: ${t.authorName||'Аноним'}${t.desc?' · '+t.desc:''}</p></div>
+    <p>${t.subjectName||''} · ${t.questions.length} сұрақ · Автор: ${t.authorName||'Аноним'}${t.desc?' · '+t.desc:''}</p></div>
     <div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest('${t.id}')">Тапсыру</button></div></div>`).join('')}
   showScr('s-public');
 }
@@ -405,7 +536,8 @@ let st=baseState();
 
 function startUserTest(id){
   const t=allTests().find(x=>x.id===id);if(!t||!t.questions.length){alert('Сұрақ жоқ!');return}
-  st=baseState();st.questions=t.questions.map(q=>({...q,subjectName:t.topic}));st.subjectName=t.topic;st.testId=id;
+  const label=(t.subjectName?t.subjectName+' · ':'')+(t.topic||'Тест');
+  st=baseState();st.questions=t.questions.map(q=>({...q,subjectName:label}));st.subjectName=label;st.testId=id;
   st.timerSeconds=Math.max(t.questions.length*90,600);beginTest();
 }
 function startQuickSubject(){
