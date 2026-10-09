@@ -134,14 +134,15 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
   <div class="wrap">
     <div class="hdr"><h2>Басты бет</h2><p class="sub">Тест тапсырыңыз немесе өз тестіңізді құрыңыз</p></div>
     <div class="grid2" style="margin-bottom:20px">
-      <div class="mode" onclick="showPublicTests()"><div class="ic">🌐</div><h3>Жария тесттер</h3><p>Басқалардың тесттері</p></div>
+      <div class="mode" onclick="showPublicTests()"><div class="ic">🌐</div><h3>Жария тесттер</h3><p>Админ мақұлдаған</p></div>
       <div class="mode" onclick="showMyTests()"><div class="ic">📚</div><h3>Менің тесттерім</h3><p>Өз тесттеріңіз</p></div>
       <div class="mode" onclick="showCreate()"><div class="ic">➕</div><h3>Тест құру</h3><p>Тақырып + сұрақтар</p></div>
-      <div class="mode" onclick="showMistakes()"><div class="ic">❌</div><h3>Қатемен жұмыс</h3><p>Қателерді қайта шешу</p></div>
+      <div class="mode" onclick="showFormulas()"><div class="ic">📐</div><h3>Формулалар</h3><p>Формула енгізу / қарау</p></div>
     </div>
     <div class="row">
+      <button class="btn btn-s btn-sm" onclick="showMistakes()">❌ Қателер</button>
       <button class="btn btn-s btn-sm" onclick="showHistory()">📋 Тарих</button>
-      <button class="btn btn-s btn-sm" onclick="startQuickSubject()">⚡ Жылдам жаттығу</button>
+      <button class="btn btn-s btn-sm" onclick="startQuickSubject()">⚡ Жылдам</button>
       <button class="btn btn-w btn-sm" id="admin-btn" style="display:none" onclick="showAdmin()">🛠 Админ</button>
     </div>
   </div>
@@ -191,8 +192,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
       </div>
       <div class="fg"><label>Тақырып * <span class="sub">(мыс: «15 ғасыр», «Ньютон заңдары»)</span></label><input id="c-topic" placeholder="Тақырыпты міндетті түрде жазыңыз"></div>
       <div class="fg"><label>Сипаттама (міндетті емес)</label><input id="c-desc" placeholder="Қысқаша сипаттама"></div>
-      <div class="fg"><label class="switch"><input type="checkbox" id="c-public"> 🌐 Интернетке шығару (барлыққа көрінеді)</label></div>
-      <p class="sub" id="pub-hint" style="display:none;color:var(--err)">⚠ Жариялау үшін тақырып міндетті толтырылуы керек</p>
+      <div class="fg"><label class="switch"><input type="checkbox" id="c-request"> 🌐 Жариялауға жіберу (админ мақұлдаған соң шығады)</label></div>
     </div>
     <div class="card">
       <h3 style="margin-bottom:12px">Сұрақ қосу</h3>
@@ -313,12 +313,47 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
   </div>
 </div>
 
+<div id="s-formulas" class="screen">
+  <div class="wrap">
+    <div class="hdr"><h2>📐 Формулалар</h2><p class="sub">Формула енгізіңіз немесе қараңыз</p></div>
+    <div class="card">
+      <div class="fg"><label>Пән</label>
+        <select id="f-subject">
+          <option value="math">Математика</option>
+          <option value="physics">Физика</option>
+          <option value="chemistry">Химия</option>
+          <option value="other">Басқа</option>
+        </select>
+      </div>
+      <div class="fg"><label>Формула атауы</label><input id="f-title" placeholder="Мыс: Квадрат теңдеу"></div>
+      <div class="fg"><label>Формула</label><textarea id="f-body" placeholder="x = (-b ± √(b²-4ac)) / 2a"></textarea></div>
+      <button class="btn btn-ok btn-sm" onclick="addFormula()">Сақтау</button>
+    </div>
+    <div id="formula-list" class="list"></div>
+    <div class="row" style="margin-top:16px"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+  </div>
+</div>
+
 <div id="s-admin" class="screen">
   <div class="wrap wide">
-    <div class="hdr"><h2>🛠 Админ панелі</h2><p class="sub">Барлық тесттер мен профильдер</p></div>
-    <div class="card"><h3>Статистика</h3><p id="admin-stats" class="sub"></p></div>
-    <div class="card"><h3>Барлық тесттер</h3><div id="admin-tests" class="list"></div></div>
-    <div class="card"><h3>Профильдер</h3><div id="admin-users" class="list"></div></div>
+    <div class="hdr"><h2>🛠 Админ панелі</h2><p class="sub">Толық басқару</p></div>
+    <div class="grid2" id="admin-stats-grid" style="margin-bottom:16px"></div>
+    <div class="card" style="padding:20px">
+      <h3 style="margin-bottom:12px">⏳ Жариялау күтіп тұрған тесттер</h3>
+      <div id="admin-pending" class="list"></div>
+    </div>
+    <div class="card" style="padding:20px">
+      <h3 style="margin-bottom:12px">👥 Тіркелгендер</h3>
+      <div id="admin-users" class="list"></div>
+    </div>
+    <div class="card" style="padding:20px">
+      <h3 style="margin-bottom:12px">📚 Барлық тесттер</h3>
+      <div id="admin-tests" class="list"></div>
+    </div>
+    <div class="card" style="padding:20px">
+      <h3 style="margin-bottom:12px">📐 Формулалар</h3>
+      <div id="admin-formulas" class="list"></div>
+    </div>
     <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
 </div>
@@ -357,15 +392,64 @@ function enterApp(){
 
 function showAdmin(){
   if(!user||!user.isAdmin){alert('Қолжетімсіз');return}
-  const tests=allTests();const profiles=LS.get('ubt_profiles',{});
-  document.getElementById('admin-stats').textContent='Тесттер: '+tests.length+' · Жария: '+tests.filter(t=>t.isPublic).length+' · Профильдер: '+Object.keys(profiles).length;
-  document.getElementById('admin-tests').innerHTML=tests.length?tests.map(t=>`<div class="item"><div class="info"><h4>${t.topic}</h4>
-    <p>${t.subjectName||''} · ${t.questions.length} сұрақ · ${t.authorName||''} · ${t.isPublic?'🌐':'🔒'}</p></div>
+  const tests=allTests();
+  const profiles=LS.get('ubt_profiles',{});
+  const formulas=LS.get('ubt_formulas',[]);
+  const pending=tests.filter(t=>t.status==='pending');
+  const approved=tests.filter(t=>t.isPublic||t.status==='approved');
+  const users=Object.values(profiles);
+
+  document.getElementById('admin-stats-grid').innerHTML=`
+    <div class="mode" style="cursor:default"><div class="ic">👥</div><h3>${users.length}</h3><p>Тіркелгендер</p></div>
+    <div class="mode" style="cursor:default"><div class="ic">📚</div><h3>${tests.length}</h3><p>Барлық тест</p></div>
+    <div class="mode" style="cursor:default"><div class="ic">⏳</div><h3>${pending.length}</h3><p>Күтіп тұр</p></div>
+    <div class="mode" style="cursor:default"><div class="ic">🌐</div><h3>${approved.length}</h3><p>Жарияланған</p></div>`;
+
+  document.getElementById('admin-pending').innerHTML=pending.length?pending.map(t=>`
+    <div class="item"><div class="info"><h4>${t.topic}</h4>
+      <p>${t.subjectName||''} · ${t.questions.length} сұрақ · ${t.authorName||''}</p></div>
+      <div class="acts">
+        <button class="btn btn-ok btn-sm" onclick="approveTest('${t.id}')">✓ Мақұлдау</button>
+        <button class="btn btn-d btn-sm" onclick="rejectTest('${t.id}')">✕ Бас тарту</button>
+      </div></div>`).join(''):'<p class="sub">Күтіп тұрған тест жоқ</p>';
+
+  document.getElementById('admin-users').innerHTML=users.length?users.map(p=>`
+    <div class="item"><div class="info"><h4>${p.name}</h4><p>${p.id}</p></div>
+    <div class="acts"><button class="btn btn-d btn-sm" onclick="adminDelUser('${p.id}','${(p.name||'').replace(/'/g,'')}')">Өшіру</button></div></div>`).join(''):'<p class="sub">Профиль жоқ</p>';
+
+  document.getElementById('admin-tests').innerHTML=tests.length?tests.map(t=>`
+    <div class="item"><div class="info"><h4>${t.topic}</h4>
+      <p>${t.subjectName||''} · ${t.questions.length} сұрақ · ${t.authorName||''} · ${t.isPublic||t.status==='approved'?'🌐 Жария':t.status==='pending'?'⏳ Күту':'🔒 Жеке'}</p></div>
     <div class="acts"><button class="btn btn-d btn-sm" onclick="adminDelTest('${t.id}')">Өшіру</button></div></div>`).join(''):'<p class="sub">Тест жоқ</p>';
-  document.getElementById('admin-users').innerHTML=Object.values(profiles).map(p=>`<div class="item"><div class="info"><h4>${p.name}</h4><p>${p.id}</p></div></div>`).join('')||'<p class="sub">Профиль жоқ</p>';
+
+  document.getElementById('admin-formulas').innerHTML=formulas.length?formulas.map((f,i)=>`
+    <div class="item"><div class="info"><h4>${f.title}</h4><p>${f.subject} · ${f.authorName||''} · ${f.body}</p></div>
+    <div class="acts"><button class="btn btn-d btn-sm" onclick="adminDelFormula(${i})">Өшіру</button></div></div>`).join(''):'<p class="sub">Формула жоқ</p>';
+
   showScr('s-admin');
 }
-function adminDelTest(id){if(!confirm('Өшіру?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showAdmin()}
+function adminDelTest(id){if(!confirm('Тестті өшіру?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showAdmin()}
+function approveTest(id){
+  const all=allTests();const t=all.find(x=>x.id===id);
+  if(t){t.isPublic=true;t.status='approved';saveAllTests(all);showAdmin()}
+}
+function rejectTest(id){
+  const all=allTests();const t=all.find(x=>x.id===id);
+  if(t){t.isPublic=false;t.status='rejected';saveAllTests(all);showAdmin()}
+}
+function adminDelUser(id,name){
+  if(!confirm(name+' профилін өшіру?'))return;
+  const profiles=LS.get('ubt_profiles',{});
+  Object.keys(profiles).forEach(k=>{if(profiles[k].id===id)delete profiles[k]});
+  LS.set('ubt_profiles',profiles);
+  // also remove their tests
+  saveAllTests(allTests().filter(t=>t.authorId!==id));
+  showAdmin();
+}
+function adminDelFormula(i){
+  if(!confirm('Формуланы өшіру?'))return;
+  const f=LS.get('ubt_formulas',[]);f.splice(i,1);LS.set('ubt_formulas',f);showAdmin();
+}
 
 function showScr(id){document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));document.getElementById(id).classList.add('active')}
 function goHome(){stopTimer();st=baseState();showScr('s-home')}
@@ -380,17 +464,39 @@ const BANK={
 function allTests(){return LS.get('ubt_tests',[])}
 function saveAllTests(a){LS.set('ubt_tests',a)}
 function myTests(){return allTests().filter(t=>t.authorId===user.id)}
-function publicTests(){return allTests().filter(t=>t.isPublic&&t.questions.length>0)}
+function publicTests(){return allTests().filter(t=>(t.isPublic||t.status==='approved')&&t.questions.length>0)}
+function showFormulas(){
+  renderFormulas();showScr('s-formulas');
+}
+function renderFormulas(){
+  const list=document.getElementById('formula-list');
+  const all=LS.get('ubt_formulas',[]);
+  if(!all.length){list.innerHTML='<div class="empty"><div class="ic">📐</div><p>Әзірге формула жоқ</p></div>';return}
+  list.innerHTML=all.map(f=>`<div class="item"><div class="info"><h4>${f.title}</h4>
+    <p style="font-family:monospace;font-size:14px;color:var(--t);margin:6px 0">${f.body}</p>
+    <p>${f.subject} · ${f.authorName||''}</p></div></div>`).join('');
+}
+function addFormula(){
+  const title=document.getElementById('f-title').value.trim();
+  const body=document.getElementById('f-body').value.trim();
+  const subject=document.getElementById('f-subject').value;
+  if(!title||!body){alert('Атау мен формуланы жазыңыз!');return}
+  const all=LS.get('ubt_formulas',[]);
+  all.unshift({title,body,subject,authorId:user.id,authorName:user.name,createdAt:new Date().toISOString()});
+  LS.set('ubt_formulas',all);
+  document.getElementById('f-title').value='';document.getElementById('f-body').value='';
+  renderFormulas();alert('Формула сақталды!');
+}
 
 let draft={questions:[]};
 function showCreate(){
   draft={questions:[]};
   document.getElementById('c-subject').value='';
-  document.getElementById('c-topic').value='';document.getElementById('c-desc').value='';document.getElementById('c-public').checked=false;
+  document.getElementById('c-topic').value='';document.getElementById('c-desc').value='';
+  const req=document.getElementById('c-request');if(req)req.checked=false;
   document.getElementById('c-qtext').value='';document.getElementById('c-correct').value='';
   ['c-o0','c-o1','c-o2','c-o3'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('opts-block').style.display='none';
-  document.getElementById('pub-hint').style.display='none';
   document.querySelector('input[name="c-cor"][value="0"]').checked=true;renderDraftQs();showScr('s-create');
 }
 function genWrong(){
@@ -472,31 +578,49 @@ function saveTest(){
   const subject=subjEl.value;
   const subjectName=subjEl.options[subjEl.selectedIndex]?.text||'';
   const topic=document.getElementById('c-topic').value.trim();
-  const isPublic=document.getElementById('c-public').checked;
+  const requestPub=document.getElementById('c-request')?.checked||false;
   if(!subject){alert('Пәнді таңдаңыз!');return}
-  if(!topic){alert('Тақырыпты міндетті түрде жазыңыз!');document.getElementById('pub-hint').style.display='block';return}
-  if(isPublic&&!topic){alert('Жариялау үшін тақырып міндетті!');return}
+  if(!topic){alert('Тақырыпты міндетті түрде жазыңыз!');return}
   if(!draft.questions.length){alert('Кемінде 1 сұрақ қосыңыз!');return}
-  const test={id:'t_'+Date.now(),subject,subjectName,topic,desc:document.getElementById('c-desc').value.trim(),isPublic,
-    authorId:user.id,authorName:user.name,questions:draft.questions,createdAt:new Date().toISOString()};
+  const test={
+    id:'t_'+Date.now(),subject,subjectName,topic,
+    desc:document.getElementById('c-desc').value.trim(),
+    isPublic:false,
+    status:requestPub?'pending':'private',
+    authorId:user.id,authorName:user.name,
+    questions:draft.questions,createdAt:new Date().toISOString()
+  };
+  // admin can publish directly
+  if(user.isAdmin&&requestPub){test.isPublic=true;test.status='approved'}
   const all=allTests();all.unshift(test);saveAllTests(all);
-  alert(test.isPublic?'✅ Тест сақталды және жарияланды!':'✅ Тест сақталды!');showMyTests();
+  alert(requestPub&&!user.isAdmin?'✅ Тест сақталды. Админ мақұлдаған соң жарияланады.':'✅ Тест сақталды!');
+  showMyTests();
 }
 
 function showMyTests(){
   const list=document.getElementById('my-list');const tests=myTests();
   if(!tests.length){list.innerHTML='<div class="empty"><div class="ic">📭</div><p>Сізде әзірге тест жоқ.<br>«Тест құру» арқылы жасаңыз.</p></div>'}
-  else{list.innerHTML=tests.map(t=>`<div class="item"><div class="info"><h4>${t.topic}</h4>
-    <p>${t.subjectName||''} · ${t.questions.length} сұрақ · ${t.isPublic?'<span class="badge badge-pub">🌐 Жария</span>':'<span class="badge badge-priv">🔒 Жеке</span>'}</p></div>
+  else{list.innerHTML=tests.map(t=>{
+    let badge='<span class="badge badge-priv">🔒 Жеке</span>';
+    if(t.isPublic||t.status==='approved')badge='<span class="badge badge-pub">🌐 Жария</span>';
+    else if(t.status==='pending')badge='<span class="badge" style="background:#fef3c7;color:#92400e">⏳ Күтуде</span>';
+    else if(t.status==='rejected')badge='<span class="badge badge-err">Бас тартылған</span>';
+    return `<div class="item"><div class="info"><h4>${t.topic}</h4>
+    <p>${t.subjectName||''} · ${t.questions.length} сұрақ · ${badge}</p></div>
     <div class="acts">
       <button class="btn btn-p btn-sm" onclick="startUserTest('${t.id}')">Бастау</button>
       <button class="btn btn-s btn-sm" onclick="editTest('${t.id}')">+ Сұрақ</button>
-      <button class="btn btn-s btn-sm" onclick="togglePub('${t.id}')">${t.isPublic?'Жасыру':'Жариялау'}</button>
+      ${t.status!=='pending'&&t.status!=='approved'&&!t.isPublic?`<button class="btn btn-w btn-sm" onclick="requestPub('${t.id}')">Жариялауға</button>`:''}
       <button class="btn btn-d btn-sm" onclick="delTest('${t.id}')">✕</button>
-    </div></div>`).join('')}
+    </div></div>`}).join('')}
   showScr('s-mytests');
 }
-function togglePub(id){const all=allTests();const t=all.find(x=>x.id===id);if(t){t.isPublic=!t.isPublic;saveAllTests(all);showMyTests()}}
+function requestPub(id){
+  const all=allTests();const t=all.find(x=>x.id===id);
+  if(!t)return;
+  if(user.isAdmin){t.isPublic=true;t.status='approved';saveAllTests(all);alert('Жарияланды!');showMyTests();return}
+  t.status='pending';t.isPublic=false;saveAllTests(all);alert('Админге жіберілді. Мақұлдаған соң жарияланады.');showMyTests();
+}
 function delTest(id){if(!confirm('Тестті өшіру керек пе?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showMyTests()}
 
 function showPublicTests(){
