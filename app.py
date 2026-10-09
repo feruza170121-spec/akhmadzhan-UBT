@@ -113,13 +113,55 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 
 <div id="s-login" class="screen active">
   <div class="wrap">
-    <div class="hdr"><div class="logo">ҰБТ</div><h1>ҰБТ Тренажер</h1><p class="sub">Профиліңізге кіріңіз немесе тіркеліңіз</p></div>
-    <div class="card">
-      <div class="fg"><label>Атыңыз / Никнейм</label><input id="login-name" placeholder="Мысалы: Айгүл" maxlength="30" oninput="checkAdminName()"></div>
-      <div class="fg" id="admin-pass-wrap" style="display:none"><label>Админ паролі</label><input id="login-pass" type="password" placeholder="Пароль"></div>
-      <button class="btn btn-p" style="width:100%" onclick="doLogin()">Кіру / Тіркелу</button>
+    <div class="hdr"><div class="logo">ҰБТ</div><h1>ҰБТ Тренажер</h1><p class="sub">Аккаунтқа кіріңіз</p></div>
+    <div class="card" id="login-box">
+      <div class="fg"><label>Логин (ат немесе телефон)</label><input id="login-name" placeholder="Атыңыз немесе +7..." oninput="checkAdminName()"></div>
+      <div class="fg"><label>Пароль</label><input id="login-pass" type="password" placeholder="Пароль"></div>
+      <div class="fg" id="admin-pass-wrap" style="display:none"><label class="sub">Админ ретінде кіру</label></div>
+      <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doLogin()">Кіру</button>
+      <button class="btn btn-s" style="width:100%;margin-bottom:10px" onclick="showRegister()">Тіркелу</button>
+      <button class="btn btn-s btn-sm" style="width:100%" onclick="showForgot()">Парольді ұмыттым</button>
     </div>
-    <p class="sub" style="text-align:center;margin-top:16px">Профиль осы құрылғыда сақталады</p>
+    <div class="card" id="register-box" style="display:none">
+      <h3 style="margin-bottom:12px">Тіркелу</h3>
+      <div class="fg"><label>Атыңыз *</label><input id="reg-name" placeholder="Атыңыз" maxlength="30"></div>
+      <div class="fg"><label>Телефон *</label><input id="reg-phone" placeholder="+7 700 123 45 67"></div>
+      <div class="fg"><label>Пароль *</label><input id="reg-pass" type="password" placeholder="Кемінде 4 таңба"></div>
+      <div class="fg"><label>Парольді қайталаңыз *</label><input id="reg-pass2" type="password" placeholder="Қайталаңыз"></div>
+      <button class="btn btn-w" style="width:100%;margin-bottom:10px" onclick="sendRegCode()">📱 Код жіберу</button>
+      <div class="fg" id="reg-code-wrap" style="display:none"><label>Телефонға келген код</label><input id="reg-code" placeholder="4 цифр" maxlength="6"></div>
+      <button class="btn btn-p" style="width:100%;margin-bottom:10px;display:none" id="reg-submit" onclick="doRegister()">Тіркелуді аяқтау</button>
+      <button class="btn btn-s" style="width:100%" onclick="showLoginBox()">Артқа</button>
+    </div>
+    <div class="card" id="forgot-box" style="display:none">
+      <h3 style="margin-bottom:12px">Парольді қалпына келтіру</h3>
+      <div class="fg"><label>Телефон нөмірі</label><input id="forgot-phone" placeholder="+7 700..."></div>
+      <button class="btn btn-w" style="width:100%;margin-bottom:10px" onclick="sendForgotCode()">📱 Код жіберу</button>
+      <div id="forgot-step2" style="display:none">
+        <div class="fg"><label>Код</label><input id="forgot-code" placeholder="4 цифр" maxlength="6"></div>
+        <div class="fg"><label>Жаңа пароль</label><input id="forgot-pass" type="password" placeholder="Жаңа пароль"></div>
+        <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doForgotReset()">Парольді өзгерту</button>
+      </div>
+      <button class="btn btn-s" style="width:100%" onclick="showLoginBox()">Артқа</button>
+    </div>
+  </div>
+</div>
+
+<div id="s-user-view" class="screen">
+  <div class="wrap">
+    <div class="hdr">
+      <div class="avatar" id="uv-avatar" style="width:64px;height:64px;font-size:24px;margin:0 auto 10px;border:3px solid #93c5fd">?</div>
+      <h2 id="uv-name">User</h2>
+      <p class="sub" id="uv-info">—</p>
+    </div>
+    <div class="card"><h3 style="margin-bottom:10px">📋 Тест тарихы</h3><div id="uv-hist" class="list"></div></div>
+    <div class="card"><h3 style="margin-bottom:10px">❌ Қателері</h3><div id="uv-mist" class="list"></div></div>
+    <div class="card" id="uv-pass-card">
+      <h3 style="margin-bottom:10px">🔑 Парольді өзгерту</h3>
+      <div class="fg"><label>Жаңа пароль</label><input id="uv-newpass" type="password" placeholder="Жаңа пароль"></div>
+      <button class="btn btn-p btn-sm" onclick="adminChangeUserPass()">Сақтау</button>
+    </div>
+    <div class="row"><button class="btn btn-s" onclick="showAdmin()">Артқа</button></div>
   </div>
 </div>
 
@@ -403,24 +445,106 @@ function checkAdminName(){
   const n=document.getElementById('login-name').value.trim().toLowerCase();
   document.getElementById('admin-pass-wrap').style.display=(n==='админ'||n==='admin')?'block':'none';
 }
+function showLoginBox(){
+  document.getElementById('login-box').style.display='block';
+  document.getElementById('register-box').style.display='none';
+  document.getElementById('forgot-box').style.display='none';
+}
+function showRegister(){
+  document.getElementById('login-box').style.display='none';
+  document.getElementById('register-box').style.display='block';
+  document.getElementById('forgot-box').style.display='none';
+  document.getElementById('reg-code-wrap').style.display='none';
+  document.getElementById('reg-submit').style.display='none';
+}
+function showForgot(){
+  document.getElementById('login-box').style.display='none';
+  document.getElementById('register-box').style.display='none';
+  document.getElementById('forgot-box').style.display='block';
+  document.getElementById('forgot-step2').style.display='none';
+}
+function normPhone(p){return (p||'').replace(/\D/g,'')}
+function findUserByLogin(login){
+  const profiles=LS.get('ubt_profiles',{});
+  const key=login.toLowerCase().trim();
+  if(profiles[key]) return profiles[key];
+  const phone=normPhone(login);
+  return Object.values(profiles).find(u=>normPhone(u.phone)===phone)||null;
+}
+function genCode(){return String(Math.floor(1000+Math.random()*9000))}
+let pendingReg=null, pendingForgot=null;
+
+function sendRegCode(){
+  const name=document.getElementById('reg-name').value.trim();
+  const phone=document.getElementById('reg-phone').value.trim();
+  const pass=document.getElementById('reg-pass').value;
+  const pass2=document.getElementById('reg-pass2').value;
+  if(!name||name.length<2){alert('Атыңызды жазыңыз');return}
+  if(normPhone(phone).length<10){alert('Телефон нөмірін дұрыс жазыңыз');return}
+  if(!pass||pass.length<4){alert('Пароль кемінде 4 таңба');return}
+  if(pass!==pass2){alert('Парольдер сәйкес емес');return}
+  if(findUserByLogin(name)||findUserByLogin(phone)){alert('Бұл ат немесе телефон тіркелген');return}
+  const code=genCode();
+  pendingReg={name,phone,pass,code};
+  // DEMO: нақты SMS жоқ — кодты көрсетеміз
+  alert('📱 Демо: '+phone+' нөміріне код жіберілді:\n\n'+code+'\n\n(Нақты SMS кейін қосылады)');
+  document.getElementById('reg-code-wrap').style.display='block';
+  document.getElementById('reg-submit').style.display='block';
+}
+function doRegister(){
+  if(!pendingReg){alert('Алдымен код жіберіңіз');return}
+  const code=document.getElementById('reg-code').value.trim();
+  if(code!==pendingReg.code){alert('Код қате!');return}
+  const key=pendingReg.name.toLowerCase();
+  const profiles=LS.get('ubt_profiles',{});
+  const u={name:pendingReg.name,phone:pendingReg.phone,password:pendingReg.pass,
+    id:'u_'+key.replace(/\s+/g,'_')+'_'+Date.now().toString(36).slice(-4),isAdmin:false};
+  profiles[key]=u;LS.set('ubt_profiles',profiles);
+  setUserStats(u.id,{points:0,title:'',stars:0,verified:false});
+  pendingReg=null;
+  alert('✅ Тіркелу сәтті! Енді кіріңіз.');
+  showLoginBox();
+  document.getElementById('login-name').value=u.name;
+}
 function doLogin(){
-  const name=document.getElementById('login-name').value.trim();
-  if(!name||name.length<2){alert('Атыңызды жазыңыз (кемінде 2 әріп)');return}
-  const key=name.toLowerCase();
+  const login=document.getElementById('login-name').value.trim();
+  const pass=document.getElementById('login-pass').value;
+  if(!login){alert('Логин жазыңыз');return}
+  const key=login.toLowerCase();
   if(key==='админ'||key==='admin'){
-    const pass=document.getElementById('login-pass').value;
     if(pass!==getAdminPass()){alert('Қате пароль!');return}
     user={name:'Админ',id:'admin',isAdmin:true};
     LS.set('ubt_current',user);enterApp();return;
   }
+  const u=findUserByLogin(login);
+  if(!u){alert('Аккаунт табылмады. Тіркеліңіз.');return}
+  if(u.password&&u.password!==pass){alert('Қате пароль!');return}
+  // legacy users without password
+  if(!u.password){u.password=pass;const profiles=LS.get('ubt_profiles',{});
+    Object.keys(profiles).forEach(k=>{if(profiles[k].id===u.id)profiles[k].password=pass});LS.set('ubt_profiles',profiles)}
+  user=u;LS.set('ubt_current',user);enterApp();
+}
+function sendForgotCode(){
+  const phone=document.getElementById('forgot-phone').value.trim();
+  const u=findUserByLogin(phone);
+  if(!u){alert('Бұл нөмірмен аккаунт жоқ');return}
+  const code=genCode();
+  pendingForgot={userId:u.id,phone,code};
+  alert('📱 Демо: '+phone+' нөміріне код:\n\n'+code);
+  document.getElementById('forgot-step2').style.display='block';
+}
+function doForgotReset(){
+  if(!pendingForgot)return;
+  const code=document.getElementById('forgot-code').value.trim();
+  const pass=document.getElementById('forgot-pass').value;
+  if(code!==pendingForgot.code){alert('Код қате!');return}
+  if(!pass||pass.length<4){alert('Пароль кемінде 4 таңба');return}
   const profiles=LS.get('ubt_profiles',{});
-  if(profiles[key]) user=profiles[key];
-  else{
-    user={name,id:'u_'+key.replace(/\s+/g,'_')+'_'+Date.now().toString(36).slice(-4),isAdmin:false};
-    profiles[key]=user;LS.set('ubt_profiles',profiles);
-    setUserStats(user.id,{points:0,title:'',stars:0});
-  }
-  LS.set('ubt_current',user);enterApp();
+  Object.keys(profiles).forEach(k=>{if(profiles[k].id===pendingForgot.userId)profiles[k].password=pass});
+  LS.set('ubt_profiles',profiles);
+  pendingForgot=null;
+  alert('✅ Пароль өзгертілді! Кіріңіз.');
+  showLoginBox();
 }
 function doLogout(){LS.set('ubt_current',null);user=null;showScr('s-login')}
 function getUserStats(id){
@@ -537,6 +661,7 @@ function showAdmin(){
       </div>
       <div class="info"><h4>${p.name}</h4><p>⭐ ${s.points||0} · ${s.title||'Атақ жоқ'} · <span style="color:#f59e0b">${starStr(s.stars||0)}</span></p></div>
       <div class="acts">
+        <button class="btn btn-p btn-sm" onclick="adminViewUser('${p.id}')">Профиль</button>
         <button class="btn btn-ok btn-sm" onclick="adminToggleVerify('${p.id}')">${s.verified?'✓ Бар':'Галочка'}</button>
         <button class="btn btn-w btn-sm" onclick="adminSetTitle('${p.id}')">Атақ</button>
         <button class="btn btn-s btn-sm" onclick="adminSetStars('${p.id}')">Жұлдыз</button>
@@ -609,6 +734,37 @@ function changeAdminPass(){
   setAdminPass(p);
   document.getElementById('new-admin-pass').value='';
   alert('Админ паролі өзгертілді!');
+}
+let viewingUserId=null;
+function adminViewUser(id){
+  if(!user||!user.isAdmin)return;
+  viewingUserId=id;
+  const profiles=LS.get('ubt_profiles',{});
+  const p=Object.values(profiles).find(x=>x.id===id);
+  if(!p){alert('Табылмады');return}
+  const s=getUserStats(id);
+  document.getElementById('uv-avatar').textContent=(p.name||'?')[0].toUpperCase();
+  document.getElementById('uv-name').textContent=p.name+(s.verified?' ✓':'');
+  document.getElementById('uv-info').textContent=`${p.phone||'тел жоқ'} · ⭐ ${s.points||0} · ${s.title||'атақ жоқ'} · ${starStr(s.stars||0)}`;
+  const hist=LS.get('ubt_hist_'+id,[]);
+  document.getElementById('uv-hist').innerHTML=hist.length?hist.map(h=>`
+    <div class="item"><div class="info"><h4>${h.topic||'Тест'}</h4><p>${h.date}</p></div>
+    <div style="font-weight:700;color:var(--p)">${h.score}/${h.max}</div></div>`).join(''):'<p class="sub">Тест тапсырмаған</p>';
+  const mist=LS.get('ubt_mistakes_'+id,[]);
+  document.getElementById('uv-mist').innerHTML=mist.length?mist.map(q=>`
+    <div class="item"><div class="info"><h4>${(q.text||'').substring(0,80)}</h4><p>${q.subjectName||''}</p></div></div>`).join(''):'<p class="sub">Қате жоқ</p>';
+  document.getElementById('uv-newpass').value='';
+  showScr('s-user-view');
+}
+function adminChangeUserPass(){
+  if(!viewingUserId)return;
+  const pass=document.getElementById('uv-newpass').value;
+  if(!pass||pass.length<4){alert('Пароль кемінде 4 таңба');return}
+  const profiles=LS.get('ubt_profiles',{});
+  Object.keys(profiles).forEach(k=>{if(profiles[k].id===viewingUserId)profiles[k].password=pass});
+  LS.set('ubt_profiles',profiles);
+  document.getElementById('uv-newpass').value='';
+  alert('Пароль өзгертілді!');
 }
 function adminDelFormula(i){
   if(!confirm('Формуланы өшіру?'))return;
