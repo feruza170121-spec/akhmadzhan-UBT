@@ -1,7 +1,7 @@
 import streamlit as st
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="ҰБТ Тренажер", page_icon="📝", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Bilim — ҰБТ", page_icon="📚", layout="wide", initial_sidebar_state="collapsed")
 st.markdown("""<style>#MainMenu,footer,header{visibility:hidden}.block-container{padding:0!important;max-width:100%!important}iframe{border:none!important}</style>""", unsafe_allow_html=True)
 
 html_code = r"""
@@ -10,7 +10,7 @@ html_code = r"""
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ҰБТ Тренажер</title>
+<title>Bilim — ҰБТ</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{--p:#2563eb;--pd:#1d4ed8;--ok:#16a34a;--err:#dc2626;--warn:#f59e0b;--bg:#f1f5f9;--c:#fff;--t:#0f172a;--m:#64748b;--b:#e2e8f0}
@@ -20,7 +20,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 .wrap{max-width:760px;margin:0 auto;padding:32px 16px}
 .wrap.wide{max-width:920px}
 .hdr{text-align:center;margin-bottom:28px}
-.logo{display:inline-flex;align-items:center;justify-content:center;width:56px;height:56px;background:var(--p);color:#fff;font-weight:700;font-size:20px;border-radius:14px;margin-bottom:12px}
+.logo{display:inline-flex;align-items:center;justify-content:center;width:72px;height:72px;background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;font-weight:800;font-size:28px;border-radius:20px;margin-bottom:14px;box-shadow:0 8px 24px rgba(37,99,235,.35);letter-spacing:-1px}
 .hdr h1{font-size:26px;font-weight:700;margin-bottom:4px}
 .hdr h2{font-size:22px;margin-bottom:4px}
 .sub{color:var(--m);font-size:14px}
@@ -113,7 +113,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 
 <div id="s-login" class="screen active">
   <div class="wrap">
-    <div class="hdr"><div class="logo">ҰБТ</div><h1>ҰБТ Тренажер</h1><p class="sub">Аккаунтқа кіріңіз</p></div>
+    <div class="hdr"><div class="logo">B</div><h1>Bilim</h1><p class="sub">ҰБТ-ға дайындық платформасы</p></div>
     <div class="card" id="login-box">
       <div class="fg"><label>Логин (ат немесе телефон)</label><input id="login-name" placeholder="Атыңыз немесе +7..." oninput="checkAdminName()"></div>
       <div class="fg"><label>Пароль</label><input id="login-pass" type="password" placeholder="Пароль"></div>
