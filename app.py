@@ -125,9 +125,90 @@ body.locked{user-select:none;-webkit-user-select:none}
 .tbar .tb i{display:block;height:100%;background:var(--p);border-radius:10px}
 .tbar .tv{width:44px;text-align:right;font-weight:600}
 @media(max-width:768px){.stat-grid{grid-template-columns:repeat(2,1fr)}}
+/* ===== Қосымша мүмкіндіктер ===== */
+#theme-btn{position:fixed;right:12px;bottom:12px;z-index:90;width:42px;height:42px;border-radius:50%;padding:0;font-size:18px;box-shadow:0 2px 10px rgba(0,0,0,.18)}
+body.in-test #theme-btn{display:none}
+#confetti{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:99990}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.chip{background:var(--c);border:1px solid var(--b);border-radius:20px;padding:6px 14px;font-size:13px}
+.chip.warn{background:#fef3c7;color:#92400e;border-color:#fcd34d}
+.quote{background:linear-gradient(135deg,#eff6ff,#f5f3ff);border-left:4px solid var(--p);border-radius:12px;padding:12px 14px;font-size:14px;font-style:italic;margin:10px 0;color:#1e293b;cursor:pointer}
+.qotd-op{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:2px solid var(--b);border-radius:11px;cursor:pointer;margin-bottom:7px;font-size:13px}
+.qotd-op:hover{border-color:#93c5fd}
+.qotd-op.ok{border-color:var(--ok);background:#dcfce7;color:#14532d}
+.qotd-op.bad{border-color:var(--err);background:#fee2e2;color:#7f1d1d}
+.qotd-op.lock{cursor:default}
+.fcard{background:var(--c);border:2px solid var(--b);border-radius:18px;min-height:240px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:26px 20px;cursor:pointer;position:relative;animation:flipin .25s}
+.fcard.back{border-color:var(--p);background:#eff6ff;color:#0f172a}
+.fcard .flab{position:absolute;top:12px;left:16px;font-size:11px;font-weight:700;color:var(--m);text-transform:uppercase}
+.fcard .ftxt{font-size:20px;font-weight:600;line-height:1.5}
+.fcard .fhint{position:absolute;bottom:10px;font-size:11px;color:var(--m)}
+@keyframes flipin{from{transform:rotateX(70deg);opacity:.3}to{transform:none;opacity:1}}
+.podium{display:flex;align-items:flex-end;justify-content:center;gap:10px;margin:8px 0 20px}
+.pod{flex:1;max-width:150px;text-align:center;min-width:0}
+.pod .pcup{font-size:38px;line-height:1.1}
+.pod.p1 .pcup{font-size:56px;animation:bob 2s ease-in-out infinite}
+@keyframes bob{50%{transform:translateY(-6px)}}
+.pod .pname{font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pod .ppts{font-size:12px;color:var(--m)}
+.pod .pbase{border-radius:10px 10px 0 0;color:#fff;font-weight:800;padding-top:8px;margin-top:6px;font-size:18px}
+.pod.p1 .pbase{background:linear-gradient(#fbbf24,#f59e0b);height:84px}
+.pod.p2 .pbase{background:linear-gradient(#cbd5e1,#94a3b8);height:62px}
+.pod.p3 .pbase{background:linear-gradient(#fdba74,#c2763a);height:46px}
+.item.me{border-color:var(--p);background:#eff6ff;color:#0f172a}
+.item.me .info p{color:#475569}
+.plan-day{background:var(--c);border:1px solid var(--b);border-radius:12px;padding:10px 14px;margin-bottom:8px}
+.plan-day.today{border-color:var(--p);box-shadow:0 0 0 2px rgba(37,99,235,.15)}
+.plan-day h4{font-size:13px;margin-bottom:6px}
+.plan-day label{display:flex;gap:8px;align-items:flex-start;font-size:13px;margin-bottom:4px;cursor:pointer}
+.plan-day label.done span{text-decoration:line-through;opacity:.55}
+.ttable{width:100%;border-collapse:collapse;font-size:13px}
+.ttable th,.ttable td{padding:8px 6px;border-bottom:1px solid var(--b);text-align:left;vertical-align:middle}
+.ttable th{font-size:11px;color:var(--m);text-transform:uppercase}
+.tscroll{overflow-x:auto}
+.gl-item{background:var(--c);border:1px solid var(--b);border-radius:12px;padding:12px 14px}
+.gl-item h4{font-size:14px;margin-bottom:3px}
+.gl-item p{font-size:13px;color:var(--t)}
+.gl-cat{font-size:10px;font-weight:700;color:var(--p);text-transform:uppercase;letter-spacing:.5px}
+.katex{font-size:1.05em}
+.katex-display{overflow-x:auto;overflow-y:hidden}
+
+/* ===== Қараңғы режим ===== */
+body.dark{--bg:#0b1220;--c:#162033;--t:#e5e7eb;--m:#9aa8bd;--b:#2b3a52;--p:#3b82f6;--pd:#2563eb;color-scheme:dark}
+body.dark .prog-t,body.dark .timer,body.dark .qnum{background:#1e3a5f;color:#93c5fd}
+body.dark .timer.warn{background:#3b2f0b;color:#fbbf24}
+body.dark .timer.dang{background:#3f1515;color:#f87171}
+body.dark .qn.cur{background:#1e3a5f}
+body.dark .qn.ans{background:#14532d;color:#86efac;border-color:#166534}
+body.dark .qn.flg{background:#422006;border-color:#a16207}
+body.dark .op:hover{background:#1e293b}
+body.dark .op.sel{background:#1e3a5f}
+body.dark .rev .ra.u{background:#3f1515}
+body.dark .rev .ra.c{background:#12301f}
+body.dark .badge-pub{background:#1e3a5f}
+body.dark .badge-priv{background:#1e293b}
+body.dark .prog-w,body.dark .tbar .tb{background:#2b3a52}
+body.dark .flag.on{background:#422006}
+body.dark .quote{background:linear-gradient(135deg,#16233a,#1d1a38);color:#e5e7eb}
+body.dark .fcard.back{background:#16233a;color:#e5e7eb}
+body.dark .item.me{background:#16233a;color:#e5e7eb}
+body.dark .item.me .info p{color:#9aa8bd}
+body.dark .chip.warn{background:#422006;color:#fcd34d;border-color:#a16207}
+body.dark .qotd-op.ok{background:#12301f;color:#bbf7d0}
+body.dark .qotd-op.bad{background:#3f1515;color:#fecaca}
+body.dark [style*="background:#eff6ff"],body.dark [style*="background:#f1f5f9"],body.dark [style*="background:#f0fdf4"],body.dark [style*="background:#fef2f2"],body.dark [style*="background:#fef3c7"],body.dark [style*="background:#dbeafe"],body.dark [style*="background:#f8fafc"],body.dark [style*="background:#fffbeb"]{background:#1e293b!important;color:#e5e7eb!important}
+body.dark #contact-box,body.dark #contact-box *{color:#111}
+body.dark #contact-box [style*="background:#075e54"] *,body.dark #contact-box [style*="background:#075e54"]{color:#fff}
+body.dark #admin-chat input,body.dark #admin-chat textarea{color:#111}
 </style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" onload="mathScreen()"></script>
 </head>
 <body>
+
+<button id="theme-btn" class="btn btn-s" onclick="toggleTheme()" title="Қараңғы / жарық режим">🌙</button>
+<canvas id="confetti"></canvas>
 
 <div id="lock-ov"><div class="box"><div style="font-size:46px">🔒</div><h2 id="lock-title">Тест жалғасуда</h2><p id="lock-msg"></p><button class="btn btn-p" onclick="returnToTest()">Толық экранға оралу</button></div></div>
 
@@ -229,10 +310,11 @@ body.locked{user-select:none;-webkit-user-select:none}
   </div>
   <div class="wrap">
     <div class="hdr"><h2>Басты бет</h2><p class="sub">Тест тапсырыңыз немесе өз тестіңізді құрыңыз</p></div>
+    <div id="home-extras"></div>
     <div class="grid2" style="margin-bottom:20px">
       <div class="mode" onclick="showPublicTests()"><div class="ic">🌐</div><h3>Жария тесттер</h3><p>Админ мақұлдаған</p></div>
       <div class="mode" onclick="showMyTests()"><div class="ic">📚</div><h3>Менің тесттерім</h3><p>Өз тесттеріңіз</p></div>
-      <div class="mode" onclick="showCreate()"><div class="ic">➕</div><h3>Тест құру</h3><p>Атауы + сұрақтар файлы</p></div>
+      <div class="mode" onclick="showCreate()"><div class="ic">➕</div><h3>Тест құру</h3><p>Атауы + сұрақтар</p></div>
       <div class="mode" onclick="showRanking()"><div class="ic">🏆</div><h3>Рейтинг</h3><p>Ортақ көшбасшылар</p></div>
     </div>
     <div class="row">
@@ -242,6 +324,11 @@ body.locked{user-select:none;-webkit-user-select:none}
       <button class="btn btn-s btn-sm" onclick="startQuickSubject()">⚡ Жылдам</button>
       <button class="btn btn-s btn-sm" onclick="showFileTest()">📂 Файлдан</button>
       <button class="btn btn-s btn-sm" onclick="showMyProfile()">📈 График</button>
+      <button class="btn btn-s btn-sm" onclick="showFlash()">🃏 Флеш-карталар</button>
+      <button class="btn btn-s btn-sm" onclick="showGloss()">📖 Глоссарий</button>
+      <button class="btn btn-s btn-sm" onclick="showBookmarks()">🔖 Таңдаулылар</button>
+      <button class="btn btn-s btn-sm" onclick="showPlanner()">🗓 Жоспар</button>
+      <button class="btn btn-s btn-sm" onclick="showTeacher()">👨‍🏫 Мұғалім</button>
       <button class="btn btn-w btn-sm" onclick="openContactFromApp()">💬 Админге</button>
       <button class="btn btn-w btn-sm" id="admin-btn" style="display:none" onclick="showAdmin()">🛠 Админ</button>
     </div>
@@ -261,6 +348,7 @@ body.locked{user-select:none;-webkit-user-select:none}
       <div style="margin-top:8px;font-size:22px;font-weight:700;color:var(--p)">⭐ <span id="prof-points">0</span> ұпай</div>
       <p class="sub" id="prof-rank" style="margin-top:6px">Рейтинг: —</p>
     </div>
+    <div class="card" id="prof-extra"></div>
     <div class="card"><h3 style="margin-bottom:10px">📈 Менің графигім</h3><div id="prof-chart"></div></div>
     <div class="card"><h3 style="margin-bottom:10px">📊 Тақырыптар бойынша орташа нәтиже</h3><div id="prof-topics"></div></div>
     <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
@@ -269,8 +357,11 @@ body.locked{user-select:none;-webkit-user-select:none}
 
 <div id="s-ranking" class="screen">
   <div class="wrap">
-    <div class="hdr"><h2>🏆 Рейтинг</h2><p class="sub">Ең көп ұпай жинағандар</p></div>
+    <div class="hdr"><h2>🏆 Рейтинг</h2><p class="sub" id="rank-sub">Ең көп ұпай жинағандар</p></div>
+    <div class="row" id="rank-tabs" style="margin-bottom:14px"></div>
+    <div id="rank-podium"></div>
     <div id="rank-list" class="list"></div>
+    <div id="rank-hall"></div>
     <div class="row" style="margin-top:16px"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
 </div>
@@ -369,7 +460,7 @@ body.locked{user-select:none;-webkit-user-select:none}
         <div class="prog-t" id="viol" style="display:none;background:#fef2f2;color:var(--err)"></div>
       </div>
       <div class="qc">
-        <div class="qh"><span class="qnum" id="qnum">Сұрақ 1</span><button class="flag" id="flag" onclick="togFlag()">🚩</button></div>
+        <div class="qh"><span class="qnum" id="qnum">Сұрақ 1</span><span style="display:flex;gap:6px"><button class="flag" id="bm" onclick="togBm()" title="Таңдаулыға сақтау">☆</button><button class="flag" id="flag" onclick="togFlag()">🚩</button></span></div>
         <div class="qt" id="qtext"></div>
         <div class="opts" id="opts"></div>
       </div>
@@ -435,11 +526,82 @@ body.locked{user-select:none;-webkit-user-select:none}
         </select>
       </div>
       <div class="fg"><label>Формула атауы</label><input id="f-title" placeholder="Мыс: Квадрат теңдеу"></div>
-      <div class="fg"><label>Формула</label><textarea id="f-body" placeholder="x = (-b ± √(b²-4ac)) / 2a"></textarea></div>
+      <div class="fg"><label>Формула</label><textarea id="f-body" placeholder="x = (-b ± √(b²-4ac)) / 2a  немесе LaTeX: $x=\frac{-b\pm\sqrt{D}}{2a}$"></textarea></div>
       <button class="btn btn-ok btn-sm" onclick="addFormula()">Сақтау</button>
     </div>
     <div id="formula-list" class="list"></div>
     <div class="row" style="margin-top:16px"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+  </div>
+</div>
+
+<div id="s-flash" class="screen">
+  <div class="wrap">
+    <div class="hdr"><h2>🃏 Флеш-карталар</h2><p class="sub">Карточканы басыңыз — артқы жағында жауабы шығады</p></div>
+    <div class="card">
+      <div class="fg"><label>Не жаттаймыз?</label><select id="fl-src"></select></div>
+      <div class="row" style="justify-content:flex-start">
+        <button class="btn btn-p btn-sm" onclick="startFlash(false)">▶ Бастау</button>
+        <button class="btn btn-s btn-sm" onclick="startFlash(true)">🔀 Араластырып бастау</button>
+      </div>
+    </div>
+    <div id="fl-area"></div>
+    <div class="row" style="margin-top:16px"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+  </div>
+</div>
+
+<div id="s-gloss" class="screen">
+  <div class="wrap">
+    <div class="hdr"><h2>📖 Глоссарий</h2><p class="sub">ҰБТ-дағы маңызды даталар, терминдер, ережелер</p></div>
+    <div class="fg"><input id="gl-q" placeholder="🔍 Іздеу: 1465, дискриминант, метафора..." oninput="renderGloss()"></div>
+    <div class="row" id="gl-cats" style="justify-content:flex-start;margin-bottom:12px"></div>
+    <div id="gl-count" class="sub" style="margin-bottom:8px"></div>
+    <div id="gl-list" class="list"></div>
+    <div class="row" style="margin-top:16px"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+  </div>
+</div>
+
+<div id="s-bm" class="screen">
+  <div class="wrap">
+    <div class="hdr"><h2>🔖 Таңдаулылар</h2><p class="sub">Қайталап қарайтын қиын немесе ұнаған сұрақтар</p></div>
+    <div id="bm-list" class="list"></div>
+    <div class="row" style="margin-top:16px">
+      <button class="btn btn-p" id="bm-start" style="display:none" onclick="startBm()">▶ Таңдаулыларды шешу</button>
+      <button class="btn btn-s" onclick="goHome()">Артқа</button>
+    </div>
+  </div>
+</div>
+
+<div id="s-plan" class="screen">
+  <div class="wrap">
+    <div class="hdr"><h2>🗓 Жеке оқу жоспары</h2><p class="sub">ҰБТ күнін таңдаңыз — күнделікті жоспар автоматты құрылады</p></div>
+    <div class="card">
+      <div class="fg"><label>ҰБТ тапсыратын күн</label><input type="date" id="pl-date"></div>
+      <div class="fg"><label>Дайындалатын пәндер</label><div id="pl-subs"></div></div>
+      <button class="btn btn-p btn-sm" onclick="savePlan()">💾 Жоспар құру</button>
+    </div>
+    <div id="pl-out"></div>
+    <div class="row" style="margin-top:16px"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+  </div>
+</div>
+
+<div id="s-teacher" class="screen">
+  <div class="wrap wide">
+    <div class="hdr"><h2>👨‍🏫 Мұғалім / Куратор</h2><p class="sub">Сынып құрып, оқушылардың нәтижесін бақылаңыз</p></div>
+    <div class="card">
+      <h3 style="margin-bottom:10px">➕ Жаңа сынып</h3>
+      <div class="fg"><input id="tch-name" placeholder="Сынып атауы (мыс: 11 «А»)" maxlength="40"></div>
+      <button class="btn btn-ok btn-sm" onclick="createClass()">Сынып құру</button>
+    </div>
+    <div id="tch-classes"></div>
+    <div id="tch-detail"></div>
+    <div class="card">
+      <h3 style="margin-bottom:6px">🔑 Оқушы: сыныпқа қосылу</h3>
+      <p class="sub" style="margin-bottom:10px">Мұғалім берген кодты енгізіңіз</p>
+      <div class="fg"><input id="tch-code" placeholder="Сынып коды" maxlength="8" style="text-transform:uppercase"></div>
+      <button class="btn btn-p btn-sm" onclick="joinClass()">Қосылу</button>
+      <div id="tch-joined" style="margin-top:12px"></div>
+    </div>
+    <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
 </div>
 
@@ -782,22 +944,6 @@ function getLeaderboard(){
   });
   list.sort((a,b)=>b.points-a.points);
   return list;
-}
-function showRanking(){
-  const board=getLeaderboard();
-  const el=document.getElementById('rank-list');
-  if(!board.length){el.innerHTML='<div class="empty"><div class="ic">🏆</div><p>Әзірге ешкім жоқ</p></div>';showScr('s-ranking');return}
-  const medals=['🥇','🥈','🥉'];
-  el.innerHTML=board.map((u,i)=>`
-    <div class="item" style="${u.id===user.id?'border-color:var(--p);background:#eff6ff':''}">
-      <div style="width:36px;height:36px;border-radius:50%;background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0">${esc(u.name[0].toUpperCase())}</div>
-      <div class="info">
-        <h4>${medals[i]||('#'+(i+1))} ${esc(u.name)} ${u.id===user.id?'(сіз)':''}</h4>
-        <p>${esc(u.title||(u.stars?('⭐'.repeat(Math.min(u.stars,5))):'—'))}</p>
-      </div>
-      <div style="font-weight:700;color:var(--p);font-size:16px">⭐ ${u.points}</div>
-    </div>`).join('');
-  showScr('s-ranking');
 }
 (function(){const u=LS.get('ubt_current');if(u&&u.name){user=u;enterApp()}})();
 
@@ -1471,7 +1617,7 @@ function manualBlock(ctx){
   const L=['A','B','C','D'];
   return `<div class="card">
     <h3 style="margin-bottom:10px">✍️ Жаңа сұрақ</h3>
-    <div class="fg"><label>Сұрақ мәтіні</label><textarea id="${ctx}-mq-text" placeholder="Сұрақты жазыңыз"></textarea></div>
+    <div class="fg"><label>Сұрақ мәтіні</label><textarea id="${ctx}-mq-text" placeholder="Сұрақты жазыңыз (формула үшін: $x^2+1$)"></textarea></div>
     <div class="fg"><label>Жауап нұсқалары <span class="sub">(дұрыс жауаптың жанындағы дөңгелекті басыңыз)</span></label>
       ${L.map((l,i)=>`<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><input type="radio" name="${ctx}-mq-ok" value="${i}" style="width:20px;height:20px;flex:none;accent-color:var(--p)"><b style="width:18px;flex:none">${l}</b><input id="${ctx}-mq-o${i}" placeholder="${l} нұсқасы" style="flex:1"></div>`).join('')}
     </div>
@@ -2025,6 +2171,571 @@ function seedBuiltin(){
   }catch(e){}
 }
 seedBuiltin();
+
+// ================= Қосымша мүмкіндіктер: дерек =================
+const QUOTES=[
+"Бүгін оқыған әр бет — ертеңгі жеңістің бір қадамы.",
+"Тамшыдан көл болады: күн сайын азын-аздап оқы.",
+"Еңбек етсең — емерсің.",
+"Қате — жеңіліс емес, келесі жауаптың сабағы.",
+"Мақсаты бар адам жолдан адаспайды.",
+"Білім — ешкім тартып ала алмайтын байлық.",
+"Үлкен нәтиже кішкентай әдеттерден басталады.",
+"Бүгінгі жалқаулық ертеңгі қиындыққа айналады.",
+"Сен ойлағаннан да күштісің — тек жалғастыр.",
+"Ең жақсы уақыт — дәл қазір.",
+"Қиын сұрақ — өсу мүмкіндігі.",
+"Тәртіп пен тұрақтылық таланттан артық жеңеді.",
+"Бір тест — бір қадам. Тоқтама!",
+"Жеңіс — күн сайын тырысқандардікі.",
+"Жеті рет өлшеп, бір рет кес: қатеңді талдап, қайта жаттық."
+];
+const PLAN_SUBJECTS=['Қазақстан тарихы','Оқу сауаттылығы','Математикалық сауаттылық','Математика','Физика','Химия','Биология','География','Информатика','Ағылшын тілі','Қазақ тілі','Дүниежүзі тарихы','Құқық негіздері'];
+const GLOSS=[].concat([
+['Тарих','751 ж.','Талас шайқасы — араб-қытай шайқасы; түркі тайпалары (қарлұқтар) араб жағында шайқасқан.'],
+['Тарих','1465 ж.','Қазақ хандығының құрылуы. Негізін Керей мен Жәнібек сұлтандар қалады.'],
+['Тарих','1511–1523 жж.','Қасым хан билік құрған жылдар. «Қасқа жол» заңдары қабылданды деп есептеледі.'],
+['Тарих','1643 ж.','Орбұлақ шайқасы. Жәңгір сұлтан шағын әскермен жоңғар әскерін жеңді.'],
+['Тарих','1680–1718 жж.','Тәуке хан билік құрған кезең. «Жеті жарғы» заңдар жинағы осы кезде жасалды.'],
+['Тарих','1729–1730 жж.','Аңырақай шайқасы — қазақ жасақтарының жоңғарларға қарсы шешуші жеңісі.'],
+['Тарих','1783–1797 жж.','Сырым Датұлы бастаған ұлт-азаттық көтеріліс.'],
+['Тарих','1836–1838 жж.','Исатай Тайманұлы мен Махамбет Өтемісұлы бастаған көтеріліс.'],
+['Тарих','1837–1847 жж.','Кенесары Қасымұлы бастаған ұлт-азаттық көтеріліс.'],
+['Тарих','1916 ж.','Орта Азия мен Қазақстандағы ұлт-азаттық көтеріліс. Торғайда Амангелді Иманов басқарды.'],
+['Тарих','1917 ж. (желтоқсан)','Алашорда автономиялық үкіметі жарияланды. Басшысы — Әлихан Бөкейхан.'],
+['Тарих','1920 ж.','Қырғыз (Қазақ) Автономиялы Кеңестік Социалистік Республикасының құрылуы.'],
+['Тарих','1936 ж.','Қазақ КСР-і одақтас республика мәртебесін алды.'],
+['Тарих','1986 ж. (желтоқсан)','Алматыдағы Желтоқсан көтерілісі.'],
+['Тарих','1991 ж. 16 желтоқсан','Қазақстан Республикасының мемлекеттік тәуелсіздігі жарияланды.'],
+['Тарих','1995 ж.','Қазақстанның қазіргі Конституциясы қабылданды (30 тамыз, республикалық референдум).'],
+['Тарих','1997–1998 жж.','Астана Ақмолаға көшірілді (1997), ал 1998 жылы қала «Астана» деп аталды.'],
+['Математика','Дискриминант','Квадрат теңдеудің $ax^2+bx+c=0$ дискриминанты: $D=b^2-4ac$. $D>0$ — екі түбір, $D=0$ — бір түбір, $D<0$ — нақты түбір жоқ.'],
+['Математика','Квадрат теңдеу түбірлері','$x_{1,2}=\\dfrac{-b\\pm\\sqrt{D}}{2a}$'],
+['Математика','Виет теоремасы','$x_1+x_2=-\\dfrac{b}{a}$, $x_1x_2=\\dfrac{c}{a}$ (келтірілген емес теңдеу үшін).'],
+['Математика','Пифагор теоремасы','Тікбұрышты үшбұрышта: $a^2+b^2=c^2$, мұндағы $c$ — гипотенуза.'],
+['Математика','Арифметикалық прогрессия','$a_n=a_1+(n-1)d$; алғашқы $n$ мүшенің қосындысы: $S_n=\\dfrac{a_1+a_n}{2}\\cdot n$.'],
+['Математика','Геометриялық прогрессия','$b_n=b_1q^{\\,n-1}$; алғашқы $n$ мүшенің қосындысы: $S_n=\\dfrac{b_1(q^n-1)}{q-1}$.'],
+['Математика','Дөңгелек','Ауданы $S=\\pi r^2$, шеңбер ұзындығы $C=2\\pi r$.'],
+['Математика','Негізгі тригонометриялық теңдік','$\\sin^2\\alpha+\\cos^2\\alpha=1$'],
+['Математика','Дәреже туындысы','$(x^n)\'=nx^{n-1}$'],
+['Математика','Логарифмнің негізгі тепе-теңдігі','$a^{\\log_a b}=b$, мұндағы $a>0$, $a\\ne1$, $b>0$.'],
+['Физика','Ньютонның екінші заңы','Дененің үдеуі әсер етуші күшке тура, массаға кері пропорционал: $F=ma$.'],
+['Физика','Механикалық жұмыс','$A=Fs\\cos\\alpha$'],
+['Физика','Қуат','$N=\\dfrac{A}{t}$ — уақыт бірлігінде орындалған жұмыс.'],
+['Физика','Кинетикалық энергия','$E_k=\\dfrac{mv^2}{2}$'],
+['Физика','Тығыздық','$\\rho=\\dfrac{m}{V}$'],
+['Физика','Ом заңы (тізбек бөлігі үшін)','$I=\\dfrac{U}{R}$'],
+['Физика','Жарық жылдамдығы (вакуумда)','$c\\approx3\\cdot10^8$ м/с'],
+['Химия','Менделеевтің периодтық заңы','Элементтердің қасиеттері атом ядросының зарядына байланысты периодты түрде өзгереді. Кесте 1869 жылы жасалған.'],
+['Химия','Зат мөлшері','$n=\\dfrac{m}{M}$, өлшем бірлігі — моль.'],
+['Химия','Авогадро саны','$N_A\\approx6{,}02\\cdot10^{23}$ моль$^{-1}$'],
+['Химия','pH','$pH=-\\lg[H^+]$. $pH<7$ — қышқылдық, $pH=7$ — бейтарап, $pH>7$ — сілтілік орта.'],
+['Химия','Изотоптар','Протон саны бірдей, нейтрон саны әртүрлі (массалық саны әртүрлі) бір элемент атомдары.'],
+['Биология','Митохондрия','Жасушаның «энергия станциясы»: АТФ синтезделетін органоид.'],
+['Биология','ДНҚ','Дезоксирибонуклеин қышқылы — тұқым қуалайтын ақпаратты сақтайтын молекула.'],
+['Биология','Фотосинтез','Жарық энергиясының әсерінен көмірқышқыл газы мен судан органикалық заттар түзілу процесі; хлоропластарда жүреді.'],
+['Биология','Мейоз','Жыныс жасушалары (гаметалар) түзілетін бөліну; хромосома саны екі есе азаяды.'],
+['География','Қазақстанның ауданы','Шамамен 2,7 млн км² — әлемде аумағы жағынан 9-орындағы ел.'],
+['География','Хан Тәңірі шыңы','Қазақстандағы ең биік нүктелердің бірі — 7010 м (Тянь-Шань).'],
+['Әдебиет','Метафора','Заттың белгісін басқасына ауыстырып, жасырын салыстыру («күн күлді»).'],
+['Әдебиет','Теңеу','Бір затты екінші затқа ұқсатып салыстыру («қардай аппақ»).'],
+['Әдебиет','Эпитет','Затты, құбылысты бейнелі сипаттайтын анықтауыш сөз («алтын күз»).'],
+['Әдебиет','Гипербола','Қасиетті әсірелеп көрсету («көк тіреген шаңырақ»).'],
+['Әдебиет','Абайдың «Қара сөздері»','Абай Құнанбайұлының прозалық шығармалар жинағы — 45 қара сөз.'],
+['Әдебиет','«Абай жолы»','Мұхтар Әуезовтің Абай өмірі туралы роман-эпопеясы.']
+]).map(a=>({c:a[0],t:a[1],d:a[2]}));
+
+// ================= Қосымша мүмкіндіктер: логика =================
+function dayKey(d){d=d||new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
+function parseDay(k){const a=String(k).split('-').map(Number);return new Date(a[0],a[1]-1,a[2])}
+function addDays(d,n){const x=new Date(d);x.setDate(x.getDate()+n);return x}
+function daysBetween(a,b){return Math.round((parseDay(b)-parseDay(a))/86400000)}
+function monthKey(d){d=d||new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')}
+function weekKey(d){
+  d=d?new Date(d):new Date();
+  const t=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));
+  const dn=t.getUTCDay()||7;t.setUTCDate(t.getUTCDate()+4-dn);
+  const y0=new Date(Date.UTC(t.getUTCFullYear(),0,1));
+  return t.getUTCFullYear()+'-W'+String(Math.ceil(((t-y0)/86400000+1)/7)).padStart(2,'0');
+}
+function hash(s){s=String(s);let h=0;for(let i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))|0}return Math.abs(h)}
+const MONTHS=['Қаңтар','Ақпан','Наурыз','Сәуір','Мамыр','Маусым','Шілде','Тамыз','Қыркүйек','Қазан','Қараша','Желтоқсан'];
+const WDAYS=['Жс','Дс','Сс','Ср','Бс','Жм','Сб'];
+function seasonLabel(tag){
+  const t=tag.slice(0,1),k=tag.slice(2);
+  if(t==='m'){const p=k.split('-');return p[0]+' · '+MONTHS[(+p[1])-1]}
+  const p=k.split('-W');return p[0]+' · '+(+p[1])+'-апта';
+}
+
+// ---------- Қараңғы режим ----------
+function applyTheme(){
+  const on=!!LS.get('ubt_dark',false);
+  document.body.classList.toggle('dark',on);
+  const b=document.getElementById('theme-btn');if(b)b.textContent=on?'☀️':'🌙';
+}
+function toggleTheme(){LS.set('ubt_dark',!LS.get('ubt_dark',false));applyTheme()}
+
+// ---------- LaTeX (KaTeX) ----------
+const MATH_DELIMS=[{left:'$$',right:'$$',display:true},{left:'\\[',right:'\\]',display:true},{left:'\\(',right:'\\)',display:false},{left:'$',right:'$',display:false}];
+function mathIn(el){try{if(el&&window.renderMathInElement)window.renderMathInElement(el,{delimiters:MATH_DELIMS,throwOnError:false})}catch(e){}}
+function mathScreen(){mathIn(document.querySelector('.screen.active'))}
+
+// ---------- Отшашу ----------
+function confetti(n){
+  const c=document.getElementById('confetti');if(!c)return;
+  c.width=window.innerWidth;c.height=window.innerHeight;
+  const x=c.getContext('2d');
+  const cols=['#ef4444','#f59e0b','#22c55e','#3b82f6','#a855f7','#ec4899'];
+  const P=Array.from({length:n||150},()=>({x:Math.random()*c.width,y:-20-Math.random()*c.height*.5,w:6+Math.random()*6,h:8+Math.random()*8,vy:2+Math.random()*4,vx:-2+Math.random()*4,r:Math.random()*6,vr:-.2+Math.random()*.4,c:cols[Math.floor(Math.random()*cols.length)]}));
+  let f=0;
+  (function loop(){
+    x.clearRect(0,0,c.width,c.height);
+    P.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.r+=p.vr;x.save();x.translate(p.x,p.y);x.rotate(p.r);x.fillStyle=p.c;x.fillRect(-p.w/2,-p.h/2,p.w,p.h);x.restore()});
+    if(++f<230)requestAnimationFrame(loop);else x.clearRect(0,0,c.width,c.height);
+  })();
+}
+
+// ---------- Цитаталар ----------
+let homeQuote=null;
+function randQuote(){return QUOTES[Math.floor(Math.random()*QUOTES.length)]}
+function newQuote(){homeQuote=randQuote();renderHomeExtras()}
+function quoteCard(){if(!homeQuote)homeQuote=randQuote();return `<div class="quote" onclick="newQuote()" title="Басып жаңасын көріңіз">💬 ${esc(homeQuote)}</div>`}
+
+// ---------- Streak ----------
+function getStreak(){return LS.get('ubt_streak_'+user.id,{last:'',count:0,best:0})}
+function currentStreak(){const s=getStreak();return(s.last&&daysBetween(s.last,dayKey())<=1)?s.count:0}
+function touchStreak(){
+  const s=getStreak(),today=dayKey();
+  if(s.last===today)return{count:s.count,bonus:0,isNew:false};
+  const gap=s.last?daysBetween(s.last,today):99;
+  s.count=(gap===1)?s.count+1:1;s.last=today;s.best=Math.max(s.best||0,s.count);
+  LS.set('ubt_streak_'+user.id,s);
+  let bonus=Math.min(s.count,7)*5;
+  if(s.count%7===0)bonus+=50;
+  return{count:s.count,bonus,isNew:true};
+}
+
+// ---------- Маусымдық рейтинг ----------
+function recordSeason(p){
+  if(!user||user.isAdmin||!p)return;
+  const idx=LS.get('ubt_season_idx',[]);let ch=false;
+  [['w',weekKey()],['m',monthKey()]].forEach(a=>{
+    const tag=a[0]+'_'+a[1],key='ubt_season_'+tag,d=LS.get(key,{});
+    d[user.id]=(d[user.id]||0)+p;LS.set(key,d);
+    if(!idx.includes(tag)){idx.push(tag);ch=true}
+  });
+  if(ch)LS.set('ubt_season_idx',idx);
+}
+function seasonBoard(tag){
+  const d=LS.get('ubt_season_'+tag,{}),profiles=Object.values(LS.get('ubt_profiles',{}));
+  return Object.keys(d).filter(id=>d[id]>0).map(id=>{const pr=profiles.find(x=>x.id===id);return{id,name:pr?pr.name:'?',points:d[id]}}).sort((a,b)=>b.points-a.points);
+}
+function checkRollover(){
+  const idx=LS.get('ubt_season_idx',[]),done=LS.get('ubt_awarded',[]);
+  const cw='w_'+weekKey(),cm='m_'+monthKey();
+  const tr=LS.get('ubt_trophies',[]);let ch=false;
+  idx.forEach(tag=>{
+    if(tag===cw||tag===cm||done.includes(tag))return;
+    seasonBoard(tag).slice(0,3).forEach((u,i)=>tr.push({tag,rank:i+1,id:u.id,name:u.name,points:u.points}));
+    done.push(tag);ch=true;
+  });
+  if(ch){LS.set('ubt_trophies',tr);LS.set('ubt_awarded',done)}
+}
+let rankMode='all';
+function showRanking(mode){
+  if(mode)rankMode=mode;
+  checkRollover();
+  const tabs=[['all','Жалпы'],['w','Апта'],['m','Ай']];
+  document.getElementById('rank-tabs').innerHTML=tabs.map(t=>`<button class="btn ${rankMode===t[0]?'btn-p':'btn-s'} btn-sm" onclick="showRanking('${t[0]}')">${t[1]}</button>`).join('');
+  let board;
+  if(rankMode==='all'){board=getLeaderboard();document.getElementById('rank-sub').textContent='Ең көп ұпай жинағандар'}
+  else{
+    const tag=rankMode+'_'+(rankMode==='w'?weekKey():monthKey());
+    board=seasonBoard(tag);
+    document.getElementById('rank-sub').textContent=(rankMode==='w'?'Апталық жарыс':'Айлық жарыс')+' · '+seasonLabel(tag)+' · аяқталғанда топ-3 кубок алады';
+  }
+  const cups=['🏆','🥈','🥉'];
+  document.getElementById('rank-podium').innerHTML=board.length?`<div class="podium">`+[1,0,2].filter(i=>board[i]).map(i=>`<div class="pod p${i+1}"><div class="pcup">${cups[i]}</div><div class="pname">${esc(board[i].name)}</div><div class="ppts">⭐ ${board[i].points}</div><div class="pbase">${i+1}</div></div>`).join('')+`</div>`:'';
+  const el=document.getElementById('rank-list');
+  if(!board.length)el.innerHTML='<div class="empty"><div class="ic">🏆</div><p>Әзірге ешкім жоқ</p></div>';
+  else{
+    const medals=['🥇','🥈','🥉'];
+    el.innerHTML=board.map((u,i)=>`<div class="item${user&&u.id===user.id?' me':''}">
+      <div style="width:36px;height:36px;border-radius:50%;background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0">${esc(String(u.name||'?')[0].toUpperCase())}</div>
+      <div class="info"><h4>${medals[i]||('#'+(i+1))} ${esc(u.name)} ${user&&u.id===user.id?'(сіз)':''}</h4><p>${esc(u.title||(u.stars?('⭐'.repeat(Math.min(u.stars,5))):'—'))}</p></div>
+      <div style="font-weight:700;color:var(--p);font-size:16px">⭐ ${u.points}</div></div>`).join('');
+  }
+  const type=rankMode==='w'?'w':'m';
+  const hall=LS.get('ubt_trophies',[]).filter(t=>t.tag.slice(0,1)===type);
+  const tags=[];hall.slice().reverse().forEach(t=>{if(!tags.includes(t.tag))tags.push(t.tag)});
+  document.getElementById('rank-hall').innerHTML=tags.length?`<div class="card" style="margin-top:16px"><h3 style="margin-bottom:10px">🏛 Кубоктар залы</h3>`+tags.slice(0,6).map(tag=>`<div style="margin-bottom:8px"><b style="font-size:13px">${esc(seasonLabel(tag))}</b><div class="sub">`+hall.filter(t=>t.tag===tag).sort((a,b)=>a.rank-b.rank).map(t=>cups[t.rank-1]+' '+esc(t.name)+' ('+t.points+'⭐)').join(' · ')+`</div></div>`).join('')+`</div>`:'';
+  showScr('s-ranking');
+}
+
+// ---------- Таңдаулылар ----------
+function getBm(){return LS.get('ubt_bm_'+user.id,[])}
+function isBm(q){return getBm().some(x=>x.text===q.text)}
+function toggleBm(q){
+  const a=getBm(),i=a.findIndex(x=>x.text===q.text);
+  if(i>=0)a.splice(i,1);else a.unshift({id:q.id,text:q.text,options:q.options.slice(),correct:q.correct,subjectName:q.subjectName||st.subjectName||'',points:1});
+  LS.set('ubt_bm_'+user.id,a);
+}
+function togBm(){const q=st.questions[st.currentIndex];if(!q)return;toggleBm(q);updBmBtn()}
+function updBmBtn(){const q=st.questions[st.currentIndex],b=document.getElementById('bm');if(!b||!q)return;const on=isBm(q);b.textContent=on?'★':'☆';b.classList.toggle('on',on)}
+function showBookmarks(){renderBookmarks();showScr('s-bm')}
+function renderBookmarks(){
+  const a=getBm(),el=document.getElementById('bm-list');
+  el.innerHTML=a.length?a.map((q,i)=>`<div class="item" style="align-items:flex-start"><div class="info"><h4 style="white-space:normal">${esc(q.text)}</h4><p>✓ ${esc(q.options[q.correct])}${q.subjectName?' · '+esc(q.subjectName):''}</p></div><div class="acts"><button class="btn btn-d btn-sm" onclick="delBm(${i})">✕</button></div></div>`).join(''):'<div class="empty"><div class="ic">🔖</div><p>Таңдаулы сұрақ жоқ.<br>Тест кезінде ☆ батырмасын басыңыз.</p></div>';
+  document.getElementById('bm-start').style.display=a.length?'inline-flex':'none';
+  mathIn(el);
+}
+function delBm(i){const a=getBm();a.splice(i,1);LS.set('ubt_bm_'+user.id,a);renderBookmarks()}
+function startBm(){
+  const a=getBm();if(!a.length)return;
+  st=baseState();
+  st.questions=a.map(q=>({...q,id:'bm_'+hash(q.text),subjectName:q.subjectName||'Таңдаулылар'}));
+  st.subjectName='Таңдаулылар';st.isMistakes=true;st.timerSeconds=Math.max(a.length*90,600);beginTest();
+}
+
+// ---------- Күн сұрағы ----------
+function getQotd(){
+  const today=dayKey(),saved=LS.get('ubt_qotd_day',null);
+  if(saved&&saved.date===today&&saved.q)return saved.q;
+  const pool=[];
+  Object.values(BANK).forEach(b=>b.qs.forEach(q=>pool.push({text:q.text,options:q.options,correct:q.correct,subjectName:b.name})));
+  publicTests().forEach(t=>t.questions.forEach(q=>{if(q.options&&q.options.length>=2)pool.push({text:q.text,options:q.options,correct:q.correct,subjectName:t.topic})}));
+  if(!pool.length)return null;
+  const q=pool[hash(today)%pool.length];
+  LS.set('ubt_qotd_day',{date:today,q});
+  return q;
+}
+function qotdHTML(){
+  const q=getQotd();if(!q)return '';
+  const rec=LS.get('ubt_qotd_'+user.id,null),answered=rec&&rec.date===dayKey();
+  const L=['A','B','C','D','E'];
+  const ops=q.options.map((o,i)=>{
+    let cls='qotd-op';
+    if(answered){cls+=' lock';if(i===q.correct)cls+=' ok';else if(i===rec.ans)cls+=' bad'}
+    return `<div class="${cls}" ${answered?'':`onclick="answerQotd(${i})"`}><b>${L[i]}</b><span>${esc(o)}</span></div>`;
+  }).join('');
+  const msg=answered?(rec.ans===q.correct?'<div style="color:var(--ok);font-weight:700;font-size:13px">✅ Дұрыс! +20 ⭐ бонус алдыңыз</div>':'<div style="color:var(--err);font-weight:700;font-size:13px">❌ Бұл жолы болмады. Ертең жаңа сұрақ!</div>'):'<div class="sub">Дұрыс жауап берсеңіз +20 ⭐</div>';
+  return `<div class="card"><h3 style="margin-bottom:8px">❓ Күн сұрағы <span class="sub" style="font-weight:400">· ${esc(q.subjectName||'')}</span></h3><div style="font-size:14px;margin-bottom:10px">${esc(q.text)}</div>${ops}${msg}</div>`;
+}
+function answerQotd(i){
+  const q=getQotd();if(!q||!user||user.isAdmin)return;
+  const rec=LS.get('ubt_qotd_'+user.id,null);if(rec&&rec.date===dayKey())return;
+  LS.set('ubt_qotd_'+user.id,{date:dayKey(),ans:i});
+  if(i===q.correct){addPoints(20);confetti(90)}
+  renderHomeExtras();
+}
+
+// ---------- Оқу жоспары ----------
+let planAll=false;
+function planDays(p){
+  const n=daysBetween(p.start||dayKey(),p.date);if(n<0)return[];
+  const subs=p.subjects.length?p.subjects:['Жалпы қайталау'],out=[];let k=0;
+  for(let i=0;i<=n;i++){
+    const d=dayKey(addDays(parseDay(p.start||dayKey()),i)),left=n-i;let tasks=[];
+    if(left===0)tasks=['🎯 ҰБТ күні — сәттілік!'];
+    else if(left===1)tasks=['😌 Демалыңыз, формулаларды жеңіл шолыңыз','🔖 Таңдаулы сұрақтарды қараңыз'];
+    else if(left<=7)tasks=['📝 Толық сынақ тест тапсырыңыз','❌ Қателермен жұмыс'];
+    else{
+      const per=Math.min(2,subs.length);
+      for(let j=0;j<per;j++)tasks.push('📖 '+subs[(k+j)%subs.length]+': тақырып + тест');
+      k+=per;
+      if(i%7===6)tasks.push('🔁 Апталық қайталау: қателер мен таңдаулылар');
+    }
+    out.push({date:d,tasks,left});
+  }
+  return out;
+}
+function showPlanner(){
+  const p=LS.get('ubt_plan_'+user.id,null),chosen=p?p.subjects:PLAN_SUBJECTS.slice(0,3);
+  document.getElementById('pl-subs').innerHTML=PLAN_SUBJECTS.map((s,i)=>`<label class="switch" style="margin-bottom:6px"><input type="checkbox" class="pl-sub" value="${i}" ${chosen.includes(s)?'checked':''}> ${esc(s)}</label>`).join('');
+  const de=document.getElementById('pl-date');de.min=dayKey();de.value=p?p.date:'';
+  planAll=false;renderPlan();showScr('s-plan');
+}
+function savePlan(){
+  const date=document.getElementById('pl-date').value;
+  if(!date){alert('ҰБТ күнін таңдаңыз');return}
+  if(daysBetween(dayKey(),date)<0){alert('Бұл күн өтіп кеткен. Болашақ күнді таңдаңыз');return}
+  const subjects=Array.from(document.querySelectorAll('.pl-sub:checked')).map(c=>PLAN_SUBJECTS[+c.value]);
+  if(!subjects.length){alert('Кемінде 1 пән таңдаңыз');return}
+  LS.set('ubt_plan_'+user.id,{date,subjects,start:dayKey()});
+  LS.set('ubt_plan_done_'+user.id,{});
+  renderPlan();
+}
+function planDone(){return LS.get('ubt_plan_done_'+user.id,{})}
+function togPlanTask(date,idx){
+  const d=planDone(),k=date+'|'+idx;
+  if(d[k])delete d[k];else d[k]=1;
+  LS.set('ubt_plan_done_'+user.id,d);
+  if(document.getElementById('s-plan').classList.contains('active'))renderPlan();else renderHomeExtras();
+}
+function planTaskHTML(day,t,idx,done){
+  const on=!!done[day.date+'|'+idx];
+  return `<label class="${on?'done':''}"><input type="checkbox" ${on?'checked':''} onchange="togPlanTask('${day.date}',${idx})"><span>${esc(t)}</span></label>`;
+}
+function renderPlan(){
+  const el=document.getElementById('pl-out'),p=LS.get('ubt_plan_'+user.id,null);
+  if(!p){el.innerHTML='';return}
+  const today=dayKey(),left=daysBetween(today,p.date);
+  if(left<0){el.innerHTML='<div class="empty"><div class="ic">🎓</div><p>ҰБТ күні өтті. Жаңа күн таңдаңыз.</p></div>';return}
+  const all=planDays(p),done=planDone();
+  let total=0,cnt=0;all.forEach(d=>d.tasks.forEach((t,i)=>{total++;if(done[d.date+'|'+i])cnt++}));
+  const pct=total?Math.round(cnt/total*100):0;
+  const upcoming=all.filter(d=>d.date>=today),shown=planAll?upcoming:upcoming.slice(0,14);
+  el.innerHTML=`<div class="card"><h3>🎯 ҰБТ-ға <b style="color:var(--p)">${left}</b> күн қалды</h3>
+    <div class="sub" style="margin:4px 0 8px">Орындалды: ${cnt} / ${total} (${pct}%)</div>
+    <div class="prog-w" style="height:8px"><div class="prog-f" style="width:${pct}%"></div></div></div>`
+    +shown.map(d=>{const dt=parseDay(d.date);
+      return `<div class="plan-day${d.date===today?' today':''}"><h4>${WDAYS[dt.getDay()]} · ${String(dt.getDate()).padStart(2,'0')}.${String(dt.getMonth()+1).padStart(2,'0')}${d.date===today?' <span class="badge badge-pub">Бүгін</span>':''}</h4>${d.tasks.map((t,i)=>planTaskHTML(d,t,i,done)).join('')}</div>`}).join('')
+    +(upcoming.length>14?`<div class="row"><button class="btn btn-s btn-sm" onclick="planAll=!planAll;renderPlan()">${planAll?'Қысқарту':'Барлығын көрсету ('+upcoming.length+' күн)'}</button></div>`:'');
+}
+function todayPlanHTML(){
+  const p=LS.get('ubt_plan_'+user.id,null);if(!p)return '';
+  const today=dayKey(),day=planDays(p).find(d=>d.date===today);if(!day)return '';
+  const done=planDone();
+  return `<div class="card"><h3 style="margin-bottom:8px">🗓 Бүгінгі жоспар <button class="btn btn-s btn-sm" style="float:right" onclick="showPlanner()">Толық</button></h3><div class="plan-day" style="border:none;padding:0;margin:0">${day.tasks.map((t,i)=>planTaskHTML(day,t,i,done)).join('')}</div></div>`;
+}
+
+// ---------- Флеш-карталар ----------
+let fl={deck:[],total:0,known:0,flip:false};
+function qCard(q){return{f:q.text,b:q.options[q.correct]}}
+function flashCards(k){
+  if(k==='gloss')return GLOSS.map(g=>({f:g.t,b:g.d}));
+  if(k==='formulas')return LS.get('ubt_formulas',[]).map(f=>({f:f.title,b:f.body}));
+  if(k==='mist')return LS.get('ubt_mistakes_'+user.id,[]).map(qCard);
+  if(k==='bm')return getBm().map(qCard);
+  if(k.indexOf('bank:')===0)return((BANK[k.slice(5)]||{qs:[]}).qs).map(qCard);
+  if(k.indexOf('test:')===0){const t=allTests().find(x=>x.id===k.slice(5));return t?t.questions.map(qCard):[]}
+  return [];
+}
+function showFlash(){
+  const s=[['gloss','📖 Глоссарий (даталар, терминдер)'],['formulas','📐 Формулалар'],['mist','❌ Қателерім'],['bm','🔖 Таңдаулылар']];
+  Object.keys(BANK).forEach(k=>s.push(['bank:'+k,'⚡ '+BANK[k].name]));
+  const seen={};
+  myTests().concat(publicTests()).forEach(t=>{if(seen[t.id]||!t.questions.length)return;seen[t.id]=1;s.push(['test:'+t.id,'📚 '+t.topic])});
+  document.getElementById('fl-src').innerHTML=s.map(a=>`<option value="${esc(a[0])}">${esc(a[1])}</option>`).join('');
+  fl={deck:[],total:0,known:0,flip:false};renderFlash();showScr('s-flash');
+}
+function startFlash(shuffle){
+  const cards=flashCards(document.getElementById('fl-src').value);
+  if(!cards.length){alert('Бұл дереккөзде карточка жоқ');return}
+  if(shuffle){for(let i=cards.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));const t=cards[i];cards[i]=cards[j];cards[j]=t}}
+  fl={deck:cards,total:cards.length,known:0,flip:false};renderFlash();
+}
+function renderFlash(){
+  const el=document.getElementById('fl-area');
+  if(!fl.total){el.innerHTML='';return}
+  if(!fl.deck.length){el.innerHTML=`<div class="card" style="text-align:center"><div style="font-size:48px">🎉</div><h3>Барлығын жаттадыңыз!</h3><p class="sub">${fl.total} карточка</p></div>`;confetti();return}
+  const c=fl.deck[0];
+  el.innerHTML=`<div class="sub" style="text-align:center;margin-bottom:8px">Жатталды: <b>${fl.known}</b> / ${fl.total} · қалды ${fl.deck.length}</div>
+    <div class="fcard ${fl.flip?'back':''}" onclick="flFlip()"><div class="flab">${fl.flip?'Жауап':'Сұрақ / термин'}</div><div class="ftxt">${esc(fl.flip?c.b:c.f)}</div><div class="fhint">басып аударыңыз ↻</div></div>
+    <div class="row" style="margin-top:14px"><button class="btn btn-w" onclick="flAgain()">↺ Қайталау</button><button class="btn btn-ok" onclick="flKnow()">✓ Білемін</button></div>`;
+  mathIn(el);
+}
+function flFlip(){if(!fl.deck.length)return;fl.flip=!fl.flip;renderFlash()}
+function flKnow(){if(!fl.deck.length)return;fl.deck.shift();fl.known++;fl.flip=false;renderFlash()}
+function flAgain(){if(!fl.deck.length)return;fl.deck.push(fl.deck.shift());fl.flip=false;renderFlash()}
+
+// ---------- Глоссарий ----------
+let glCat='';
+function showGloss(){
+  const cats=[''].concat(GLOSS.map(g=>g.c).filter((c,i,a)=>a.indexOf(c)===i));
+  document.getElementById('gl-cats').innerHTML=cats.map(c=>`<button class="btn ${glCat===c?'btn-p':'btn-s'} btn-sm" onclick="glCat=${jsq(c)};showGloss()">${c?esc(c):'Барлығы'}</button>`).join('');
+  renderGloss();showScr('s-gloss');
+}
+function renderGloss(){
+  const q=(document.getElementById('gl-q').value||'').trim().toLowerCase();
+  const list=GLOSS.filter(g=>(!glCat||g.c===glCat)&&(!q||(g.t+' '+g.d).toLowerCase().indexOf(q)>=0));
+  document.getElementById('gl-count').textContent='Табылды: '+list.length;
+  const el=document.getElementById('gl-list');
+  el.innerHTML=list.length?list.map(g=>`<div class="gl-item"><div class="gl-cat">${esc(g.c)}</div><h4>${esc(g.t)}</h4><p>${esc(g.d)}</p></div>`).join(''):'<div class="empty"><div class="ic">🔍</div><p>Ештеңе табылмады</p></div>';
+  mathIn(el);
+}
+
+// ---------- Мұғалім / Куратор ----------
+let tchOpen=null;
+function getClasses(){return LS.get('ubt_classes',[])}
+function saveClasses(a){LS.set('ubt_classes',a)}
+function profileById(id){return Object.values(LS.get('ubt_profiles',{})).find(p=>p.id===id)||null}
+function genClassCode(){const ch='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';let s='';for(let i=0;i<6;i++)s+=ch[Math.floor(Math.random()*ch.length)];return s}
+function studentStats(id){
+  const pg=getProg(id),n=pg.length;
+  const avg=n?Math.round(pg.map(pctOf).reduce((a,b)=>a+b,0)/n):0;
+  return{n,avg,last:n?pg[n-1]:null,mist:LS.get('ubt_mistakes_'+id,[]).length,points:getUserStats(id).points||0};
+}
+function showTeacher(){tchOpen=null;document.getElementById('tch-detail').innerHTML='';renderTeacher();showScr('s-teacher')}
+function createClass(){
+  const n=document.getElementById('tch-name').value.trim();
+  if(!n){alert('Сынып атауын жазыңыз');return}
+  const a=getClasses();let code;
+  do{code=genClassCode()}while(a.some(c=>c.code===code));
+  a.push({id:'c_'+Date.now().toString(36),name:n,teacherId:user.id,teacherName:user.name,code,students:[]});
+  saveClasses(a);document.getElementById('tch-name').value='';renderTeacher();
+}
+function delClass(id){
+  if(!confirm('Сыныпты өшіру керек пе?'))return;
+  saveClasses(getClasses().filter(c=>c.id!==id));
+  document.getElementById('tch-detail').innerHTML='';renderTeacher();
+}
+function addStudent(cid){
+  const inp=document.getElementById('tch-add-'+cid),login=inp.value.trim();if(!login)return;
+  const u=findUserByLogin(login);
+  if(!u){alert('Мұндай оқушы тіркелмеген. Алдымен оқушы «Тіркелу» арқылы аккаунт ашуы керек.');return}
+  const a=getClasses(),c=a.find(x=>x.id===cid);if(!c)return;
+  if(c.students.includes(u.id)){alert('Оқушы сыныпта бар');return}
+  c.students.push(u.id);saveClasses(a);renderTeacher();
+}
+function removeStudent(cid,sid){
+  if(!confirm('Оқушыны сыныптан шығару керек пе?'))return;
+  const a=getClasses(),c=a.find(x=>x.id===cid);if(!c)return;
+  c.students=c.students.filter(x=>x!==sid);saveClasses(a);
+  document.getElementById('tch-detail').innerHTML='';renderTeacher();
+}
+function joinClass(){
+  const code=document.getElementById('tch-code').value.trim().toUpperCase();if(!code)return;
+  const a=getClasses(),c=a.find(x=>x.code===code);
+  if(!c){alert('Мұндай код табылмады');return}
+  if(c.teacherId===user.id){alert('Бұл — сіздің сыныбыңыз');return}
+  if(c.students.includes(user.id)){alert('Сіз бұл сыныптасыз');return}
+  c.students.push(user.id);saveClasses(a);
+  document.getElementById('tch-code').value='';renderTeacher();alert('✅ Сыныпқа қосылдыңыз: '+c.name);
+}
+function leaveClass(cid){
+  if(!confirm('Сыныптан шығу керек пе?'))return;
+  const a=getClasses(),c=a.find(x=>x.id===cid);if(!c)return;
+  c.students=c.students.filter(x=>x!==user.id);saveClasses(a);renderTeacher();
+}
+function classCardHTML(c){
+  const rows=c.students.map(id=>{
+    const p=profileById(id),s=studentStats(id);
+    return `<tr><td><b>${esc(p?p.name:'?')}</b></td><td>${s.n}</td><td>${s.n?s.avg+'%':'—'}</td><td>${s.mist}</td><td>⭐ ${s.points}</td><td style="white-space:nowrap"><button class="btn btn-s btn-sm" onclick="showStudent('${c.id}','${id}')">Қарау</button> <button class="btn btn-d btn-sm" onclick="removeStudent('${c.id}','${id}')">✕</button></td></tr>`;
+  }).join('');
+  const withT=c.students.map(id=>studentStats(id)).filter(s=>s.n);
+  const avg=withT.length?Math.round(withT.reduce((a,s)=>a+s.avg,0)/withT.length)+'%':'—';
+  return `<div class="card">
+    <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+      <h3>${esc(c.name)} <span class="badge badge-pub">Код: ${esc(c.code)}</span></h3>
+      <button class="btn btn-d btn-sm" onclick="delClass('${c.id}')">Сыныпты өшіру</button>
+    </div>
+    <div class="sub" style="margin-bottom:10px">Оқушылар: <b>${c.students.length}</b> · сыныптың орташа балы: <b>${avg}</b></div>
+    ${c.students.length?`<div class="tscroll"><table class="ttable"><tr><th>Оқушы</th><th>Тест</th><th>Орташа</th><th>Қате</th><th>Ұпай</th><th></th></tr>${rows}</table></div>`:'<div class="sub">Оқушы жоқ. Төмендегі өріс арқылы логин бойынша қосыңыз немесе кодты оқушыларға беріңіз.</div>'}
+    <div style="display:flex;gap:8px;margin-top:12px"><input id="tch-add-${c.id}" placeholder="Оқушы логині" style="flex:1;padding:9px 12px;border:1px solid var(--b);border-radius:10px;background:var(--bg);color:var(--t);font-family:inherit"><button class="btn btn-ok btn-sm" onclick="addStudent('${c.id}')">➕ Қосу</button></div>
+  </div>`;
+}
+function renderTeacher(){
+  const all=getClasses(),mine=all.filter(c=>c.teacherId===user.id),joined=all.filter(c=>c.students.includes(user.id));
+  document.getElementById('tch-classes').innerHTML=mine.length?mine.map(classCardHTML).join(''):'<div class="empty"><div class="ic">🏫</div><p>Сынып жоқ. Жоғарыда жаңа сынып құрыңыз.</p></div>';
+  document.getElementById('tch-joined').innerHTML=joined.length?joined.map(c=>`<div class="item" style="margin-bottom:6px"><div class="info"><h4>${esc(c.name)}</h4><p>Мұғалім: ${esc(c.teacherName||'')}</p></div><button class="btn btn-s btn-sm" onclick="leaveClass('${c.id}')">Шығу</button></div>`).join(''):'';
+}
+function showStudent(cid,sid){
+  const p=profileById(sid),s=studentStats(sid);
+  const hist=LS.get('ubt_hist_'+sid,[]).slice(0,10),pg=getProg(sid),mist=LS.get('ubt_mistakes_'+sid,[]);
+  const topics={};pg.forEach(x=>{const k=x.topic||'Тест';(topics[k]=topics[k]||[]).push(pctOf(x))});
+  const tl=Object.keys(topics).map(k=>({k,avg:Math.round(topics[k].reduce((a,b)=>a+b,0)/topics[k].length),n:topics[k].length})).sort((a,b)=>a.avg-b.avg);
+  document.getElementById('tch-detail').innerHTML=`<div class="card" style="border-color:var(--p)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h3>👤 ${esc(p?p.name:'?')}</h3><button class="btn btn-s btn-sm" onclick="document.getElementById('tch-detail').innerHTML=''">Жабу</button></div>
+    <div class="stat-grid"><div class="stat"><b>${s.n}</b><span>Тест</span></div><div class="stat"><b>${s.n?s.avg+'%':'—'}</b><span>Орташа бал</span></div><div class="stat"><b>${s.mist}</b><span>Қате сұрақ</span></div><div class="stat"><b>${s.points}</b><span>Ұпай</span></div></div>
+    <h4 style="margin:10px 0 6px">📊 Тақырыптар бойынша (әлсізден күштіге)</h4>
+    ${tl.length?tl.map(t=>`<div class="tbar"><div class="tn">${esc(t.k)}</div><div class="tb"><i style="width:${t.avg}%"></i></div><div class="tv">${t.avg}%</div></div>`).join(''):'<div class="sub">Нәтиже жоқ</div>'}
+    <h4 style="margin:14px 0 6px">📋 Соңғы тесттер</h4>
+    ${hist.length?hist.map(h=>`<div class="res-row"><span>${esc(h.topic||'Тест')} <span class="sub">· ${esc(h.date)}</span></span><b>${h.score}/${h.max}</b></div>`).join(''):'<div class="sub">Тарих бос</div>'}
+    <h4 style="margin:14px 0 6px">❌ Қателері</h4>
+    ${mist.length?mist.slice(0,10).map(q=>`<div class="res-row" style="font-size:13px"><span>${esc(q.text)}</span><span class="sub" style="margin-left:8px">✓ ${esc(q.options[q.correct])}</span></div>`).join(''):'<div class="sub">Қате жоқ 🎉</div>'}
+  </div>`;
+  mathIn(document.getElementById('tch-detail'));
+  document.getElementById('tch-detail').scrollIntoView({behavior:'smooth',block:'start'});
+}
+
+// ---------- Басты бет блогы ----------
+function renderHomeExtras(){
+  const el=document.getElementById('home-extras');if(!el||!user)return;
+  try{checkRollover()}catch(e){}
+  if(user.isAdmin){el.innerHTML=quoteCard();return}
+  const sk=currentStreak(),s=getStreak(),plan=LS.get('ubt_plan_'+user.id,null);
+  let chips=`<div class="chip">🔥 <b>${sk}</b> күн streak</div>`;
+  if(sk>0&&s.last!==dayKey())chips+=`<div class="chip warn">⚠ Streak сақтау үшін бүгін тест тапсырыңыз</div>`;
+  if(plan&&plan.date){const n=daysBetween(dayKey(),plan.date);if(n>=0)chips+=`<div class="chip" style="cursor:pointer" onclick="showPlanner()">🎯 ҰБТ-ға <b>${n}</b> күн қалды</div>`}
+  el.innerHTML=`<div class="chips">${chips}</div>`+quoteCard()+qotdHTML()+todayPlanHTML();
+  mathIn(el);
+}
+
+// ---------- Тест аяқталған соң ----------
+let _seenScore=null;
+function afterFinish(){
+  if(!user)return;
+  const ls=st.lastScore;if(!ls)return;
+  const rb=document.getElementById('res-break');
+  if(user.isAdmin){rb.insertAdjacentHTML('beforeend',`<div class="quote">💬 ${esc(randQuote())}</div>`);return}
+  const pct=ls.max?ls.score/ls.max:0,cur=Math.round(pct*100);
+  let extra='';
+  const sk=touchStreak();
+  if(sk.isNew){
+    if(sk.bonus)addPoints(sk.bonus);
+    extra+=`<div class="res-row"><span>🔥 Streak: ${sk.count} күн қатарынан</span><span style="font-weight:700;color:var(--ok)">+${sk.bonus} ⭐</span></div>`;
+  }else extra+=`<div class="res-row"><span>🔥 Streak</span><span style="font-weight:700">${sk.count} күн</span></div>`;
+  const prev=getProg(user.id).slice(0,-1).filter(p=>p.max>=5).map(pctOf);
+  const isRec=!st.isMistakes&&ls.max>=5&&prev.length>0&&cur>Math.max.apply(null,prev);
+  if(isRec)extra+=`<div class="res-row"><span>🏆 Жаңа жеке рекорд!</span><span style="font-weight:700;color:var(--warn)">${cur}%</span></div>`;
+  extra+=`<div class="quote">💬 ${esc(randQuote())}</div>`;
+  rb.insertAdjacentHTML('beforeend',extra);
+  if(pct>=0.8||isRec)confetti();
+}
+
+// ---------- Профиль: streak + кубоктар ----------
+function profExtra(){
+  const el=document.getElementById('prof-extra');if(!el||!user||user.isAdmin){if(el)el.innerHTML='';return}
+  const s=getStreak(),tr=LS.get('ubt_trophies',[]).filter(t=>t.id===user.id);
+  const cups=['🏆','🥈','🥉'];
+  el.innerHTML=`<h3 style="margin-bottom:10px">🔥 Streak және кубоктар</h3>
+    <div class="stat-grid" style="grid-template-columns:repeat(2,1fr)"><div class="stat"><b>${currentStreak()}</b><span>Қазіргі streak (күн)</span></div><div class="stat"><b>${s.best||0}</b><span>Ең ұзақ streak</span></div></div>
+    ${tr.length?tr.slice().reverse().map(t=>`<div class="res-row"><span>${cups[t.rank-1]} ${esc(seasonLabel(t.tag))} · ${t.tag.slice(0,1)==='m'?'айлық':'апталық'}</span><b>${t.rank}-орын · ⭐ ${t.points}</b></div>`).join(''):'<div class="sub">Кубок әзірге жоқ. Ай/апта соңында топ-3-ке кіріңіз!</div>'}`;
+}
+
+// ---------- Ілмектер (hooks) ----------
+(function(){
+  const _ss=showScr;
+  showScr=function(id){
+    _ss(id);
+    try{document.body.classList.toggle('in-test',id==='s-test');if(id==='s-home')renderHomeExtras();mathScreen()}catch(e){}
+  };
+  const _rq=renderQ;
+  renderQ=function(){_rq();try{updBmBtn();mathIn(document.getElementById('s-test'))}catch(e){}};
+  const _rf=renderFormulas;
+  renderFormulas=function(){_rf();try{mathIn(document.getElementById('formula-list'))}catch(e){}};
+  const _ra=reviewAns;
+  reviewAns=function(){
+    _ra();
+    try{
+      document.querySelectorAll('#rev-list .rev').forEach((el,i)=>{
+        const q=st.questions[i],h=el.querySelector('.rh');if(!q||!h)return;
+        const b=document.createElement('button');
+        const sync=()=>{const on=isBm(q);b.className='flag'+(on?' on':'');b.textContent=on?'★':'☆'};
+        b.title='Таңдаулыға сақтау';b.onclick=()=>{toggleBm(q);sync()};sync();h.appendChild(b);
+      });
+      mathIn(document.getElementById('rev-list'));
+    }catch(e){}
+  };
+  const _ap=addPoints;
+  addPoints=function(p){_ap(p);try{recordSeason(p)}catch(e){}};
+  const _ft=finishTest;
+  finishTest=function(force){
+    _ft(force);
+    try{
+      if(document.getElementById('s-res').classList.contains('active')&&st.lastScore&&st.lastScore!==_seenScore){
+        _seenScore=st.lastScore;afterFinish();
+      }
+    }catch(e){}
+  };
+  const _mp=showMyProfile;
+  showMyProfile=function(){_mp();try{profExtra()}catch(e){}};
+  const _lo=doLogout;
+  doLogout=function(){homeQuote=null;_lo()};
+})();
+applyTheme();
+try{if(user&&document.getElementById('s-home').classList.contains('active'))renderHomeExtras()}catch(e){}
 </script>
 </body>
 </html>
