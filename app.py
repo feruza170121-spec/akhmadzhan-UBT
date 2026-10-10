@@ -1,7 +1,28 @@
 import streamlit as st
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="ҰБТ+", page_icon="📘", layout="wide", initial_sidebar_state="collapsed")
+import base64, io, os
+from PIL import Image
+
+# ====== БРЕНД ОРНАТУЛАРЫ — тек осы жерді өзгертіңіз ======
+APP_NAME = "UstaZ"
+TAGLINE  = "ҰБТ-ға дайындық платформасы"
+LOGO_FILE = "logo.png"   # осы файл .py қасында тұрса, соны қолданады; болмаса төмендегі логотип қолданылады
+# =========================================================
+
+_DEFAULT_LOGO_B64 = "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"
+
+def _load_logo():
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), LOGO_FILE)
+    if os.path.exists(p):
+        with open(p, "rb") as f:
+            return f.read()
+    return base64.b64decode(_DEFAULT_LOGO_B64)
+
+_logo_bytes = _load_logo()
+LOGO_DATA_URI = "data:image/png;base64," + base64.b64encode(_logo_bytes).decode()
+
+st.set_page_config(page_title=APP_NAME, page_icon=Image.open(io.BytesIO(_logo_bytes)), layout="wide", initial_sidebar_state="collapsed")
 st.markdown("""<style>#MainMenu,footer,header{visibility:hidden}.block-container{padding:0!important;max-width:100%!important}iframe{border:none!important}</style>""", unsafe_allow_html=True)
 
 html_code = r"""
@@ -10,7 +31,7 @@ html_code = r"""
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ҰБТ+</title>
+<title>%%NAME%%</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{--p:#2563eb;--pd:#1d4ed8;--ok:#16a34a;--err:#dc2626;--warn:#f59e0b;--bg:#f1f5f9;--c:#fff;--t:#0f172a;--m:#64748b;--b:#e2e8f0}
@@ -56,7 +77,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 .empty{text-align:center;padding:40px 16px;color:var(--m)}.empty .ic{font-size:36px;margin-bottom:10px}
 .profile-bar{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:var(--c);border-bottom:1px solid var(--b);margin-bottom:20px}
 .profile-bar .name{font-weight:600;font-size:14px}
-.avatar{width:36px;height:36px;border-radius:50%;background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px}
+.avatar{width:36px;height:36px;border-radius:28%;background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;letter-spacing:-.5px;box-shadow:0 6px 16px rgba(37,99,235,.35);flex-shrink:0}
 .tlay{display:flex;min-height:100vh}
 .side{width:260px;background:var(--c);border-right:1px solid var(--b);display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
 .side-h{padding:12px;border-bottom:1px solid var(--b);display:flex;justify-content:space-between;align-items:center;font-weight:600;font-size:13px}
@@ -237,7 +258,7 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
 
 <div id="s-login" class="screen active">
   <div class="wrap">
-    <div class="hdr"><div class="logo">Ұ+</div><h1>ҰБТ+</h1><p class="sub">ҰБТ-ға дайындық платформасы</p></div>
+    <div class="hdr"><div class="logo" style="background:none;box-shadow:none"><img src="%%LOGO%%" alt="" style="width:100%;height:100%;border-radius:20px;display:block"></div><h1>%%NAME%%</h1><p class="sub">%%TAGLINE%%</p></div>
     <div class="card" id="login-box">
       <div class="fg"><label>Логин (атыңыз)</label><input id="login-name" placeholder="Атыңыз" oninput="checkAdminName()"></div>
       <div class="fg"><label>Пароль</label><input id="login-pass" type="password" placeholder="Пароль"></div>
@@ -281,7 +302,7 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
     <div class="card" id="contact-box" style="display:none;padding:0;overflow:hidden">
       <div style="background:#075e54;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:12px">
         <div style="width:40px;height:40px;border-radius:50%;background:#128c7e;display:flex;align-items:center;justify-content:center;font-weight:700">А</div>
-        <div style="flex:1"><div style="font-weight:600;font-size:15px">Админ</div><div id="chat-sub" style="font-size:12px;opacity:.85">ҰБТ+ қолдау</div></div>
+        <div style="flex:1"><div style="font-weight:600;font-size:15px">Админ</div><div id="chat-sub" style="font-size:12px;opacity:.85">%%NAME%% қолдау</div></div>
         <button class="btn btn-sm" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,.4)" onclick="closeChat()">✕</button>
       </div>
       <div id="chat-gate" style="padding:20px 16px;background:#f0f0f0">
@@ -304,7 +325,7 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
 <div id="s-user-view" class="screen">
   <div class="wrap">
     <div class="hdr">
-      <div class="avatar" id="uv-avatar" style="width:64px;height:64px;font-size:24px;margin:0 auto 10px;border:3px solid #93c5fd">?</div>
+      <div class="avatar" id="uv-avatar" style="width:64px;height:64px;font-size:24px;margin:0 auto 10px">?</div>
       <h2 id="uv-name">User</h2>
       <p class="sub" id="uv-info">—</p>
     </div>
@@ -329,7 +350,7 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
   <div class="profile-bar">
     <div style="display:flex;align-items:center;gap:12px;cursor:pointer" onclick="showMyProfile()">
       <div style="position:relative">
-        <div class="avatar" id="avatar" style="width:44px;height:44px;font-size:16px;border:3px solid #93c5fd">?</div>
+        <div class="avatar" id="avatar" style="width:44px;height:44px;font-size:16px">?</div>
         <span id="p-verified" style="display:none;position:absolute;bottom:-2px;right:-2px;background:#2563eb;color:#fff;width:18px;height:18px;border-radius:50%;font-size:11px;line-height:18px;text-align:center;border:2px solid #fff">✓</span>
       </div>
       <div>
@@ -376,8 +397,8 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
   <div class="wrap">
     <div class="hdr">
       <div style="position:relative;width:80px;margin:0 auto 12px">
-        <div class="avatar" id="prof-avatar" style="width:80px;height:80px;font-size:32px;border:4px solid #93c5fd">?</div>
-        <span id="prof-verified" style="display:none;position:absolute;bottom:0;right:0;background:#2563eb;color:#fff;width:24px;height:24px;border-radius:50%;font-size:14px;line-height:24px;text-align:center;border:2px solid #fff">✓</span>
+        <div class="avatar" id="prof-avatar" style="width:80px;height:80px;font-size:32px">?</div>
+        <img src="%%LOGO%%" alt="" style="position:absolute;bottom:-4px;left:-6px;width:26px;height:26px;border-radius:8px;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.2)"><span id="prof-verified" style="display:none;position:absolute;bottom:0;right:0;background:#2563eb;color:#fff;width:24px;height:24px;border-radius:50%;font-size:14px;line-height:24px;text-align:center;border:2px solid #fff">✓</span>
       </div>
       <h2 id="prof-name">User</h2>
       <p class="sub" id="prof-title">Атақ жоқ</p>
@@ -821,7 +842,7 @@ function showContactAdmin(){
   else{
     document.getElementById('chat-room').style.display='none';
     document.getElementById('chat-gate').style.display='block';
-    document.getElementById('chat-sub').textContent='ҰБТ+ қолдау';
+    document.getElementById('chat-sub').textContent='%%NAME%% қолдау';
     document.getElementById('chat-login').value='';
   }
 }
@@ -2399,7 +2420,7 @@ function seedBuiltin(){
     if(!r.questions.length)return;
     const all=allTests();
     if(!all.some(t=>t.id==='seed_funksiya')){
-      all.push({id:'seed_funksiya',subject:'math',subjectName:'Математика',topic:'Функция',desc:'Дайын тест · '+r.questions.length+' сұрақ',isPublic:true,status:'approved',authorId:'system',authorName:'ҰБТ+',
+      all.push({id:'seed_funksiya',subject:'math',subjectName:'Математика',topic:'Функция',desc:'Дайын тест · '+r.questions.length+' сұрақ',isPublic:true,status:'approved',authorId:'system',authorName:'%%NAME%%',
         questions:r.questions.map((q,i)=>({id:'fn_'+i,text:q.text,options:q.options,correct:q.correct,points:1})),createdAt:new Date().toISOString()});
       saveAllTests(all);
     }
@@ -3700,4 +3721,5 @@ setInterval(syncQueue,60000);
 </html>
 """
 
+html_code = (html_code.replace("%%NAME%%", APP_NAME).replace("%%TAGLINE%%", TAGLINE).replace("%%LOGO%%", LOGO_DATA_URI))
 components.html(html_code, height=950, scrolling=True)
