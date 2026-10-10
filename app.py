@@ -107,9 +107,29 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
   .side.open{left:0}.side-tog{display:block}
   .tmain{padding:12px}.timer{font-size:18px}
 }
+
+body.locked{user-select:none;-webkit-user-select:none}
+#lock-ov{display:none;position:fixed;inset:0;z-index:100000;background:rgba(15,23,42,.97);color:#fff;align-items:center;justify-content:center;text-align:center;padding:24px}
+#lock-ov.show{display:flex}
+#lock-ov .box{max-width:440px}
+#lock-ov h2{margin:10px 0}
+#lock-ov p{opacity:.85;margin-bottom:18px;font-size:14px}
+.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
+.stat{background:var(--bg);border-radius:10px;padding:10px;text-align:center}
+.stat b{display:block;font-size:20px;color:var(--p)}
+.stat span{font-size:11px;color:var(--m)}
+.chart-wrap{overflow-x:auto}
+.tbar{display:flex;align-items:center;gap:8px;font-size:12px;margin:7px 0}
+.tbar .tn{width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tbar .tb{flex:1;background:#e2e8f0;border-radius:10px;height:10px;overflow:hidden}
+.tbar .tb i{display:block;height:100%;background:var(--p);border-radius:10px}
+.tbar .tv{width:44px;text-align:right;font-weight:600}
+@media(max-width:768px){.stat-grid{grid-template-columns:repeat(2,1fr)}}
 </style>
 </head>
 <body>
+
+<div id="lock-ov"><div class="box"><div style="font-size:46px">🔒</div><h2 id="lock-title">Тест жалғасуда</h2><p id="lock-msg"></p><button class="btn btn-p" onclick="returnToTest()">Толық экранға оралу</button></div></div>
 
 <div id="s-login" class="screen active">
   <div class="wrap">
@@ -182,6 +202,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
       <div class="fg"><label>Жаңа пароль</label><input id="uv-newpass" type="text" placeholder="Жаңа пароль жазыңыз"></div>
       <button class="btn btn-p btn-sm" onclick="adminChangeUserPass()">Парольді сақтау</button>
     </div>
+    <div class="card"><h3 style="margin-bottom:10px">📈 График</h3><div id="uv-chart"></div></div>
     <div class="card"><h3 style="margin-bottom:10px">📋 Тест тарихы</h3><div id="uv-hist" class="list"></div></div>
     <div class="card"><h3 style="margin-bottom:10px">❌ Қателері</h3><div id="uv-mist" class="list"></div></div>
     <div class="row"><button class="btn btn-s" onclick="showAdmin()">Артқа</button></div>
@@ -211,7 +232,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
     <div class="grid2" style="margin-bottom:20px">
       <div class="mode" onclick="showPublicTests()"><div class="ic">🌐</div><h3>Жария тесттер</h3><p>Админ мақұлдаған</p></div>
       <div class="mode" onclick="showMyTests()"><div class="ic">📚</div><h3>Менің тесттерім</h3><p>Өз тесттеріңіз</p></div>
-      <div class="mode" onclick="showCreate()"><div class="ic">➕</div><h3>Тест құру</h3><p>Тақырып + сұрақтар</p></div>
+      <div class="mode" onclick="showCreate()"><div class="ic">➕</div><h3>Тест құру</h3><p>Атауы + сұрақтар файлы</p></div>
       <div class="mode" onclick="showRanking()"><div class="ic">🏆</div><h3>Рейтинг</h3><p>Ортақ көшбасшылар</p></div>
     </div>
     <div class="row">
@@ -220,6 +241,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
       <button class="btn btn-s btn-sm" onclick="showHistory()">📋 Тарих</button>
       <button class="btn btn-s btn-sm" onclick="startQuickSubject()">⚡ Жылдам</button>
       <button class="btn btn-s btn-sm" onclick="showFileTest()">📂 Файлдан</button>
+      <button class="btn btn-s btn-sm" onclick="showMyProfile()">📈 График</button>
       <button class="btn btn-w btn-sm" onclick="openContactFromApp()">💬 Админге</button>
       <button class="btn btn-w btn-sm" id="admin-btn" style="display:none" onclick="showAdmin()">🛠 Админ</button>
     </div>
@@ -239,6 +261,8 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
       <div style="margin-top:8px;font-size:22px;font-weight:700;color:var(--p)">⭐ <span id="prof-points">0</span> ұпай</div>
       <p class="sub" id="prof-rank" style="margin-top:6px">Рейтинг: —</p>
     </div>
+    <div class="card"><h3 style="margin-bottom:10px">📈 Менің графигім</h3><div id="prof-chart"></div></div>
+    <div class="card"><h3 style="margin-bottom:10px">📊 Тақырыптар бойынша орташа нәтиже</h3><div id="prof-topics"></div></div>
     <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
 </div>
@@ -272,7 +296,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 
 <div id="s-create" class="screen">
   <div class="wrap">
-    <div class="hdr"><h2>➕ Тест құру</h2><p class="sub">Тақырып жазып, сұрақтар қосыңыз</p></div>
+    <div class="hdr"><h2>➕ Тест құру</h2><p class="sub">Тестке ат беріп, сұрақтар файлын жүктеңіз — барлық сұрақ бірден қосылады</p></div>
     <div class="card">
       <div class="fg"><label>Пән *</label>
         <select id="c-subject">
@@ -293,32 +317,13 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
           <option value="other">Басқа</option>
         </select>
       </div>
-      <div class="fg"><label>Тақырып * <span class="sub">(мыс: «15 ғасыр», «Ньютон заңдары»)</span></label><input id="c-topic" placeholder="Тақырыпты міндетті түрде жазыңыз"></div>
+      <div class="fg"><label>Тест атауы * <span class="sub">(мыс: «Функция», «Ньютон заңдары»)</span></label><input id="c-topic" placeholder="Атауын жазыңыз (файл атынан автоматты толады)"></div>
       <div class="fg"><label>Сипаттама (міндетті емес)</label><input id="c-desc" placeholder="Қысқаша сипаттама"></div>
       <div class="fg"><label class="switch"><input type="checkbox" id="c-request"> 🌐 Жариялауға жіберу (админ мақұлдаған соң шығады)</label></div>
     </div>
-    <div class="card">
-      <h3 style="margin-bottom:12px">Сұрақ қосу</h3>
-      <div class="fg"><label>Сұрақ мәтіні</label><textarea id="c-qtext" placeholder="Сұрақты жазыңыз..."></textarea></div>
-      <div class="fg"><label>Дұрыс жауап ғана</label><input id="c-correct" placeholder="Тек дұрыс жауапты жазыңыз"></div>
-      <button class="btn btn-w btn-sm" onclick="genWrong()" style="margin-bottom:12px">✨ Қате нұсқаларды жасау</button>
-      <div class="fg" id="opts-block" style="display:none">
-        <label>Нұсқалар (қажетінше өзгертіңіз, дұрысын белгілеңіз)</label>
-        <div class="opt"><input type="radio" name="c-cor" value="0" checked><input type="text" id="c-o0" placeholder="A"></div>
-        <div class="opt"><input type="radio" name="c-cor" value="1"><input type="text" id="c-o1" placeholder="B"></div>
-        <div class="opt"><input type="radio" name="c-cor" value="2"><input type="text" id="c-o2" placeholder="C"></div>
-        <div class="opt"><input type="radio" name="c-cor" value="3"><input type="text" id="c-o3" placeholder="D"></div>
-      </div>
-      <button class="btn btn-ok btn-sm" onclick="addQToDraft()">+ Сұрақты қосу</button>
-    </div>
     <div id="c-bulk-host"></div>
-    <div class="card">
-      <h3 style="margin-bottom:10px">Қосылған сұрақтар (<span id="c-count">0</span>)</h3>
-      <div id="c-qlist" class="list"></div>
-    </div>
     <div class="row">
-      <button class="btn btn-p" onclick="saveTest()">Тестті сақтау</button>
-      <button class="btn btn-s" onclick="exportDraft()">⬇ Файлға жүктеу</button>
+      <button class="btn btn-p" onclick="createFromFile()">💾 Тестті сақтау</button>
       <button class="btn btn-s" onclick="goHome()">Болдырмау</button>
     </div>
   </div>
@@ -326,18 +331,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 
 <div id="s-edit" class="screen">
   <div class="wrap">
-    <div class="hdr"><h2 id="edit-title">Тестті өңдеу</h2></div>
-    <div class="card">
-      <div class="fg"><label>Сұрақ мәтіні</label><textarea id="e-qtext"></textarea></div>
-      <div class="fg">
-        <label>Нұсқалар</label>
-        <div class="opt"><input type="radio" name="e-cor" value="0" checked><input type="text" id="e-o0"></div>
-        <div class="opt"><input type="radio" name="e-cor" value="1"><input type="text" id="e-o1"></div>
-        <div class="opt"><input type="radio" name="e-cor" value="2"><input type="text" id="e-o2"></div>
-        <div class="opt"><input type="radio" name="e-cor" value="3"><input type="text" id="e-o3"></div>
-      </div>
-      <button class="btn btn-ok" onclick="addQToExisting()">Сұрақты қосу</button>
-    </div>
+    <div class="hdr"><h2 id="edit-title">Тестті өңдеу</h2><p class="sub">Сұрақтарды файлдан бірден қосыңыз</p></div>
     <div id="e-bulk-host"></div>
     <div id="edit-qlist" class="list"></div>
     <div class="row" style="margin-top:16px"><button class="btn btn-s" onclick="showMyTests()">Артқа</button></div>
@@ -372,6 +366,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
         <div class="prog-t" id="prog-t">Сұрақ 1 / 10</div>
         <div class="prog-w"><div class="prog-f" id="prog-f" style="width:0%"></div></div>
         <div class="timer" id="timer">00:30:00</div>
+        <div class="prog-t" id="viol" style="display:none;background:#fef2f2;color:var(--err)"></div>
       </div>
       <div class="qc">
         <div class="qh"><span class="qnum" id="qnum">Сұрақ 1</span><button class="flag" id="flag" onclick="togFlag()">🚩</button></div>
@@ -770,6 +765,7 @@ function showMyProfile(){
   if(pv) pv.style.display=s.verified?'block':'none';
   const rank=getRankPosition(user.id);
   document.getElementById('prof-rank').textContent=rank?('Рейтинг: #'+rank):'Рейтинг: —';
+  renderProgress('prof-chart','prof-topics',getProg(user.id));
   showScr('s-profile');
 }
 function getRankPosition(id){
@@ -936,6 +932,7 @@ function adminViewUser(id){
   document.getElementById('uv-mist').innerHTML=mist.length?mist.map(q=>`
     <div class="item"><div class="info"><h4>${esc((q.text||'').substring(0,80))}</h4><p>${esc(q.subjectName||'')}</p></div></div>`).join(''):'<p class="sub">Қате жоқ</p>';
   document.getElementById('uv-newpass').value='';
+  renderProgress('uv-chart',null,getProg(id));
   showScr('s-user-view');
 }
 function adminChangeUserPass(){
@@ -955,7 +952,7 @@ function adminDelFormula(i){
 }
 
 function showScr(id){document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));document.getElementById(id).classList.add('active')}
-function goHome(){stopTimer();st=baseState();showScr('s-home')}
+function goHome(){if(lock.on)return;stopTimer();st=baseState();showScr('s-home')}
 
 const BANK={
   history:{name:'Қазақстан тарихы',qs:[{id:'h1',text:'Қазақ хандығы қай жылы құрылды?',options:['1456','1465','1480','1511'],correct:1},{id:'h2',text:'Абылай ханның шын есімі?',options:['Әбілмансұр','Тәуке','Қасым','Хақназар'],correct:0},{id:'h3',text:'«Жеті жарғы» кімдікі?',options:['Қасым хан','Есім хан','Тәуке хан','Абылай хан'],correct:2},{id:'h4',text:'Тәуелсіздік күні?',options:['16 желтоқсан','25 қазан','30 тамыз','1 мамыр'],correct:0},{id:'h5',text:'Алаш Орда қай жылы?',options:['1916','1917','1918','1920'],correct:1}]},
@@ -991,103 +988,28 @@ function addFormula(){
   renderFormulas();alert('Формула сақталды!');
 }
 
-let draft={questions:[]};
 function showCreate(){
-  draft={questions:[]};
   document.getElementById('c-subject').value='';
-  document.getElementById('c-topic').value='';document.getElementById('c-desc').value='';
+  document.getElementById('c-topic').value='';
+  document.getElementById('c-desc').value='';
   const req=document.getElementById('c-request');if(req)req.checked=false;
-  document.getElementById('c-qtext').value='';document.getElementById('c-correct').value='';
-  ['c-o0','c-o1','c-o2','c-o3'].forEach(id=>document.getElementById(id).value='');
-  document.getElementById('opts-block').style.display='none';
-  document.querySelector('input[name="c-cor"][value="0"]').checked=true;renderDraftQs();showScr('s-create');
+  clearBulk('c');showScr('s-create');
 }
-function genWrong(){
-  const correct=document.getElementById('c-correct').value.trim();
-  if(!correct){alert('Алдымен дұрыс жауапты жазыңыз!');return false}
-  const wrongs=makeDistractors(correct);
-  const pos=Math.floor(Math.random()*4);
-  const opts=['','','',''];
-  opts[pos]=correct;
-  if(wrongs){let wi=0;for(let i=0;i<4;i++){if(i!==pos)opts[i]=wrongs[wi++]}}
-  opts.forEach((o,i)=>document.getElementById('c-o'+i).value=o);
-  document.querySelector('input[name="c-cor"][value="'+pos+'"]').checked=true;
-  document.getElementById('opts-block').style.display='block';
-  if(!wrongs){alert('Бұл жауап үшін қате нұсқаларды автоматты түрде жасау мүмкін емес. Қалған 3 нұсқаны өзіңіз жазыңыз.');return false}
-  return true;
-}
-// Тек жыл/сан түріндегі жауаптарға ғана сапалы қате нұсқа жасайды, әйтпесе null қайтарады
-function makeDistractors(ans){
-  const out=new Set();
-  const yearM=ans.match(/(\d{3,4})/);
-  if(yearM){
-    const y=+yearM[1];
-    const deltas=[-100,-50,-20,-15,-10,-5,-3,-2,-1,1,2,3,5,10,15,20,50,100].sort(()=>Math.random()-0.5);
-    for(const d of deltas){
-      const ny=y+d;if(ny<100)continue;
-      out.add(ans.replace(yearM[1],String(ny)));
-      if(out.size>=3)break;
-    }
-  }
-  const numM=ans.match(/^(-?\d+(?:[.,]\d+)?)(\s+[^\d].*|[°%])?$/);
-  if(out.size<3&&numM){
-    const comma=numM[1].includes(',');
-    const n=parseFloat(numM[1].replace(',','.'));
-    const suf=numM[2]||'';
-    const cands=[n+1,n-1,n+2,n-2,n*2,n/2,n+10,n-10,n+5,n-5,n*10,-n].filter(x=>isFinite(x)&&x!==n).sort(()=>Math.random()-0.5);
-    for(const c of cands){
-      let t=String(Math.round(c*100)/100);
-      if(comma)t=t.replace('.',',');
-      out.add(t+suf);
-      if(out.size>=3)break;
-    }
-  }
-  const res=[...out].filter(x=>x!==ans);
-  return res.length>=3?res.slice(0,3):null;
-}
-function addQToDraft(){
-  const text=document.getElementById('c-qtext').value.trim();
-  const correctOnly=document.getElementById('c-correct').value.trim();
-  // auto-gen if options empty
-  if(correctOnly&&!document.getElementById('c-o0').value.trim()){if(!genWrong())return}
-  const opts=[0,1,2,3].map(i=>document.getElementById('c-o'+i).value.trim());
-  const correct=+document.querySelector('input[name="c-cor"]:checked').value;
-  if(!text){alert('Сұрақ жазыңыз!');return}
-  if(opts.some(o=>!o)){alert('Алдымен «Қате нұсқаларды жасау» басыңыз немесе 4 нұсқаны толтырыңыз!');return}
-  draft.questions.push({id:'q_'+Date.now(),text,options:opts,correct,points:1});
-  document.getElementById('c-qtext').value='';document.getElementById('c-correct').value='';
-  ['c-o0','c-o1','c-o2','c-o3'].forEach(id=>document.getElementById(id).value='');
-  document.getElementById('opts-block').style.display='none';
-  document.querySelector('input[name="c-cor"][value="0"]').checked=true;renderDraftQs();
-}
-function renderDraftQs(){
-  document.getElementById('c-count').textContent=draft.questions.length;
-  const el=document.getElementById('c-qlist');
-  if(!draft.questions.length){el.innerHTML='<p class="sub">Әзірге сұрақ жоқ</p>';return}
-  el.innerHTML=draft.questions.map((q,i)=>`<div class="item"><div class="info"><h4>${i+1}. ${esc(q.text)}</h4><p>Дұрыс: ${['A','B','C','D'][q.correct]}</p></div>
-    <div class="acts"><button class="btn btn-d btn-sm" onclick="draft.questions.splice(${i},1);renderDraftQs()">✕</button></div></div>`).join('');
-}
-function saveTest(){
+function createFromFile(){
   const subjEl=document.getElementById('c-subject');
   const subject=subjEl.value;
   const subjectName=subjEl.options[subjEl.selectedIndex]?.text||'';
   const topic=document.getElementById('c-topic').value.trim();
   const requestPub=document.getElementById('c-request')?.checked||false;
   if(!subject){alert('Пәнді таңдаңыз!');return}
-  if(!topic){alert('Тақырыпты міндетті түрде жазыңыз!');return}
-  if(!draft.questions.length){alert('Кемінде 1 сұрақ қосыңыз!');return}
-  const test={
-    id:'t_'+Date.now(),subject,subjectName,topic,
-    desc:document.getElementById('c-desc').value.trim(),
-    isPublic:false,
-    status:requestPub?'pending':'private',
-    authorId:user.id,authorName:user.name,
-    questions:draft.questions,createdAt:new Date().toISOString()
-  };
-  // admin can publish directly
+  if(!topic){alert('Тест атауын жазыңыз!');return}
+  const r=takeBulkQs('c');if(!r)return;
+  if(r.qs.length>MAX_Q){alert('Бір тестте '+MAX_Q+' сұрақтан аспауы керек');return}
+  const test={id:'t_'+Date.now(),subject,subjectName,topic,desc:document.getElementById('c-desc').value.trim(),isPublic:false,status:requestPub?'pending':'private',authorId:user.id,authorName:user.name,questions:r.qs,createdAt:new Date().toISOString()};
   if(user.isAdmin&&requestPub){test.isPublic=true;test.status='approved'}
   const all=allTests();all.unshift(test);saveAllTests(all);
-  alert(requestPub&&!user.isAdmin?'✅ Тест сақталды. Админ мақұлдаған соң жарияланады.':'✅ Тест сақталды!');
+  clearBulk('c');
+  alert(requestPub&&!user.isAdmin?'✅ Тест сақталды ('+r.qs.length+' сұрақ). Админ мақұлдаған соң жарияланады.':'✅ Тест сақталды: '+r.qs.length+' сұрақ');
   showMyTests();
 }
 
@@ -1103,7 +1025,7 @@ function showMyTests(){
     <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · ${badge}</p></div>
     <div class="acts">
       <button class="btn btn-p btn-sm" onclick="startUserTest('${t.id}')">Бастау</button>
-      <button class="btn btn-s btn-sm" onclick="editTest('${t.id}')">+ Сұрақ</button>
+      <button class="btn btn-s btn-sm" onclick="editTest('${t.id}')">+ Файлдан сұрақ</button>
       <button class="btn btn-s btn-sm" onclick="exportTest('${t.id}')">⬇ Файл</button>
       ${t.status!=='pending'&&t.status!=='approved'&&!t.isPublic?`<button class="btn btn-w btn-sm" onclick="requestPub('${t.id}')">Жариялауға</button>`:''}
       <button class="btn btn-d btn-sm" onclick="delTest('${t.id}')">✕</button>
@@ -1131,22 +1053,11 @@ let editingId=null;
 function editTest(id){
   editingId=id;const t=allTests().find(x=>x.id===id);if(!t)return;
   document.getElementById('edit-title').textContent='Сұрақ қосу: '+t.topic;
-  document.getElementById('e-qtext').value='';['e-o0','e-o1','e-o2','e-o3'].forEach(i=>document.getElementById(i).value='');
-  document.querySelector('input[name="e-cor"][value="0"]').checked=true;renderEditList(t);showScr('s-edit');
+  clearBulk('e');renderEditList(t);showScr('s-edit');
 }
 function renderEditList(t){
   document.getElementById('edit-qlist').innerHTML=t.questions.map((q,i)=>`<div class="item"><div class="info"><h4>${i+1}. ${esc(q.text)}</h4></div>
     <div class="acts"><button class="btn btn-d btn-sm" onclick="removeQFromTest('${t.id}',${i})">✕</button></div></div>`).join('');
-}
-function addQToExisting(){
-  const all=allTests();const t=all.find(x=>x.id===editingId);if(!t)return;
-  const text=document.getElementById('e-qtext').value.trim();
-  const opts=[0,1,2,3].map(i=>document.getElementById('e-o'+i).value.trim());
-  const correct=+document.querySelector('input[name="e-cor"]:checked').value;
-  if(!text||opts.some(o=>!o)){alert('Барлығын толтырыңыз!');return}
-  t.questions.push({id:'q_'+Date.now(),text,options:opts,correct,points:1});saveAllTests(all);
-  document.getElementById('e-qtext').value='';['e-o0','e-o1','e-o2','e-o3'].forEach(i=>document.getElementById(i).value='');
-  renderEditList(t);alert('Сұрақ қосылды!');
 }
 function removeQFromTest(tid,idx){const all=allTests();const t=all.find(x=>x.id===tid);if(t){t.questions.splice(idx,1);saveAllTests(all);renderEditList(t)}}
 
@@ -1168,7 +1079,7 @@ function startBank(key){
   const b=BANK[key];st=baseState();st.questions=b.qs.map(q=>({...q,subjectName:b.name,points:1}));st.subjectName=b.name;
   st.timerSeconds=Math.max(b.qs.length*90,600);beginTest();
 }
-function beginTest(){showScr('s-test');renderNav();renderQ();startTimer();updateProg()}
+function beginTest(){showScr('s-test');renderNav();renderQ();startTimer();updateProg();lockStart()}
 function renderNav(){document.getElementById('qnav').innerHTML=st.questions.map((_,i)=>`<button class="qn" onclick="goQ(${i})">${i+1}</button>`).join('');updNav()}
 function updNav(){document.querySelectorAll('.qn').forEach((b,i)=>{b.classList.remove('cur','ans','flg');if(i===st.currentIndex)b.classList.add('cur');if(st.answers[st.questions[i].id]!==undefined)b.classList.add('ans');if(st.flags[st.questions[i].id])b.classList.add('flg')})}
 function renderQ(){
@@ -1191,16 +1102,18 @@ function goQ(i){st.currentIndex=i;renderQ();document.getElementById('sidebar').c
 function updateProg(){const t=st.questions.length,c=st.currentIndex+1,a=Object.keys(st.answers).length;document.getElementById('prog-t').textContent=`Сұрақ ${c} / ${t}`;document.getElementById('prog-f').style.width=(a/t*100)+'%'}
 function togSide(){document.getElementById('sidebar').classList.toggle('open')}
 
-function startTimer(){stopTimer();updTimer();st.timerInterval=setInterval(()=>{st.timerSeconds--;updTimer();if(st.timerSeconds<=0){stopTimer();alert('Уақыт аяқталды!');finishTest(true)}},1000)}
+function startTimer(){stopTimer();updTimer();st.timerInterval=setInterval(()=>{st.timerSeconds--;updTimer();if(st.timerSeconds<=0){stopTimer();guardPause(()=>alert('Уақыт аяқталды!'));finishTest(true)}},1000)}
 function stopTimer(){if(st.timerInterval){clearInterval(st.timerInterval);st.timerInterval=null}}
 function updTimer(){const t=Math.max(0,st.timerSeconds);const h=Math.floor(t/3600),m=Math.floor((t%3600)/60),s=t%60;const el=document.getElementById('timer');el.textContent=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;el.classList.remove('warn','dang');if(t<=300)el.classList.add('dang');else if(t<=900)el.classList.add('warn')}
 
 function finishTest(force){
-  if(!force&&!confirm('Тестті аяқтау керек пе?'))return;stopTimer();
+  if(!force){const ok=guardPause(()=>confirm('Тестті аяқтау керек пе?'));if(!ok){lockReassert();return}}
+  stopTimer();lockEnd();
   let score=0,max=st.questions.length,wrong=[];
   st.questions.forEach(q=>{if(st.answers[q.id]===q.correct)score++;else wrong.push({...q,userAnswer:st.answers[q.id]})});
   if(!st.isMistakes&&wrong.length){let m=LS.get('ubt_mistakes_'+user.id,[]);const ids=new Set(m.map(x=>x.id));wrong.forEach(q=>{if(!ids.has(q.id))m.push(q)});LS.set('ubt_mistakes_'+user.id,m)}
-  let hist=LS.get('ubt_hist_'+user.id,[]);hist.unshift({date:new Date().toLocaleString('kk-KZ'),score,max,topic:st.subjectName,answers:{...st.answers},questions:st.questions.map(q=>({id:q.id,text:q.text,options:q.options,correct:q.correct}))});
+  {let pg=getProg(user.id);pg.push({t:Date.now(),score,max,topic:st.subjectName,viol:lock.viol});if(pg.length>200)pg=pg.slice(-200);LS.set('ubt_prog_'+user.id,pg)}
+  let hist=LS.get('ubt_hist_'+user.id,[]);hist.unshift({date:new Date().toLocaleString('kk-KZ'),score,max,topic:st.subjectName,viol:lock.viol,answers:{...st.answers},questions:st.questions.map(q=>({id:q.id,text:q.text,options:q.options,correct:q.correct}))});
   if(hist.length>40)hist.pop();LS.set('ubt_hist_'+user.id,hist);
   // Points: 10 per correct + bonus for high %
   let gained=score*10;
@@ -1210,7 +1123,8 @@ function finishTest(force){
   st.lastWrong=wrong;st.lastScore={score,max,gained};
   document.getElementById('sc').textContent=score;document.getElementById('sm').textContent=max;
   document.getElementById('res-break').innerHTML=`<div class="res-row"><span>${esc(st.subjectName||'Тест')}</span><span style="font-weight:700;color:var(--p)">${score} / ${max}</span></div>
-    ${!st.isMistakes?`<div class="res-row"><span>Алынған ұпай</span><span style="font-weight:700;color:var(--ok)">+${gained} ⭐</span></div>`:''}`;
+    ${!st.isMistakes?`<div class="res-row"><span>Алынған ұпай</span><span style="font-weight:700;color:var(--ok)">+${gained} ⭐</span></div>`:''}
+    ${lock.viol?`<div class="res-row"><span>Ереже бұзу ескертулері</span><span style="font-weight:700;color:var(--err)">${lock.viol} / ${MAX_VIOL}</span></div>`:''}`;
   showScr('s-res');
 }
 function reviewAns(){
@@ -1438,6 +1352,13 @@ function bulkRefresh(ctx,fname){
   const txt=document.getElementById(ctx+'-bulk-text').value;
   bulk[ctx]=txt.trim()?parseQuestions(txt,fname||''):null;
   document.getElementById(ctx+'-bulk-info').innerHTML=bulkInfoHTML(bulk[ctx]);
+  if(ctx==='c'&&bulk.c)autoFillCreate();
+}
+function autoFillCreate(){
+  const r=bulk.c,tp=document.getElementById('c-topic'),sel=document.getElementById('c-subject');
+  const nm=(bulkName.c||'').replace(/\.[^.]+$/,'');
+  if(tp&&!tp.value.trim()){const v=(r.meta&&r.meta.topic)||nm;if(v)tp.value=v}
+  const so=matchSubject(r.meta&&r.meta.subject);if(so&&sel&&!sel.value)sel.value=so.value;
 }
 function bulkFromFile(ctx,inp){
   const f=inp.files&&inp.files[0];if(!f)return;
@@ -1461,12 +1382,12 @@ function clearBulk(ctx){
 }
 function bulkBlock(ctx){
   const btns={
-    c:'<button class="btn btn-ok" onclick="addBulkToDraft()">➕ Сұрақтарды тізімге қосу</button>',
+    c:'',
     e:'<button class="btn btn-ok" onclick="addBulkToExisting()">➕ Тестке қосу</button>',
     f:'<button class="btn btn-p" onclick="startFromFile()">▶ Тестті бастау</button><button class="btn btn-ok" onclick="saveFromFile()">💾 Менің тесттеріме сақтау</button>'
   }[ctx];
   return `<div class="card">
-    <h3 style="margin-bottom:6px">📥 ${ctx==='f'?'Сұрақтар файлы':'Көп сұрақты бірден қосу (50–100+)'}</h3>
+    <h3 style="margin-bottom:6px">📥 ${ctx==='c'?'Сұрақтар файлы (барлық сұрақ бір файлда)':ctx==='f'?'Сұрақтар файлы':'Файлдан сұрақ қосу'}</h3>
     <p class="sub" style="margin-bottom:10px">Файл таңдаңыз (.txt, .csv) немесе мәтінді / Excel-ден көшірілген кестені қойыңыз. Бір реттен 500 сұраққа дейін.</p>
     <details style="margin-bottom:12px"><summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--p)">Формат үлгісі</summary>
       <pre style="font-size:12px;background:var(--bg);border-radius:10px;padding:10px;margin:8px 0;white-space:pre-wrap">1. Сұрақ мәтіні
@@ -1498,17 +1419,6 @@ function matchSubject(sub){
   if(!sub||!el)return null;
   const x=String(sub).trim().toLowerCase();
   return Array.from(el.options||[]).find(o=>o.value&&(o.value===x||String(o.text).toLowerCase()===x))||null;
-}
-function addBulkToDraft(){
-  const r=takeBulkQs('c');if(!r)return;
-  if(draft.questions.length+r.qs.length>MAX_Q){alert('Бір тестте '+MAX_Q+' сұрақтан аспауы керек');return}
-  draft.questions.push(...r.qs);
-  const tp=document.getElementById('c-topic');
-  if(r.meta.topic&&!tp.value.trim())tp.value=r.meta.topic;
-  const so=matchSubject(r.meta.subject),sel=document.getElementById('c-subject');
-  if(so&&!sel.value)sel.value=so.value;
-  clearBulk('c');renderDraftQs();
-  alert('✅ '+r.qs.length+' сұрақ қосылды. Енді пән мен тақырыпты тексеріп, «Тестті сақтау» басыңыз.');
 }
 function addBulkToExisting(){
   const r=takeBulkQs('e');if(!r)return;
@@ -1563,17 +1473,511 @@ function exportTest(id){
   if(!t||!t.questions.length){alert('Сұрақ жоқ');return}
   downloadText(safeName(t.topic)+'.txt',testToText(t.topic,t.subjectName,t.questions));
 }
-function exportDraft(){
-  if(!draft.questions.length){alert('Алдымен сұрақ қосыңыз');return}
-  const topic=document.getElementById('c-topic').value.trim()||'Тест';
-  const sel=document.getElementById('c-subject');
-  const sn=sel.value?sel.options[sel.selectedIndex].text:'';
-  downloadText(safeName(topic)+'.txt',testToText(topic,sn,draft.questions));
-}
 function downloadSample(){downloadText('ulgi_suraqtar.txt',SAMPLE_TXT)}
 ['c','e','f'].forEach(c=>{const h=document.getElementById(c+'-bulk-host');if(h)h.innerHTML=bulkBlock(c)});
 
 document.addEventListener('click',e=>{const side=document.getElementById('sidebar');if(side&&side.classList.contains('open')&&!side.contains(e.target)&&!e.target.classList.contains('side-tog'))side.classList.remove('open')});
+
+// ================= Тест кезіндегі толық экран құлпы =================
+const MAX_VIOL=3;
+const lock={on:false,paused:false,viol:0,last:0,fsOk:false,oldStyle:null,pdoc:null,oldOv:''};
+function guardPause(fn){lock.paused=true;try{return fn()}finally{setTimeout(()=>{lock.paused=false},900)}}
+function inFs(){return !!(document.fullscreenElement||document.webkitFullscreenElement)}
+function lockFs(){
+  try{
+    const el=document.documentElement;
+    const f=el.requestFullscreen||el.webkitRequestFullscreen;
+    if(f){const p=f.call(el);if(p&&p.catch)p.catch(()=>{})}
+  }catch(e){}
+}
+function lockExpand(){
+  try{
+    const fe=window.frameElement;if(!fe)return;
+    if(lock.oldStyle===null)lock.oldStyle=fe.getAttribute('style')||'';
+    fe.style.cssText=(lock.oldStyle?lock.oldStyle+';':'')+'position:fixed!important;top:0;left:0;width:100vw!important;height:100vh!important;z-index:2147483647;border:0;background:#fff';
+    lock.pdoc=fe.ownerDocument;lock.oldOv=lock.pdoc.body.style.overflow;lock.pdoc.body.style.overflow='hidden';
+  }catch(e){}
+}
+function lockRestore(){
+  try{
+    const fe=window.frameElement;
+    if(fe&&lock.oldStyle!==null){if(lock.oldStyle)fe.setAttribute('style',lock.oldStyle);else fe.removeAttribute('style')}
+    if(lock.pdoc)lock.pdoc.body.style.overflow=lock.oldOv||'';
+  }catch(e){}
+  lock.oldStyle=null;lock.pdoc=null;
+}
+function showOv(title,msg){document.getElementById('lock-title').textContent=title;document.getElementById('lock-msg').textContent=msg;document.getElementById('lock-ov').classList.add('show')}
+function hideOv(){document.getElementById('lock-ov').classList.remove('show')}
+function updViol(){
+  const el=document.getElementById('viol');if(!el)return;
+  if(lock.on&&lock.viol>0){el.style.display='block';el.textContent='⚠ Ескерту '+lock.viol+' / '+MAX_VIOL}else el.style.display='none';
+}
+function lockStart(){
+  lock.on=true;lock.viol=0;lock.last=0;lock.fsOk=false;
+  document.body.classList.add('locked');
+  lockExpand();lockFs();hideOv();updViol();
+  try{history.pushState({lock:1},'',location.href)}catch(e){}
+  setTimeout(()=>{if(lock.on)lock.fsOk=inFs()},900);
+}
+function lockEnd(){
+  lock.on=false;document.body.classList.remove('locked');hideOv();updViol();
+  try{if(inFs())(document.exitFullscreen||document.webkitExitFullscreen).call(document)}catch(e){}
+  lockRestore();
+}
+function lockReassert(){if(lock.on&&lock.fsOk&&!inFs())lockFs()}
+function returnToTest(){
+  lockFs();hideOv();
+  setTimeout(()=>{if(lock.on&&lock.fsOk&&!inFs())showOv('Толық экранға оралыңыз','Төмендегі батырманы қайта басыңыз.')},600);
+}
+function lockViolation(){
+  if(!lock.on||lock.paused)return;
+  const now=Date.now();if(now-lock.last<1200)return;lock.last=now;
+  lock.viol++;updViol();
+  if(lock.viol>=MAX_VIOL){
+    hideOv();
+    guardPause(()=>alert('Тесттен '+MAX_VIOL+' рет шықтыңыз. Тест автоматты түрде аяқталды.'));
+    finishTest(true);return;
+  }
+  showOv('⚠ Тестке қайтыңыз','Тест кезінде толық экраннан немесе беттен шығуға болмайды. Ескерту: '+lock.viol+' / '+MAX_VIOL+'. Тағы '+(MAX_VIOL-lock.viol)+' рет шықсаңыз, тест автоматты түрде аяқталады.');
+}
+function onFsChange(){
+  if(!lock.on)return;
+  if(inFs()){lock.fsOk=true;hideOv();return}
+  if(lock.fsOk)lockViolation();
+}
+document.addEventListener('fullscreenchange',onFsChange);
+document.addEventListener('webkitfullscreenchange',onFsChange);
+document.addEventListener('visibilitychange',()=>{if(lock.on&&document.hidden)lockViolation()});
+window.addEventListener('blur',()=>{if(lock.on&&!lock.paused)setTimeout(()=>{if(lock.on&&!lock.paused&&!document.hasFocus())lockViolation()},250)});
+const blockEv=e=>{if(lock.on){e.preventDefault();return false}};
+['contextmenu','copy','cut','paste','dragstart','selectstart'].forEach(n=>document.addEventListener(n,blockEv));
+document.addEventListener('keydown',e=>{
+  if(!lock.on)return;
+  const k=String(e.key||''),c=e.ctrlKey||e.metaKey;
+  const bad=/^F(1|3|5|6|7|10|11|12)$/.test(k)||k==='ContextMenu'||k==='PrintScreen'||(c&&/^[a-z]$/i.test(k))||(c&&e.shiftKey)||(e.altKey&&/^Arrow(Left|Right)$/.test(k));
+  if(bad){e.preventDefault();e.stopPropagation();return false}
+},true);
+function onBeforeUnload(e){if(lock.on){e.preventDefault();e.returnValue='Тест жүріп жатыр!';return e.returnValue}}
+window.addEventListener('beforeunload',onBeforeUnload);
+try{window.parent.addEventListener('beforeunload',onBeforeUnload)}catch(e){}
+window.addEventListener('popstate',()=>{if(lock.on){try{history.pushState({lock:1},'',location.href)}catch(e){}}});
+
+// ================= Әр пайдаланушының жеке графигі =================
+function getProg(id){
+  let pg=LS.get('ubt_prog_'+id,[]);
+  if(!pg.length)pg=LS.get('ubt_hist_'+id,[]).slice().reverse().map(h=>({t:0,score:h.score,max:h.max,topic:h.topic,viol:h.viol||0}));
+  return pg;
+}
+function pctOf(p){return p.max?Math.round(p.score/p.max*100):0}
+function renderProgress(chartId,topicId,prog){
+  const el=document.getElementById(chartId);if(!el)return;
+  const tel=topicId?document.getElementById(topicId):null;
+  if(!prog.length){
+    el.innerHTML='<div class="empty"><div class="ic">📈</div><p>Әзірге график жоқ.<br>Тест тапсырсаңыз, нәтижеңіз осында көрінеді.</p></div>';
+    if(tel)tel.innerHTML='';return;
+  }
+  const all=prog.map(pctOf),n=all.length;
+  const pts=all.slice(-30),off=n-pts.length;
+  const avg=Math.round(all.reduce((a,b)=>a+b,0)/n),best=Math.max(...all),last=all[n-1];
+  const diff=n>1?last-all[n-2]:0;
+  const arrow=n>1?(diff>0?' ▲ +'+diff:diff<0?' ▼ '+diff:' ＝'):'';
+  const W=640,H=260,l=42,r=16,t=16,b=30,iw=W-l-r,ih=H-t-b;
+  const X=i=>pts.length===1?l+iw/2:l+iw*i/(pts.length-1);
+  const Y=v=>t+ih*(100-v)/100;
+  let g='';
+  [0,25,50,75,100].forEach(v=>{g+=`<line x1="${l}" x2="${W-r}" y1="${Y(v)}" y2="${Y(v)}" stroke="#e2e8f0"/><text x="${l-6}" y="${Y(v)+4}" font-size="11" text-anchor="end" fill="#64748b">${v}%</text>`});
+  const line=pts.map((v,i)=>X(i).toFixed(1)+','+Y(v).toFixed(1)).join(' ');
+  const area=X(0).toFixed(1)+','+Y(0)+' '+line+' '+X(pts.length-1).toFixed(1)+','+Y(0);
+  const dots=pts.map((v,i)=>{
+    const c=v>=80?'#16a34a':v>=50?'#2563eb':'#dc2626',p=prog[off+i];
+    return `<circle cx="${X(i).toFixed(1)}" cy="${Y(v).toFixed(1)}" r="5" fill="${c}" stroke="#fff" stroke-width="2"><title>${esc((p.topic||'Тест')+': '+p.score+'/'+p.max+' ('+v+'%)')}</title></circle>`;
+  }).join('');
+  const labs=pts.map((_,i)=>(i===0||i===pts.length-1||(i+1)%5===0)?`<text x="${X(i).toFixed(1)}" y="${H-8}" font-size="11" text-anchor="middle" fill="#64748b">${off+i+1}</text>`:'').join('');
+  el.innerHTML=`<div class="stat-grid">
+      <div class="stat"><b>${n}</b><span>Тапсырылған тест</span></div>
+      <div class="stat"><b>${avg}%</b><span>Орташа нәтиже</span></div>
+      <div class="stat"><b>${best}%</b><span>Үздік нәтиже</span></div>
+      <div class="stat"><b>${last}%${arrow}</b><span>Соңғы тест</span></div>
+    </div>
+    <div class="chart-wrap"><svg viewBox="0 0 ${W} ${H}" style="width:100%;min-width:420px;height:auto">${g}<polygon points="${area}" fill="rgba(37,99,235,.10)"/><polyline points="${line}" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linejoin="round"/>${dots}${labs}</svg></div>
+    <p class="sub" style="text-align:center">Көлденең — тест нөмірі · Тік — нәтиже (%) · 🟢 80%+ · 🔵 50%+ · 🔴 50%-тен төмен</p>`;
+  if(tel){
+    const m={};
+    prog.forEach(p=>{const k=p.topic||'Тест';(m[k]=m[k]||{s:0,c:0});m[k].s+=pctOf(p);m[k].c++});
+    const rows=Object.entries(m).map(([k,v])=>({k,avg:Math.round(v.s/v.c),c:v.c})).sort((a,b)=>b.c-a.c).slice(0,8);
+    tel.innerHTML=rows.map(x=>`<div class="tbar"><span class="tn" title="${esc(x.k)}">${esc(x.k)} (${x.c})</span><span class="tb"><i style="width:${x.avg}%"></i></span><span class="tv">${x.avg}%</span></div>`).join('');
+  }
+}
+
+// ================= Дайын тест: «Функция» (50 сұрақ) =================
+const SEED_FUNKSIYA=`Тақырып: Функция
+Пән: Математика
+
+1. f(x) = 2x + 3 болса, f(4) неге тең?
+A) 8
+B) 14
+C) 11
+D) 10
+Жауап: C
+
+2. f(x) = x² − 4x + 3 болса, f(2) неге тең?
+A) 0
+B) 1
+C) 3
+D) −1
+Жауап: D
+
+3. f(x) = 3x − 5 болса, f(−2) неге тең?
+A) −1
+B) −11
+C) 1
+D) 11
+Жауап: B
+
+4. y = kx + b түріндегі сызықтық функцияның графигі қандай сызық?
+A) Түзу
+B) Парабола
+C) Гипербола
+D) Синусоида
+Жауап: A
+
+5. y = x² функциясының графигі төмендегі нүктелердің қайсысы арқылы өтеді?
+A) (1; 1)
+B) (2; 2)
+C) (2; 3)
+D) (3; 6)
+Жауап: A
+
+6. y = 1/x функциясының анықталу облысы қандай?
+A) x > 0
+B) x ≥ 0
+C) x < 0
+D) x ≠ 0
+Жауап: D
+
+7. y = √x функциясының анықталу облысы қандай?
+A) x > 0
+B) x ≤ 0
+C) x ≥ 0
+D) x ≠ 0
+Жауап: C
+
+8. y = √(x − 3) функциясының анықталу облысы қандай?
+A) x ≤ 3
+B) x ≥ 3
+C) x > 3
+D) x ≥ −3
+Жауап: B
+
+9. y = 1/(x − 5) функциясының анықталу облысы қандай?
+A) x ≠ 5
+B) x ≠ −5
+C) x > 5
+D) x ≠ 0
+Жауап: A
+
+10. y = x² функциясының мәндер жиыны қандай?
+A) y ≤ 0
+B) y ≥ 0
+C) y > 0
+D) y — кез келген сан
+Жауап: B
+
+11. y = x² + 2 функциясының мәндер жиыны қандай?
+A) y ≥ 0
+B) y ≤ 2
+C) y ≥ 2
+D) y ≥ −2
+Жауап: C
+
+12. y = −x² функциясының мәндер жиыны қандай?
+A) y ≥ 0
+B) y < 0
+C) y ≥ −1
+D) y ≤ 0
+Жауап: D
+
+13. Төмендегі функциялардың қайсысы жұп функция?
+A) y = x³
+B) y = x + 1
+C) y = 2x
+D) y = x²
+Жауап: D
+
+14. Төмендегі функциялардың қайсысы тақ функция?
+A) y = x²
+B) y = |x|
+C) y = x³
+D) y = x² + 1
+Жауап: C
+
+15. y = x² − 6x + 5 параболасының төбесінің абсциссасы неге тең?
+A) 3
+B) −3
+C) 5
+D) 1
+Жауап: A
+
+16. y = x² − 6x + 5 функциясының нөлдері қандай?
+A) −1 және −5
+B) 1 және 5
+C) 1 және −5
+D) 2 және 3
+Жауап: B
+
+17. y = x² − 4 функциясының нөлдері қандай?
+A) 4 және −4
+B) 0 және 2
+C) −2 және 2
+D) 2
+Жауап: C
+
+18. y = 2x − 6 функциясының графигі Ox осін қай нүктеде қиып өтеді?
+A) (0; 3)
+B) (−3; 0)
+C) (0; −6)
+D) (3; 0)
+Жауап: D
+
+19. y = 2x − 6 функциясының графигі Oy осін қай нүктеде қиып өтеді?
+A) (0; 6)
+B) (0; −6)
+C) (3; 0)
+D) (−6; 0)
+Жауап: B
+
+20. y = x² + 4x + 3 функциясының графигі Oy осін қай нүктеде қиып өтеді?
+A) (0; 3)
+B) (3; 0)
+C) (0; 4)
+D) (0; −3)
+Жауап: A
+
+21. y = 2x + 1 және y = −x + 4 функцияларының графиктері қай нүктеде қиылысады?
+A) (3; 1)
+B) (1; 2)
+C) (1; 3)
+D) (2; 5)
+Жауап: C
+
+22. y = 3x − 2 функциясының бұрыштық коэффициенті неге тең?
+A) −2
+B) 3
+C) 2
+D) −3
+Жауап: B
+
+23. y = −2x + 5 функциясы қалай өзгереді?
+A) Кемиді
+B) Өседі
+C) Тұрақты
+D) Алдымен өседі, кейін кемиді
+Жауап: A
+
+24. y = x² функциясы [0; +∞) аралығында қалай өзгереді?
+A) Кемиді
+B) Тұрақты
+C) Анықталмаған
+D) Өседі
+Жауап: D
+
+25. g(x) = x + 2 және f(x) = x² болса, f(g(1)) неге тең?
+A) 3
+B) 5
+C) 1
+D) 9
+Жауап: D
+
+26. f(x) = 2x және g(x) = x − 1 болса, g(f(3)) неге тең?
+A) 6
+B) 5
+C) 4
+D) 2
+Жауап: B
+
+27. f(x) = 2x + 4 функциясының кері функциясы қайсы?
+A) f⁻¹(x) = (x − 4)/2
+B) f⁻¹(x) = 2x − 4
+C) f⁻¹(x) = (x + 4)/2
+D) f⁻¹(x) = x/2 + 4
+Жауап: A
+
+28. Функция дегеніміз не?
+A) Әр x мәніне екі y мәні сәйкес келетін сәйкестік
+B) Тек сызықтық теңдеу
+C) Әр x мәніне бір ғана y мәні сәйкес келетін сәйкестік
+D) Тек график
+Жауап: C
+
+29. y = 2ˣ функциясы үшін x = 3 болғанда y неге тең?
+A) 8
+B) 6
+C) 9
+D) 5
+Жауап: A
+
+30. y = 2ˣ функциясы қалай өзгереді?
+A) Кемиді
+B) Тұрақты
+C) Тек теріс мәндер қабылдайды
+D) Өседі
+Жауап: D
+
+31. y = (1/2)ˣ функциясы қалай өзгереді?
+A) Өседі
+B) Кемиді
+C) Тұрақты
+D) Жұп функция
+Жауап: B
+
+32. y = log₂x функциясы үшін x = 8 болғанда y неге тең?
+A) 2
+B) 4
+C) 3
+D) 16
+Жауап: C
+
+33. y = log₃x функциясының анықталу облысы қандай?
+A) x ≥ 0
+B) x > 0
+C) x ≠ 0
+D) x < 0
+Жауап: B
+
+34. y = sin x функциясының мәндер жиыны қандай?
+A) [−1; 1]
+B) [0; 1]
+C) (−∞; +∞)
+D) [−2; 2]
+Жауап: A
+
+35. y = sin x функциясының негізгі периоды неге тең?
+A) π
+B) π/2
+C) 2π
+D) 4π
+Жауап: C
+
+36. y = tg x функциясының негізгі периоды неге тең?
+A) 2π
+B) π/2
+C) 3π
+D) π
+Жауап: D
+
+37. Төмендегі функциялардың қайсысы жұп функция?
+A) y = sin x
+B) y = tg x
+C) y = x³
+D) y = cos x
+Жауап: D
+
+38. y = x² + 3 графигі y = x² графигінен қалай алынады?
+A) 3 бірлік төмен жылжыту арқылы
+B) 3 бірлік жоғары жылжыту арқылы
+C) 3 бірлік оңға жылжыту арқылы
+D) 3 бірлік солға жылжыту арқылы
+Жауап: B
+
+39. y = (x − 2)² графигі y = x² графигінен қалай алынады?
+A) 2 бірлік оңға жылжыту арқылы
+B) 2 бірлік солға жылжыту арқылы
+C) 2 бірлік жоғары жылжыту арқылы
+D) 2 бірлік төмен жылжыту арқылы
+Жауап: A
+
+40. y = −x² графигі y = x² графигіне қатысты қалай орналасқан?
+A) Oy осіне қатысты симметриялы
+B) Координат басына қатысты симметриялы
+C) Ox осіне қатысты симметриялы
+D) 2 бірлік жоғары жылжыған
+Жауап: C
+
+41. y = ax² + bx + c функциясында a > 0 болса, парабола бұтақтары қайда бағытталған?
+A) Төмен
+B) Оңға
+C) Солға
+D) Жоғары
+Жауап: D
+
+42. y = x² − 2x + 1 функциясының ең кіші мәні неге тең?
+A) 0
+B) 1
+C) −1
+D) 2
+Жауап: A
+
+43. y = −x² + 4 функциясының ең үлкен мәні неге тең?
+A) −4
+B) 4
+C) 0
+D) 2
+Жауап: B
+
+44. f(x) = x³ болса, f(−2) неге тең?
+A) 8
+B) −6
+C) −8
+D) 6
+Жауап: C
+
+45. y = (x + 1)/(x − 2) функциясының анықталу облысы қандай?
+A) x ≠ −1
+B) x ≠ −2
+C) x > 2
+D) x ≠ 2
+Жауап: D
+
+46. y = √(4 − x) функциясының анықталу облысы қандай?
+A) x ≥ 4
+B) x ≤ 4
+C) x < 4
+D) x ≤ −4
+Жауап: B
+
+47. f(x) = 5 тұрақты функциясының графигі қандай?
+A) Ox осіне параллель түзу
+B) Oy осіне параллель түзу
+C) Координат басы арқылы өтетін түзу
+D) Парабола
+Жауап: A
+
+48. y = x² − 4x + 4 параболасының төбесінің ординатасы неге тең?
+A) 2
+B) 4
+C) 0
+D) −4
+Жауап: C
+
+49. f(x) = x² + px + 6 функциясы үшін f(2) = 0 болса, p неге тең?
+A) −5
+B) 5
+C) −2
+D) 2
+Жауап: A
+
+50. Графигі (0; 2) және (1; 5) нүктелері арқылы өтетін сызықтық функцияны табыңыз.
+A) y = 2x + 3
+B) y = 5x + 2
+C) y = 3x − 2
+D) y = 3x + 2
+Жауап: D
+`;
+function seedBuiltin(){
+  try{
+    if(LS.get('ubt_seed_funksiya',false))return;
+    const r=parseTextQs(SEED_FUNKSIYA);
+    if(!r.questions.length)return;
+    const all=allTests();
+    if(!all.some(t=>t.id==='seed_funksiya')){
+      all.push({id:'seed_funksiya',subject:'math',subjectName:'Математика',topic:'Функция',desc:'Дайын тест · '+r.questions.length+' сұрақ',isPublic:true,status:'approved',authorId:'system',authorName:'ҰБТ+',
+        questions:r.questions.map((q,i)=>({id:'fn_'+i,text:q.text,options:q.options,correct:q.correct,points:1})),createdAt:new Date().toISOString()});
+      saveAllTests(all);
+    }
+    LS.set('ubt_seed_funksiya',true);
+  }catch(e){}
+}
+seedBuiltin();
 </script>
 </body>
 </html>
