@@ -130,6 +130,40 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 }
 
 body.locked{user-select:none;-webkit-user-select:none}
+#tools-root input{-webkit-user-select:text;user-select:text}
+.tfab{position:fixed;right:12px;bottom:92px;z-index:99990;display:flex;flex-direction:column;gap:10px}
+.tfab button{width:50px;height:50px;border-radius:16px;border:none;cursor:pointer;font-size:22px;color:#fff;background:linear-gradient(135deg,#2563eb,#7c3aed);box-shadow:0 6px 18px rgba(37,99,235,.4);display:flex;align-items:center;justify-content:center}
+.tfab button:active{transform:scale(.94)}
+.tfab small{display:block;font-size:9px;font-weight:700;margin-top:-2px}
+#pt-ov{display:none;position:fixed;inset:0;z-index:99995;background:rgba(15,23,42,.65);padding:10px;overflow:auto}
+#pt-ov.show{display:block}
+.pt-box{background:var(--c);color:var(--t);border-radius:16px;padding:14px;max-width:1100px;margin:0 auto;box-shadow:0 20px 50px rgba(0,0,0,.4)}
+.pt-top{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px}
+.pt-top h3{font-size:16px;margin:0}
+.pt-x{border:none;background:var(--b);color:var(--t);width:34px;height:34px;border-radius:10px;font-size:18px;cursor:pointer}
+.pt-info{min-height:44px;padding:8px 12px;border-radius:12px;background:var(--bg);font-size:13px;margin-bottom:8px;line-height:1.5}
+.pt-scroll{overflow-x:auto;padding-bottom:6px}
+.pt-grid{display:grid;grid-template-columns:repeat(18,minmax(46px,1fr));grid-template-rows:repeat(7,auto) 10px auto auto;gap:3px;min-width:860px}
+.pt-c{border-radius:6px;padding:3px 2px;text-align:center;color:#0f172a;cursor:pointer;line-height:1.15;border:2px solid transparent;user-select:none}
+.pt-c:hover,.pt-c.sel{border-color:#0f172a;transform:scale(1.06);z-index:2;position:relative}
+.pt-c .n{font-size:9px;text-align:left;padding-left:2px;opacity:.75}
+.pt-c .s{font-size:16px;font-weight:800}
+.pt-c .m{font-size:8px;opacity:.8}
+.pt-ph{border-radius:6px;font-size:10px;display:flex;align-items:center;justify-content:center;color:#0f172a;opacity:.85}
+.pt-leg{display:flex;flex-wrap:wrap;gap:6px 12px;margin-top:10px;font-size:11px}
+.pt-leg span{display:inline-flex;align-items:center;gap:5px}
+.pt-leg i{width:12px;height:12px;border-radius:3px;display:inline-block}
+.c-alk{background:#fca5a5}.c-ae{background:#fdba74}.c-tm{background:#fde68a}.c-pt{background:#bef264}.c-mtl{background:#5eead4}.c-nm{background:#86efac}.c-hal{background:#7dd3fc}.c-ng{background:#c4b5fd}.c-lan{background:#f9a8d4}.c-act{background:#fda4af}
+#calc-box{display:none;position:fixed;right:72px;bottom:92px;z-index:99992;width:min(290px,calc(100vw - 90px));background:var(--c);color:var(--t);border:1px solid var(--b);border-radius:18px;padding:12px;box-shadow:0 16px 40px rgba(0,0,0,.35)}
+#calc-box.show{display:block}
+.calc-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-weight:700;font-size:14px}
+#calc-hist{min-height:16px;font-size:11px;color:var(--m);text-align:right;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+#calc-in{width:100%;box-sizing:border-box;font-size:22px;font-weight:700;text-align:right;padding:8px 10px;border:1px solid var(--b);border-radius:10px;background:var(--bg);color:var(--t);margin-bottom:8px;font-family:inherit}
+.calc-g{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.calc-g button{padding:10px 0;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;background:var(--bg);color:var(--t);font-family:inherit}
+.calc-g button:active{transform:scale(.95)}
+.calc-g .op{background:#dbeafe;color:#1d4ed8}.calc-g .fn{font-size:13px;color:var(--m)}.calc-g .eq{background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff}.calc-g .cl{background:#fee2e2;color:#dc2626}
+.calc-note{font-size:10px;color:var(--m);margin-top:6px;text-align:center}
 #lock-ov{display:none;position:fixed;inset:0;z-index:100000;background:rgba(15,23,42,.97);color:#fff;align-items:center;justify-content:center;text-align:center;padding:24px}
 #lock-ov.show{display:flex}
 #lock-ov .box{max-width:440px}
@@ -265,7 +299,6 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
       <div class="fg" id="admin-pass-wrap" style="display:none"><label class="sub">Админ ретінде кіру</label></div>
       <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doLogin()">Кіру</button>
       <button class="btn btn-s" style="width:100%;margin-bottom:10px" onclick="showRegister()">Тіркелу</button>
-      <button class="btn btn-s btn-sm" style="width:100%;margin-bottom:10px" onclick="showForgot()">Парольді ұмыттым</button>
       <button class="btn btn-s btn-sm" style="width:100%;margin-bottom:10px" onclick="showTeacherReg()">👨‍🏫 Мұғалімдерге арналған кабинет</button>
       <button class="btn btn-w btn-sm" style="width:100%" onclick="showContactAdmin()">💬 Админге жазу</button>
     </div>
@@ -537,6 +570,27 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
         <button class="btn btn-p" id="next" onclick="nextQ()">Келесі →</button>
       </div>
     </main>
+  </div>
+  <div id="tools-root">
+    <div class="tfab">
+      <button onclick="togPT()" title="Менделеев кестесі">🧪<small>Менд.</small></button>
+      <button onclick="togCalc()" title="Калькулятор">🧮<small>Калк.</small></button>
+    </div>
+    <div id="calc-box">
+      <div class="calc-top"><span>🧮 Калькулятор</span><button class="pt-x" style="width:28px;height:28px;font-size:14px" onclick="togCalc(false)">✕</button></div>
+      <div id="calc-hist"></div>
+      <input id="calc-in" inputmode="none" autocomplete="off" placeholder="0" onkeydown="if(event.key==='Enter'){event.preventDefault();calcEq()}">
+      <div class="calc-g" id="calc-g"></div>
+      <div class="calc-note">sin, cos, tan — градуспен есептеледі</div>
+    </div>
+    <div id="pt-ov" onclick="if(event.target===this)togPT(false)">
+      <div class="pt-box">
+        <div class="pt-top"><h3>🧪 Д. И. Менделеевтің химиялық элементтер кестесі</h3><button class="pt-x" onclick="togPT(false)">✕</button></div>
+        <div class="pt-info" id="pt-info">Элементті басыңыз — ақпарат осы жерде шығады.</div>
+        <div class="pt-scroll"><div class="pt-grid" id="pt-grid"></div></div>
+        <div class="pt-leg" id="pt-leg"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1999,7 +2053,7 @@ document.addEventListener('fullscreenchange',onFsChange);
 document.addEventListener('webkitfullscreenchange',onFsChange);
 document.addEventListener('visibilitychange',()=>{if(lock.on&&document.hidden)lockViolation()});
 window.addEventListener('blur',()=>{if(lock.on&&!lock.paused)setTimeout(()=>{if(lock.on&&!lock.paused&&!document.hasFocus())lockViolation()},250)});
-const blockEv=e=>{if(lock.on){const t=e.target&&e.target.nodeType===3?e.target.parentElement:e.target;if(t&&t.closest&&t.closest('#rep-ov'))return;e.preventDefault();return false}};
+const blockEv=e=>{if(lock.on){const t=e.target&&e.target.nodeType===3?e.target.parentElement:e.target;if(t&&t.closest&&t.closest('#rep-ov,#tools-root'))return;e.preventDefault();return false}};
 ['contextmenu','copy','cut','paste','dragstart','selectstart'].forEach(n=>document.addEventListener(n,blockEv));
 document.addEventListener('keydown',e=>{
   if(!lock.on)return;
@@ -3716,6 +3770,131 @@ setInterval(syncQueue,60000);
     }catch(e){}
   };
 })();
+</script>
+<script>
+// ===== Менделеев кестесі + калькулятор (тест кезінде) =====
+const PT_RAW="H|Сутек|1.008;He|Гелий|4.003;Li|Литий|6.94;Be|Бериллий|9.012;B|Бор|10.81;C|Көміртек|12.011;N|Азот|14.007;O|Оттек|15.999;F|Фтор|18.998;Ne|Неон|20.180;Na|Натрий|22.990;Mg|Магний|24.305;Al|Алюминий|26.982;Si|Кремний|28.085;P|Фосфор|30.974;S|Күкірт|32.06;Cl|Хлор|35.45;Ar|Аргон|39.948;K|Калий|39.098;Ca|Кальций|40.078;Sc|Скандий|44.956;Ti|Титан|47.867;V|Ванадий|50.942;Cr|Хром|51.996;Mn|Марганец|54.938;Fe|Темір|55.845;Co|Кобальт|58.933;Ni|Никель|58.693;Cu|Мыс|63.546;Zn|Мырыш|65.38;Ga|Галлий|69.723;Ge|Германий|72.630;As|Мышьяк|74.922;Se|Селен|78.971;Br|Бром|79.904;Kr|Криптон|83.798;Rb|Рубидий|85.468;Sr|Стронций|87.62;Y|Иттрий|88.906;Zr|Цирконий|91.224;Nb|Ниобий|92.906;Mo|Молибден|95.95;Tc|Технеций|98;Ru|Рутений|101.07;Rh|Родий|102.906;Pd|Палладий|106.42;Ag|Күміс|107.868;Cd|Кадмий|112.414;In|Индий|114.818;Sn|Қалайы|118.710;Sb|Сурьма|121.760;Te|Теллур|127.60;I|Йод|126.904;Xe|Ксенон|131.293;Cs|Цезий|132.905;Ba|Барий|137.327;La|Лантан|138.905;Ce|Церий|140.116;Pr|Празеодим|140.908;Nd|Неодим|144.242;Pm|Прометий|145;Sm|Самарий|150.36;Eu|Европий|151.964;Gd|Гадолиний|157.25;Tb|Тербий|158.925;Dy|Диспрозий|162.500;Ho|Гольмий|164.930;Er|Эрбий|167.259;Tm|Тулий|168.934;Yb|Иттербий|173.045;Lu|Лютеций|174.967;Hf|Гафний|178.486;Ta|Тантал|180.948;W|Вольфрам|183.84;Re|Рений|186.207;Os|Осмий|190.23;Ir|Иридий|192.217;Pt|Платина|195.084;Au|Алтын|196.967;Hg|Сынап|200.592;Tl|Таллий|204.38;Pb|Қорғасын|207.2;Bi|Висмут|208.980;Po|Полоний|209;At|Астат|210;Rn|Радон|222;Fr|Франций|223;Ra|Радий|226;Ac|Актиний|227;Th|Торий|232.038;Pa|Протактиний|231.036;U|Уран|238.029;Np|Нептуний|237;Pu|Плутоний|244;Am|Америций|243;Cm|Кюрий|247;Bk|Берклий|247;Cf|Калифорний|251;Es|Эйнштейний|252;Fm|Фермий|257;Md|Менделевий|258;No|Нобелий|259;Lr|Лоуренсий|266;Rf|Резерфордий|267;Db|Дубний|268;Sg|Сиборгий|269;Bh|Борий|270;Hs|Хассий|277;Mt|Мейтнерий|278;Ds|Дармштадтий|281;Rg|Рентгений|282;Cn|Коперниций|285;Nh|Нихоний|286;Fl|Флеровий|289;Mc|Московий|290;Lv|Ливерморий|293;Ts|Теннессин|294;Og|Оганесон|294";
+const PT_EL=PT_RAW.split(';').map((r,i)=>{const a=r.split('|');return{z:i+1,s:a[0],n:a[1],m:a[2]}});
+const PT_CAT={alk:'Сілтілік металл',ae:'Сілтілік-жер металл',tm:'Өтпелі металл',pt:'Өтпелі емес металл',mtl:'Металлоид',nm:'Бейметалл',hal:'Галоген',ng:'Асыл газ',lan:'Лантаноид',act:'Актиноид'};
+function ptCat(z){
+  if([3,11,19,37,55,87].includes(z))return'alk';
+  if([4,12,20,38,56,88].includes(z))return'ae';
+  if([9,17,35,53,85,117].includes(z))return'hal';
+  if([2,10,18,36,54,86,118].includes(z))return'ng';
+  if([5,14,32,33,51,52,84].includes(z))return'mtl';
+  if([1,6,7,8,15,16,34].includes(z))return'nm';
+  if(z>=57&&z<=71)return'lan';
+  if(z>=89&&z<=103)return'act';
+  if([13,31,49,50,81,82,83,113,114,115,116].includes(z))return'pt';
+  return'tm';
+}
+function ptPos(z){
+  if(z===1)return[1,1];if(z===2)return[1,18];
+  if(z<=4)return[2,z-2];if(z<=10)return[2,z+8];
+  if(z<=12)return[3,z-10];if(z<=18)return[3,z];
+  if(z<=36)return[4,z-18];if(z<=54)return[5,z-36];
+  if(z<=56)return[6,z-54];if(z<=71)return[9,z-54];if(z<=86)return[6,z-68];
+  if(z<=88)return[7,z-86];if(z<=103)return[10,z-86];return[7,z-100];
+}
+let ptBuilt=false;
+function buildPT(){
+  if(ptBuilt)return;ptBuilt=true;
+  const g=document.getElementById('pt-grid');let h='';
+  PT_EL.forEach(e=>{
+    const p=ptPos(e.z),c=ptCat(e.z);
+    h+=`<div class="pt-c c-${c}" style="grid-row:${p[0]};grid-column:${p[1]}" data-z="${e.z}" onclick="ptShow(${e.z})"><div class="n">${e.z}</div><div class="s">${e.s}</div><div class="m">${e.m}</div></div>`;
+  });
+  h+=`<div class="pt-ph c-lan" style="grid-row:6;grid-column:3">57–71</div><div class="pt-ph c-act" style="grid-row:7;grid-column:3">89–103</div>`;
+  g.innerHTML=h;
+  document.getElementById('pt-leg').innerHTML=Object.keys(PT_CAT).map(k=>`<span><i class="c-${k}"></i>${PT_CAT[k]}</span>`).join('');
+}
+function ptShow(z){
+  const e=PT_EL[z-1],p=ptPos(z),c=ptCat(z);
+  document.querySelectorAll('.pt-c.sel').forEach(x=>x.classList.remove('sel'));
+  const el=document.querySelector('.pt-c[data-z="'+z+'"]');if(el)el.classList.add('sel');
+  const period=p[0]===9?6:(p[0]===10?7:p[0]);
+  const grp=(c==='lan'||c==='act')?'—':p[1];
+  document.getElementById('pt-info').innerHTML=`<b style="font-size:15px">${e.s} — ${e.n}</b> &nbsp;·&nbsp; реттік нөмірі: <b>${e.z}</b> &nbsp;·&nbsp; атомдық массасы: <b>${e.m}</b><br>${period}-период &nbsp;·&nbsp; топ: ${grp} &nbsp;·&nbsp; ${PT_CAT[c]}`;
+}
+function togPT(v){
+  const o=document.getElementById('pt-ov');
+  const on=(typeof v==='boolean')?v:!o.classList.contains('show');
+  if(on){buildPT();togCalc(false)}
+  o.classList.toggle('show',on);
+}
+// ---- Калькулятор ----
+const CALC_KEYS=[['C','cl'],['⌫','cl'],['(',''],[')',''],['sin(','fn'],['cos(','fn'],['tan(','fn'],['÷','op'],['lg(','fn'],['ln(','fn'],['√(','fn'],['×','op'],['7',''],['8',''],['9',''],['−','op'],['4',''],['5',''],['6',''],['+','op'],['1',''],['2',''],['3',''],['^','op'],['0',''],['.',''],['π',''],['=','eq']];
+let calcBuilt=false;
+function buildCalc(){
+  if(calcBuilt)return;calcBuilt=true;
+  const g=document.getElementById('calc-g');
+  CALC_KEYS.forEach(k=>{
+    const b=document.createElement('button');b.textContent=k[0].replace('(','').length?k[0].replace('(',''):k[0];
+    if(k[0]==='sin('||k[0]==='cos('||k[0]==='tan('||k[0]==='lg('||k[0]==='ln('||k[0]==='√(')b.textContent=k[0].slice(0,-1);
+    if(k[1])b.className=k[1];
+    b.onclick=()=>calcKey(k[0]);g.appendChild(b);
+  });
+}
+function calcKey(k){
+  const i=document.getElementById('calc-in');
+  if(k==='C'){i.value='';document.getElementById('calc-hist').textContent='';return}
+  if(k==='⌫'){i.value=i.value.slice(0,-1);return}
+  if(k==='='){calcEq();return}
+  i.value+=k;
+}
+function calcEval(src){
+  const t=String(src).replace(/×/g,'*').replace(/÷/g,'/').replace(/−/g,'-').replace(/,/g,'.').match(/\d+\.?\d*|\.\d+|[a-zA-Zπ√]+|[-+*\/^()%]/g)||[];
+  if(t.join('').length<String(src).replace(/\s/g,'').length-0&&false)throw 0;
+  let p=0;
+  const peek=()=>t[p],next=()=>t[p++];
+  const FN={'sin':x=>Math.sin(x*Math.PI/180),'cos':x=>Math.cos(x*Math.PI/180),'tan':x=>Math.tan(x*Math.PI/180),'lg':Math.log10,'ln':Math.log,'√':Math.sqrt,'sqrt':Math.sqrt};
+  function expr(){let v=term();while(peek()==='+'||peek()==='-'){const o=next(),r=term();v=o==='+'?v+r:v-r}return v}
+  function term(){
+    let v=power();
+    for(;;){
+      const q=peek();
+      if(q==='*'||q==='/'){next();const r=power();v=q==='*'?v*r:v/r}
+      else if(q&&(q==='('||q==='π'||FN[q])){v=v*power()}
+      else break;
+    }
+    return v;
+  }
+  function power(){const b=unary();if(peek()==='^'){next();return Math.pow(b,power())}return b}
+  function unary(){if(peek()==='-'){next();return-unary()}if(peek()==='+'){next();return unary()}return post()}
+  function post(){let v=prim();while(peek()==='%'){next();v=v/100}return v}
+  function prim(){
+    const q=next();
+    if(q===undefined)throw 0;
+    if(/^(\d|\.)/.test(q))return parseFloat(q);
+    if(q==='π')return Math.PI;
+    if(q==='('){const v=expr();if(next()!==')')throw 0;return v}
+    if(FN[q]){const a=unary2();return FN[q](a)}
+    throw 0;
+  }
+  function unary2(){if(peek()==='('){next();const v=expr();if(next()!==')')throw 0;return v}return power()}
+  const r=expr();
+  if(p<t.length)throw 0;
+  if(!isFinite(r))throw 0;
+  return r;
+}
+function calcEq(){
+  const i=document.getElementById('calc-in'),h=document.getElementById('calc-hist');
+  if(!i.value.trim())return;
+  try{
+    const r=parseFloat(calcEval(i.value).toPrecision(12));
+    h.textContent=i.value+' =';i.value=String(r);
+  }catch(e){h.textContent='Қате өрнек';}
+}
+function togCalc(v){
+  const b=document.getElementById('calc-box');
+  const on=(typeof v==='boolean')?v:!b.classList.contains('show');
+  if(on){buildCalc();togPT(false)}
+  b.classList.toggle('show',on);
+  if(on)setTimeout(()=>{try{document.getElementById('calc-in').focus({preventScroll:true})}catch(e){}},50);
+}
+function closeTools(){togPT(false);togCalc(false);const i=document.getElementById('calc-in');if(i)i.value='';const h=document.getElementById('calc-hist');if(h)h.textContent=''}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeTools()});
+(function(){const b=beginTest;beginTest=function(){try{closeTools()}catch(e){}return b.apply(this,arguments)}})();
 </script>
 </body>
 </html>
