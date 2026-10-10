@@ -296,7 +296,7 @@ body.locked{user-select:none;-webkit-user-select:none}
 
 <div id="s-create" class="screen">
   <div class="wrap">
-    <div class="hdr"><h2>➕ Тест құру</h2><p class="sub">Тестке ат беріп, сұрақтар файлын жүктеңіз — барлық сұрақ бірден қосылады</p></div>
+    <div class="hdr"><h2>➕ Тест құру</h2><p class="sub">Тестке ат беріп, пәнді таңдаңыз да, сұрақтарды өзіңіз қосыңыз</p></div>
     <div class="card">
       <div class="fg"><label>Пән *</label>
         <select id="c-subject">
@@ -321,7 +321,7 @@ body.locked{user-select:none;-webkit-user-select:none}
       <div class="fg"><label>Сипаттама (міндетті емес)</label><input id="c-desc" placeholder="Қысқаша сипаттама"></div>
       <div class="fg"><label class="switch"><input type="checkbox" id="c-request"> 🌐 Жариялауға жіберу (админ мақұлдаған соң шығады)</label></div>
     </div>
-    <div id="c-bulk-host"></div>
+    <div id="c-manual-host"></div>
     <div class="row">
       <button class="btn btn-p" onclick="createFromFile()">💾 Тестті сақтау</button>
       <button class="btn btn-s" onclick="goHome()">Болдырмау</button>
@@ -331,8 +331,8 @@ body.locked{user-select:none;-webkit-user-select:none}
 
 <div id="s-edit" class="screen">
   <div class="wrap">
-    <div class="hdr"><h2 id="edit-title">Тестті өңдеу</h2><p class="sub">Сұрақтарды файлдан бірден қосыңыз</p></div>
-    <div id="e-bulk-host"></div>
+    <div class="hdr"><h2 id="edit-title">Тестті өңдеу</h2><p class="sub">Жаңа сұрақтарды қолмен қосыңыз</p></div>
+    <div id="e-manual-host"></div>
     <div id="edit-qlist" class="list"></div>
     <div class="row" style="margin-top:16px"><button class="btn btn-s" onclick="showMyTests()">Артқа</button></div>
   </div>
@@ -993,7 +993,7 @@ function showCreate(){
   document.getElementById('c-topic').value='';
   document.getElementById('c-desc').value='';
   const req=document.getElementById('c-request');if(req)req.checked=false;
-  clearBulk('c');showScr('s-create');
+  clearManual('c');showScr('s-create');
 }
 function createFromFile(){
   const subjEl=document.getElementById('c-subject');
@@ -1003,12 +1003,12 @@ function createFromFile(){
   const requestPub=document.getElementById('c-request')?.checked||false;
   if(!subject){alert('Пәнді таңдаңыз!');return}
   if(!topic){alert('Тест атауын жазыңыз!');return}
-  const r=takeBulkQs('c');if(!r)return;
-  if(r.qs.length>MAX_Q){alert('Бір тестте '+MAX_Q+' сұрақтан аспауы керек');return}
+  if(!draftQs.length){alert('Кемінде 1 сұрақ қосыңыз!');return}
+  const r={qs:draftQs.slice()};
   const test={id:'t_'+Date.now(),subject,subjectName,topic,desc:document.getElementById('c-desc').value.trim(),isPublic:false,status:requestPub?'pending':'private',authorId:user.id,authorName:user.name,questions:r.qs,createdAt:new Date().toISOString()};
   if(user.isAdmin&&requestPub){test.isPublic=true;test.status='approved'}
   const all=allTests();all.unshift(test);saveAllTests(all);
-  clearBulk('c');
+  clearManual('c');
   alert(requestPub&&!user.isAdmin?'✅ Тест сақталды ('+r.qs.length+' сұрақ). Админ мақұлдаған соң жарияланады.':'✅ Тест сақталды: '+r.qs.length+' сұрақ');
   showMyTests();
 }
@@ -1025,7 +1025,7 @@ function showMyTests(){
     <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · ${badge}</p></div>
     <div class="acts">
       <button class="btn btn-p btn-sm" onclick="startUserTest('${t.id}')">Бастау</button>
-      <button class="btn btn-s btn-sm" onclick="editTest('${t.id}')">+ Файлдан сұрақ</button>
+      <button class="btn btn-s btn-sm" onclick="editTest('${t.id}')">+ Сұрақ қосу</button>
       <button class="btn btn-s btn-sm" onclick="exportTest('${t.id}')">⬇ Файл</button>
       ${t.status!=='pending'&&t.status!=='approved'&&!t.isPublic?`<button class="btn btn-w btn-sm" onclick="requestPub('${t.id}')">Жариялауға</button>`:''}
       <button class="btn btn-d btn-sm" onclick="delTest('${t.id}')">✕</button>
@@ -1053,7 +1053,7 @@ let editingId=null;
 function editTest(id){
   editingId=id;const t=allTests().find(x=>x.id===id);if(!t)return;
   document.getElementById('edit-title').textContent='Сұрақ қосу: '+t.topic;
-  clearBulk('e');renderEditList(t);showScr('s-edit');
+  clearManual('e');renderEditList(t);showScr('s-edit');
 }
 function renderEditList(t){
   document.getElementById('edit-qlist').innerHTML=t.questions.map((q,i)=>`<div class="item"><div class="info"><h4>${i+1}. ${esc(q.text)}</h4></div>
@@ -1383,7 +1383,7 @@ function clearBulk(ctx){
 function bulkBlock(ctx){
   const btns={
     c:'',
-    e:'<button class="btn btn-ok" onclick="addBulkToExisting()">➕ Тестке қосу</button>',
+    e:'',
     f:'<button class="btn btn-p" onclick="startFromFile()">▶ Тестті бастау</button><button class="btn btn-ok" onclick="saveFromFile()">💾 Менің тесттеріме сақтау</button>'
   }[ctx];
   return `<div class="card">
@@ -1419,14 +1419,6 @@ function matchSubject(sub){
   if(!sub||!el)return null;
   const x=String(sub).trim().toLowerCase();
   return Array.from(el.options||[]).find(o=>o.value&&(o.value===x||String(o.text).toLowerCase()===x))||null;
-}
-function addBulkToExisting(){
-  const r=takeBulkQs('e');if(!r)return;
-  const all=allTests();const t=all.find(x=>x.id===editingId);if(!t)return;
-  if(t.questions.length+r.qs.length>MAX_Q){alert('Бір тестте '+MAX_Q+' сұрақтан аспауы керек');return}
-  t.questions.push(...r.qs);saveAllTests(all);
-  clearBulk('e');renderEditList(t);
-  alert('✅ '+r.qs.length+' сұрақ қосылды');
 }
 function showFileTest(){clearBulk('f');showScr('s-file')}
 function startFromFile(){
@@ -1474,7 +1466,62 @@ function exportTest(id){
   downloadText(safeName(t.topic)+'.txt',testToText(t.topic,t.subjectName,t.questions));
 }
 function downloadSample(){downloadText('ulgi_suraqtar.txt',SAMPLE_TXT)}
-['c','e','f'].forEach(c=>{const h=document.getElementById(c+'-bulk-host');if(h)h.innerHTML=bulkBlock(c)});
+let draftQs=[];
+function manualBlock(ctx){
+  const L=['A','B','C','D'];
+  return `<div class="card">
+    <h3 style="margin-bottom:10px">✍️ Жаңа сұрақ</h3>
+    <div class="fg"><label>Сұрақ мәтіні</label><textarea id="${ctx}-mq-text" placeholder="Сұрақты жазыңыз"></textarea></div>
+    <div class="fg"><label>Жауап нұсқалары <span class="sub">(дұрыс жауаптың жанындағы дөңгелекті басыңыз)</span></label>
+      ${L.map((l,i)=>`<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><input type="radio" name="${ctx}-mq-ok" value="${i}" style="width:20px;height:20px;flex:none;accent-color:var(--p)"><b style="width:18px;flex:none">${l}</b><input id="${ctx}-mq-o${i}" placeholder="${l} нұсқасы" style="flex:1"></div>`).join('')}
+    </div>
+    <div class="row" style="justify-content:flex-start"><button class="btn btn-ok" onclick="addManualQ('${ctx}')">➕ Сұрақ қосу</button></div>
+    <div id="${ctx}-mq-list" style="margin-top:14px"></div>
+  </div>`;
+}
+function resetManualForm(ctx){
+  const t=document.getElementById(ctx+'-mq-text');if(t)t.value='';
+  for(let i=0;i<4;i++){const o=document.getElementById(ctx+'-mq-o'+i);if(o)o.value=''}
+  document.querySelectorAll('input[name="'+ctx+'-mq-ok"]').forEach(r=>r.checked=false);
+}
+function clearManual(ctx){
+  if(ctx==='c'){draftQs=[];renderDraft()}
+  resetManualForm(ctx);
+}
+function renderDraft(){
+  const el=document.getElementById('c-mq-list');if(!el)return;
+  if(!draftQs.length){el.innerHTML='';return}
+  el.innerHTML='<div class="sub" style="margin-bottom:8px">Қосылған сұрақтар: <b>'+draftQs.length+'</b></div><div class="list">'
+    +draftQs.map((q,i)=>`<div class="item"><div class="info"><h4>${i+1}. ${esc(q.text)}</h4><p>✓ ${esc(q.options[q.correct])}</p></div><div class="acts"><button class="btn btn-d btn-sm" onclick="removeDraftQ(${i})">✕</button></div></div>`).join('')+'</div>';
+}
+function removeDraftQ(i){draftQs.splice(i,1);renderDraft()}
+function addManualQ(ctx){
+  const text=document.getElementById(ctx+'-mq-text').value.trim();
+  if(!text){alert('Сұрақ мәтінін жазыңыз');return}
+  const sel=document.querySelector('input[name="'+ctx+'-mq-ok"]:checked');
+  const selIdx=sel?+sel.value:-1;
+  const opts=[];let correct=-1;
+  for(let i=0;i<4;i++){
+    const v=document.getElementById(ctx+'-mq-o'+i).value.trim();
+    if(v){if(i===selIdx)correct=opts.length;opts.push(v)}
+  }
+  if(opts.length<2){alert('Кемінде 2 жауап нұсқасын жазыңыз');return}
+  if(selIdx<0){alert('Дұрыс жауапты белгілеңіз');return}
+  if(correct<0){alert('Дұрыс жауап ретінде бос нұсқа белгіленген');return}
+  const q={id:'q_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,6),text,options:opts,correct,points:1};
+  if(ctx==='c'){
+    if(draftQs.length>=MAX_Q){alert('Бір тестте '+MAX_Q+' сұрақтан аспауы керек');return}
+    draftQs.push(q);renderDraft();
+  }else{
+    const all=allTests();const t=all.find(x=>x.id===editingId);if(!t)return;
+    if(t.questions.length>=MAX_Q){alert('Бір тестте '+MAX_Q+' сұрақтан аспауы керек');return}
+    t.questions.push(q);saveAllTests(all);renderEditList(t);
+  }
+  resetManualForm(ctx);
+  document.getElementById(ctx+'-mq-text').focus();
+}
+['c','e'].forEach(c=>{const h=document.getElementById(c+'-manual-host');if(h)h.innerHTML=manualBlock(c)});
+['f'].forEach(c=>{const h=document.getElementById(c+'-bulk-host');if(h)h.innerHTML=bulkBlock(c)});
 
 document.addEventListener('click',e=>{const side=document.getElementById('sidebar');if(side&&side.classList.contains('open')&&!side.contains(e.target)&&!e.target.classList.contains('side-tog'))side.classList.remove('open')});
 
