@@ -200,6 +200,16 @@ body.dark [style*="background:#eff6ff"],body.dark [style*="background:#f1f5f9"],
 body.dark #contact-box,body.dark #contact-box *{color:#111}
 body.dark #contact-box [style*="background:#075e54"] *,body.dark #contact-box [style*="background:#075e54"]{color:#fff}
 body.dark #admin-chat input,body.dark #admin-chat textarea{color:#111}
+.cbox{margin-top:8px}
+.cmsgs{height:260px;overflow-y:auto;background:var(--bg);border:1px solid var(--b);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:6px}
+.cmsg{max-width:82%;padding:7px 11px;border-radius:12px;font-size:13px;white-space:pre-wrap;word-break:break-word}
+.cmsg.me{align-self:flex-end;background:var(--p);color:#fff}
+.cmsg.other{align-self:flex-start;background:var(--c);border:1px solid var(--b)}
+.cmsg.sys{align-self:center;background:#fef3c7;color:#92400e;font-size:12px;text-align:center}
+.cmsg small{display:block;opacity:.7;font-size:10px;margin-top:2px}
+.crow{display:flex;gap:8px;margin-top:8px}
+.crow input{flex:1;padding:10px 12px;border:1px solid var(--b);border-radius:10px;background:var(--bg);color:var(--t);font-family:inherit;font-size:14px}
+body.dark .cmsg.sys{background:#422006;color:#fcd34d}
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
@@ -605,7 +615,17 @@ body.dark #admin-chat input,body.dark #admin-chat textarea{color:#111}
       <div class="fg"><input id="tch-name" placeholder="Сынып атауы (мыс: 11 «А»)" maxlength="40"></div>
       <button class="btn btn-ok btn-sm" onclick="createClass()">Сынып құру</button>
     </div>
+    <div class="card" id="tch-req-card">
+      <h3 style="margin-bottom:6px">📨 Сынып ашуға өтініш</h3>
+      <p class="sub" style="margin-bottom:10px">Өтінішті админ қарайды. Админ 12 сағат ішінде жауап береді. Келесі өтінішті немесе хабарламаны 1 минуттан кейін жібере аласыз.</p>
+      <div class="fg"><input id="tch-req-name" placeholder="Сынып атауы (мыс: 11 «А»)" maxlength="40"></div>
+      <div class="fg"><textarea id="tch-req-note" placeholder="Қосымша ақпарат (міндетті емес): пән, оқушылар саны..." maxlength="300"></textarea></div>
+      <button class="btn btn-p btn-sm" id="tch-req-btn" onclick="submitClassRequest()">📨 Өтініш жіберу</button>
+      <span class="sub" id="tch-req-cd" style="margin-left:8px"></span>
+    </div>
+    <div id="tch-reqs"></div>
     <div id="tch-classes"></div>
+    <div id="tch-chat"></div>
     <div id="tch-detail"></div>
     <div class="card">
       <h3 style="margin-bottom:6px">🔑 Оқушы: сыныпқа қосылу</h3>
@@ -625,6 +645,15 @@ body.dark #admin-chat input,body.dark #admin-chat textarea{color:#111}
     <div class="card" style="padding:20px">
       <h3 style="margin-bottom:12px">⏳ Жариялау күтіп тұрған тесттер</h3>
       <div id="admin-pending" class="list"></div>
+    </div>
+    <div class="card" style="padding:20px">
+      <h3 style="margin-bottom:12px">🏫 Сынып ашу өтініштері</h3>
+      <div id="admin-class-req" class="list"></div>
+    </div>
+    <div class="card" style="padding:20px">
+      <h3 style="margin-bottom:12px">💬 Сынып чаттары</h3>
+      <div id="admin-class-threads" class="list"></div>
+      <div id="admin-class-chat"></div>
     </div>
     <div class="card" style="padding:20px">
       <h3 style="margin-bottom:12px">👨‍🏫 Мұғалім өтініштері</h3>
@@ -2606,7 +2635,7 @@ function studentStats(id){
 }
 function showTeacher(){tchOpen=null;document.getElementById('tch-detail').innerHTML='';renderTeacher();showScr('s-teacher')}
 function createClass(){
-  if(!isTeacherUser())return;
+  if(!user||!user.isAdmin)return;
   const n=document.getElementById('tch-name').value.trim();
   if(!n){alert('Сынып атауын жазыңыз');return}
   const a=getClasses();let code;
@@ -2658,7 +2687,7 @@ function classCardHTML(c){
   return `<div class="card">
     <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
       <h3>${esc(c.name)} <span class="badge badge-pub">Код: ${esc(c.code)}</span></h3>
-      <button class="btn btn-d btn-sm" onclick="delClass('${c.id}')">Сыныпты өшіру</button>
+      <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-s btn-sm" onclick="openTchChat('${threadOfClass(c)}')">💬 Админмен чат</button><button class="btn btn-d btn-sm" onclick="delClass('${c.id}')">Сыныпты өшіру</button></div>
     </div>
     <div class="sub" style="margin-bottom:10px">Оқушылар: <b>${c.students.length}</b> · сыныптың орташа балы: <b>${avg}</b></div>
     ${c.students.length?`<div class="tscroll"><table class="ttable"><tr><th>Оқушы</th><th>Тест</th><th>Орташа</th><th>Қате</th><th>Ұпай</th><th></th></tr>${rows}</table></div>`:'<div class="sub">Оқушы жоқ. Төмендегі өріс арқылы логин бойынша қосыңыз немесе кодты оқушыларға беріңіз.</div>'}
@@ -2847,6 +2876,154 @@ function adminRejectTeacher(id){
     n.innerHTML=T?'':(isTeacherPending()
       ?'<div class="card"><h3>⏳ Өтініш қаралуда</h3><p class="sub">Админ мұғалім рұқсатын бергенше сынып құру ашылмайды. Қазір сыныпқа кодпен қосыла аласыз.</p></div>'
       :'<div class="card"><h3>🔒 Мұғалім кабинеті</h3><p class="sub">Сынып құру тек админ рұқсат берген мұғалімдерге ашық. Оқушы болсаңыз, төмендегі кодпен сыныпқа қосылыңыз.</p></div>');
+  };
+})();
+
+// ================= Сынып ашу өтініші + сынып чаттары =================
+const RESP_MS=12*3600*1000, CD_MS=60*1000;
+function cdLeft(key){const t=LS.get('ubt_cd_'+key,0);return Math.max(0,CD_MS-(Date.now()-t))}
+function cdCheck(key){
+  const l=cdLeft(key);
+  if(l>0){alert('⏳ Келесі өтінішті/хабарламаны 1 минуттан кейін жібере аласыз. Қалды: '+Math.ceil(l/1000)+' сек.');return false}
+  return true;
+}
+function cdStamp(key){LS.set('ubt_cd_'+key,Date.now())}
+function fmtT(t){return new Date(t).toLocaleString('kk-KZ',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}
+function getReqs(){return LS.get('ubt_class_reqs',[])}
+function getCC(){return LS.get('ubt_class_chat',{})}
+function threadMsgs(tid){return getCC()[tid]||[]}
+function postThread(tid,from,name,text){
+  const a=getCC();(a[tid]=a[tid]||[]).push({from,name,text,t:Date.now()});LS.set('ubt_class_chat',a);
+}
+function threadOfClass(c){return c.reqId||('cls_'+c.id)}
+function threadTitle(tid){
+  const r=getReqs().find(x=>x.id===tid);if(r)return r.name+' · '+r.teacherName;
+  const c=getClasses().find(x=>threadOfClass(x)===tid);return c?(c.name+' · '+(c.teacherName||'')):'Чат';
+}
+function chatBoxHTML(tid,who){
+  const msgs=threadMsgs(tid);
+  const body=msgs.length?msgs.map(m=>{
+    if(m.from==='system')return `<div class="cmsg sys">${esc(m.text)}<small>${fmtT(m.t)}</small></div>`;
+    const me=m.from===who;
+    return `<div class="cmsg ${me?'me':'other'}"><b style="font-size:11px">${me?'Сіз':(m.from==='admin'?'Админ':esc(m.name||'Мұғалім'))}</b><br>${esc(m.text)}<small>${fmtT(m.t)}</small></div>`;
+  }).join(''):'<div class="sub" style="text-align:center;margin:auto">Хабарлама жоқ</div>';
+  return `<div class="cbox"><div class="cmsgs" id="cmsgs">${body}</div>
+    <div class="crow"><input id="cin-${tid}" maxlength="500" placeholder="Хабарлама жазыңыз..." onkeydown="if(event.key==='Enter')sendThread('${tid}','${who}')"><button class="btn btn-ok" onclick="sendThread('${tid}','${who}')">➤</button></div>
+    ${who==='admin'?'':'<div class="sub" style="margin-top:4px">Хабарламалар арасы — 1 минут</div>'}</div>`;
+}
+function sendThread(tid,who){
+  const inp=document.getElementById('cin-'+tid);if(!inp)return;
+  const text=inp.value.trim();if(!text)return;
+  if(who!=='admin'){if(!cdCheck(user.id))return;cdStamp(user.id)}
+  postThread(tid,who,user.name,text);
+  if(who==='admin')renderAdminClassChat();else renderTeacherChat();
+}
+function scrollChat(){const m=document.getElementById('cmsgs');if(m)m.scrollTop=m.scrollHeight}
+
+// --- Мұғалім жағы ---
+let tchThread=null;
+function submitClassRequest(){
+  if(!user||user.isAdmin||!isTeacherUser())return;
+  const name=document.getElementById('tch-req-name').value.trim();
+  const note=document.getElementById('tch-req-note').value.trim();
+  if(!name){alert('Сынып атауын жазыңыз');return}
+  if(!cdCheck(user.id))return;
+  const reqs=getReqs();
+  if(reqs.filter(r=>r.teacherId===user.id&&r.status==='pending').length>=5){alert('Күтіп тұрған өтініш тым көп (5). Админнің жауабын күтіңіз.');return}
+  const id='r_'+Date.now().toString(36),now=Date.now();
+  reqs.push({id,teacherId:user.id,teacherName:user.name,name,note,status:'pending',createdAt:now,dueAt:now+RESP_MS});
+  LS.set('ubt_class_reqs',reqs);
+  postThread(id,'system','','Өтініш жіберілді: «'+name+'». Админ 12 сағат ішінде жауап береді.');
+  if(note)postThread(id,'teacher',user.name,note);
+  cdStamp(user.id);
+  document.getElementById('tch-req-name').value='';document.getElementById('tch-req-note').value='';
+  tchThread=id;renderTeacher();
+  alert('✅ Өтініш админге жіберілді. 12 сағат ішінде жауап беріледі.');
+}
+function openTchChat(tid){tchThread=tid;renderTeacher();const e=document.getElementById('tch-chat');if(e)e.scrollIntoView({behavior:'smooth',block:'start'})}
+function closeTchChat(){tchThread=null;renderTeacher()}
+function renderTeacherChat(){
+  const el=document.getElementById('tch-chat');if(!el)return;
+  if(!tchThread){el.innerHTML='';return}
+  el.innerHTML=`<div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><h3>💬 ${esc(threadTitle(tchThread))}</h3><button class="btn btn-s btn-sm" onclick="closeTchChat()">Жабу</button></div>${chatBoxHTML(tchThread,'teacher')}</div>`;
+  scrollChat();
+}
+function renderTeacherReqs(){
+  const el=document.getElementById('tch-reqs');if(!el)return;
+  const mine=getReqs().filter(r=>r.teacherId===user.id).sort((a,b)=>b.createdAt-a.createdAt);
+  const st={pending:'<span class="badge" style="background:#fef3c7;color:#92400e">⏳ Күтуде</span>',approved:'<span class="badge badge-pub">✓ Мақұлданды</span>',rejected:'<span class="badge badge-err">✕ Қабылданбады</span>'};
+  el.innerHTML=mine.length?`<div class="card"><h3 style="margin-bottom:10px">📋 Менің өтініштерім</h3><div class="list">`+mine.map(r=>`<div class="item"><div class="info"><h4>${esc(r.name)}</h4><p>${st[r.status]||''} · ${fmtT(r.createdAt)}${r.status==='pending'?' · жауап мерзімі: '+fmtT(r.dueAt):''}</p></div><button class="btn btn-s btn-sm" onclick="openTchChat('${r.id}')">💬 Чат</button></div>`).join('')+`</div></div>`:'';
+}
+function tickCooldown(){
+  const b=document.getElementById('tch-req-btn'),l=document.getElementById('tch-req-cd');if(!b||!user)return;
+  const left=cdLeft(user.id);
+  b.disabled=left>0;l.textContent=left>0?('Келесі өтініш: '+Math.ceil(left/1000)+' сек.'):'';
+}
+setInterval(tickCooldown,1000);
+
+// --- Админ жағы ---
+let admThread=null;
+function renderClassReqs(){
+  const el=document.getElementById('admin-class-req');if(!el)return;
+  const pend=getReqs().filter(r=>r.status==='pending').sort((a,b)=>a.createdAt-b.createdAt);
+  el.innerHTML=pend.length?pend.map(r=>{
+    const over=Date.now()>r.dueAt;
+    return `<div class="item" style="flex-wrap:wrap"><div class="info"><h4>${esc(r.name)}</h4><p>👨‍🏫 ${esc(r.teacherName)} · ${fmtT(r.createdAt)}</p><p>${over?'<b style="color:var(--err)">⚠ Жауап мерзімі өтті</b>':'Жауап мерзімі: '+fmtT(r.dueAt)}${r.note?' · '+esc(r.note):''}</p></div><div class="acts"><button class="btn btn-ok btn-sm" onclick="adminApproveClass('${r.id}')">✓ Мақұлдау</button><button class="btn btn-d btn-sm" onclick="adminRejectClass('${r.id}')">✕ Бас тарту</button><button class="btn btn-s btn-sm" onclick="openAdmChat('${r.id}')">💬</button></div></div>`}).join(''):'<p class="sub">Жаңа өтініш жоқ</p>';
+}
+function adminApproveClass(rid){
+  if(!user||!user.isAdmin)return;
+  const reqs=getReqs(),r=reqs.find(x=>x.id===rid);if(!r||r.status!=='pending')return;
+  const a=getClasses();let code;do{code=genClassCode()}while(a.some(c=>c.code===code));
+  const cid='c_'+Date.now().toString(36);
+  a.push({id:cid,name:r.name,teacherId:r.teacherId,teacherName:r.teacherName,code,students:[],reqId:r.id});
+  saveClasses(a);r.status='approved';r.classId=cid;LS.set('ubt_class_reqs',reqs);
+  postThread(r.id,'system','','✅ Өтініш мақұлданды. Сынып ашылды. Сынып коды: '+code);
+  showAdmin();
+}
+function adminRejectClass(rid){
+  if(!user||!user.isAdmin)return;
+  if(!confirm('Өтінішті қабылдамау керек пе?'))return;
+  const reqs=getReqs(),r=reqs.find(x=>x.id===rid);if(!r||r.status!=='pending')return;
+  r.status='rejected';LS.set('ubt_class_reqs',reqs);
+  postThread(r.id,'system','','❌ Өтініш қабылданбады. Себебін чатта сұрай аласыз.');
+  showAdmin();
+}
+function renderAdminThreads(){
+  const el=document.getElementById('admin-class-threads');if(!el)return;
+  const reqs=getReqs(),cls=getClasses();
+  const rows=reqs.map(r=>({tid:r.id,title:r.name,teacher:r.teacherName,status:r.status}));
+  cls.filter(c=>!c.reqId).forEach(c=>rows.push({tid:threadOfClass(c),title:c.name,teacher:c.teacherName||'',status:'approved'}));
+  rows.forEach(r=>{const m=threadMsgs(r.tid);r.n=m.length;r.last=m.length?m[m.length-1].t:0});
+  rows.sort((a,b)=>(a.status==='pending'?0:1)-(b.status==='pending'?0:1)||b.last-a.last);
+  const lab={pending:'⏳ Күтуде',approved:'✓ Сынып ашық',rejected:'✕ Қабылданбады'};
+  el.innerHTML=rows.length?rows.map(r=>`<div class="item"><div class="info"><h4>${esc(r.title)}</h4><p>👨‍🏫 ${esc(r.teacher)} · ${lab[r.status]} · ${r.n} хабарлама${r.last?' · '+fmtT(r.last):''}</p></div><button class="btn ${admThread===r.tid?'btn-p':'btn-s'} btn-sm" onclick="openAdmChat('${r.tid}')">💬 Ашу</button></div>`).join(''):'<p class="sub">Чат жоқ</p>';
+}
+function openAdmChat(tid){admThread=tid;renderAdminThreads();renderAdminClassChat()}
+function renderAdminClassChat(){
+  const el=document.getElementById('admin-class-chat');if(!el)return;
+  if(!admThread){el.innerHTML='';return}
+  el.innerHTML=`<div style="margin-top:14px;border-top:1px solid var(--b);padding-top:12px"><div style="display:flex;justify-content:space-between;align-items:center"><h3>💬 ${esc(threadTitle(admThread))}</h3><button class="btn btn-s btn-sm" onclick="admThread=null;renderAdminThreads();renderAdminClassChat()">Жабу</button></div>${chatBoxHTML(admThread,'admin')}</div>`;
+  scrollChat();
+}
+(function(){
+  const _rt=renderTeacher;
+  renderTeacher=function(){
+    _rt();
+    if(!user)return;
+    const T=isTeacherUser(),A=!!user.isAdmin;
+    const cc=document.getElementById('tch-create-card');if(cc)cc.style.display=A?'':'none';
+    ['tch-req-card','tch-reqs','tch-chat'].forEach(i=>{const e=document.getElementById(i);if(e)e.style.display=(T&&!A)?'':'none'});
+    if(T&&!A){renderTeacherReqs();renderTeacherChat();tickCooldown()}
+  };
+  const _sa=showAdmin;
+  showAdmin=function(){_sa();try{renderClassReqs();renderAdminThreads();renderAdminClassChat()}catch(e){}};
+  const _sc=sendChatMsg;
+  sendChatMsg=function(){
+    const key='support_'+threadKey(chatLogin||'');
+    if(chatLogin&&!cdCheck(key))return;
+    const n0=getChatMessages().length;
+    _sc();
+    if(getChatMessages().length>n0)cdStamp(key);
   };
 })();
 try{if(user&&document.getElementById('s-home').classList.contains('active'))renderHomeExtras()}catch(e){}
