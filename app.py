@@ -219,6 +219,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
       <button class="btn btn-s btn-sm" onclick="showMistakes()">❌ Қателер</button>
       <button class="btn btn-s btn-sm" onclick="showHistory()">📋 Тарих</button>
       <button class="btn btn-s btn-sm" onclick="startQuickSubject()">⚡ Жылдам</button>
+      <button class="btn btn-s btn-sm" onclick="showFileTest()">📂 Файлдан</button>
       <button class="btn btn-w btn-sm" onclick="openContactFromApp()">💬 Админге</button>
       <button class="btn btn-w btn-sm" id="admin-btn" style="display:none" onclick="showAdmin()">🛠 Админ</button>
     </div>
@@ -310,12 +311,14 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
       </div>
       <button class="btn btn-ok btn-sm" onclick="addQToDraft()">+ Сұрақты қосу</button>
     </div>
+    <div id="c-bulk-host"></div>
     <div class="card">
       <h3 style="margin-bottom:10px">Қосылған сұрақтар (<span id="c-count">0</span>)</h3>
       <div id="c-qlist" class="list"></div>
     </div>
     <div class="row">
       <button class="btn btn-p" onclick="saveTest()">Тестті сақтау</button>
+      <button class="btn btn-s" onclick="exportDraft()">⬇ Файлға жүктеу</button>
       <button class="btn btn-s" onclick="goHome()">Болдырмау</button>
     </div>
   </div>
@@ -335,8 +338,17 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
       </div>
       <button class="btn btn-ok" onclick="addQToExisting()">Сұрақты қосу</button>
     </div>
+    <div id="e-bulk-host"></div>
     <div id="edit-qlist" class="list"></div>
     <div class="row" style="margin-top:16px"><button class="btn btn-s" onclick="showMyTests()">Артқа</button></div>
+  </div>
+</div>
+
+<div id="s-file" class="screen">
+  <div class="wrap">
+    <div class="hdr"><h2>📂 Файлдан тест тапсыру</h2><p class="sub">Сұрақтар файлын таңдаңыз немесе мәтінді қойыңыз</p></div>
+    <div id="f-bulk-host"></div>
+    <div class="row" style="margin-top:16px"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
 </div>
 
@@ -1092,6 +1104,7 @@ function showMyTests(){
     <div class="acts">
       <button class="btn btn-p btn-sm" onclick="startUserTest('${t.id}')">Бастау</button>
       <button class="btn btn-s btn-sm" onclick="editTest('${t.id}')">+ Сұрақ</button>
+      <button class="btn btn-s btn-sm" onclick="exportTest('${t.id}')">⬇ Файл</button>
       ${t.status!=='pending'&&t.status!=='approved'&&!t.isPublic?`<button class="btn btn-w btn-sm" onclick="requestPub('${t.id}')">Жариялауға</button>`:''}
       <button class="btn btn-d btn-sm" onclick="delTest('${t.id}')">✕</button>
     </div></div>`}).join('')}
@@ -1126,12 +1139,12 @@ function renderEditList(t){
     <div class="acts"><button class="btn btn-d btn-sm" onclick="removeQFromTest('${t.id}',${i})">✕</button></div></div>`).join('');
 }
 function addQToExisting(){
-  const t=allTests().find(x=>x.id===editingId);if(!t)return;
+  const all=allTests();const t=all.find(x=>x.id===editingId);if(!t)return;
   const text=document.getElementById('e-qtext').value.trim();
   const opts=[0,1,2,3].map(i=>document.getElementById('e-o'+i).value.trim());
   const correct=+document.querySelector('input[name="e-cor"]:checked').value;
   if(!text||opts.some(o=>!o)){alert('Барлығын толтырыңыз!');return}
-  t.questions.push({id:'q_'+Date.now(),text,options:opts,correct,points:1});saveAllTests(allTests());
+  t.questions.push({id:'q_'+Date.now(),text,options:opts,correct,points:1});saveAllTests(all);
   document.getElementById('e-qtext').value='';['e-o0','e-o1','e-o2','e-o3'].forEach(i=>document.getElementById(i).value='');
   renderEditList(t);alert('Сұрақ қосылды!');
 }
@@ -1223,6 +1236,342 @@ function showMistakes(){
 function clearMist(){if(confirm('Тазалау?')){LS.set('ubt_mistakes_'+user.id,[]);showMistakes()}}
 function startMistakes(){const m=LS.get('ubt_mistakes_'+user.id,[]);if(!m.length)return;st=baseState();st.questions=m.map(q=>({...q}));st.subjectName='Қателер';st.isMistakes=true;st.timerSeconds=Math.max(m.length*90,600);beginTest()}
 function startMistakesFromLast(){if(!st.lastWrong||!st.lastWrong.length){alert('Қате жоқ!');return}st.questions=st.lastWrong.map(q=>({...q}));st.currentIndex=0;st.answers={};st.flags={};st.subjectName='Қателер';st.isMistakes=true;st.timerSeconds=Math.max(st.questions.length*90,600);beginTest()}
+
+// ================= Көп сұрақты бірден қосу / файлға сақтау / файлдан тапсыру =================
+const MAX_Q=500;
+const SAMPLE_TXT=`Тақырып: Қазақ хандығы
+Пән: Қазақстан тарихы
+
+1. Қазақ хандығы қай жылы құрылды?
+A) 1456
+B) 1465
+C) 1480
+D) 1511
+Жауап: B
+
+2. «Жеті жарғы» кімдікі?
+A) Қасым хан
+B) Есім хан
+*C) Тәуке хан
+D) Абылай хан
+
+3. Тәуелсіздік күні?
+A) 16 желтоқсан
+B) 25 қазан
+C) 30 тамыз
+D) 1 мамыр
+Жауап: A
+`;
+const RU_ORDER='АБВГД',LAT_ORDER='ABCDE';
+function normLetter(ch){ch=String(ch||'').toUpperCase();return({'А':'A','В':'B','С':'C','Е':'E'})[ch]||ch}
+function letterIdx(ch,ru){
+  ch=String(ch||'').toUpperCase();
+  if(ru){const i=RU_ORDER.indexOf(ch);if(i>=0)return i}
+  const j=LAT_ORDER.indexOf(normLetter(ch));
+  if(j>=0)return j;
+  return ch==='Д'?3:-1;
+}
+function shortT(x){x=String(x||'').trim();return x.length>40?x.slice(0,40)+'…':x}
+function checkQ(q){
+  if(!q.text||!String(q.text).trim())return 'сұрақ мәтіні жоқ';
+  if(!Array.isArray(q.options)||q.options.length!==4)return 'нұсқа саны 4 болуы керек (табылды: '+(Array.isArray(q.options)?q.options.length:0)+')';
+  if(q.options.some(o=>!String(o).trim()))return 'бос нұсқа бар';
+  if(!(q.correct>=0&&q.correct<4))return 'дұрыс жауап көрсетілмеген (мыс: «Жауап: B» немесе *B)';
+  return null;
+}
+function addParsed(res,q){
+  const err=checkQ(q);
+  if(err)res.errors.push({line:q.line||0,msg:'«'+shortT(q.text)+'» — '+err});
+  else res.questions.push({text:String(q.text).trim(),options:q.options.map(o=>String(o).trim()),correct:q.correct});
+}
+function parseQuestions(text,fname){
+  text=String(text||'').replace(/^\uFEFF/,'').replace(/\r\n?/g,'\n');
+  const ext=((fname||'').split('.').pop()||'').toLowerCase();
+  const t0=text.trim();
+  if(ext==='json'||t0[0]==='['||t0[0]==='{'){
+    const r=parseJSONQs(t0);
+    if(r)return r;
+    if(ext==='json')return{questions:[],errors:[{line:0,msg:'JSON форматы қате'}],meta:{},format:'json'};
+  }
+  const ne=text.split('\n').filter(l=>l.trim());
+  const sepCount=(l,c)=>(l.split(c).length-1);
+  const tableLike=ne.length&&[',',';'].some(c=>ne.slice(0,2).every(l=>sepCount(l,c)>=5)&&!/^\s*\d+\s*[.)]/.test(ne[0]));
+  if(ext==='csv'||ext==='tsv'||(ne[0]&&sepCount(ne[0],'\t')>=5)||tableLike)return parseTableQs(text,ext);
+  return parseTextQs(text);
+}
+function parseJSONQs(t){
+  let data;try{data=JSON.parse(t)}catch(e){return null}
+  const res={questions:[],errors:[],meta:{},format:'json'};
+  const arr=Array.isArray(data)?data:(data&&Array.isArray(data.questions)?data.questions:null);
+  if(!arr){res.errors.push({line:0,msg:'JSON ішінен сұрақтар тізімі табылмады'});return res}
+  if(!Array.isArray(data)){res.meta.topic=data.topic||data.title||'';res.meta.subject=data.subject||''}
+  arr.forEach((o,i)=>{
+    o=o||{};
+    const q={text:o.text||o.question||o.q||'',options:o.options||o.answers||o.variants||[],correct:-1,line:i+1};
+    const c=o.correct!==undefined?o.correct:o.answer;
+    if(typeof c==='number')q.correct=c;
+    else if(typeof c==='string'){
+      const m=/^[A-Da-dА-Да-д]$/.exec(c.trim());
+      q.correct=m?letterIdx(c.trim()):q.options.findIndex(x=>String(x).trim().toLowerCase()===c.trim().toLowerCase());
+    }
+    addParsed(res,q);
+  });
+  return res;
+}
+function csvRows(text,d){
+  const rows=[];let row=[],cell='',inq=false;
+  for(let i=0;i<text.length;i++){
+    const ch=text[i];
+    if(inq){if(ch==='"'){if(text[i+1]==='"'){cell+='"';i++}else inq=false}else cell+=ch}
+    else if(ch==='"'&&cell===''){inq=true}
+    else if(ch===d){row.push(cell);cell=''}
+    else if(ch==='\n'){row.push(cell);rows.push(row);row=[];cell=''}
+    else cell+=ch;
+  }
+  row.push(cell);
+  if(row.length>1||row[0].trim())rows.push(row);
+  return rows;
+}
+function parseTableQs(text,ext){
+  const res={questions:[],errors:[],meta:{},format:'table'};
+  const first=(text.split('\n').find(l=>l.trim())||'');
+  let d='\t';
+  if(ext!=='tsv'&&!(first.includes('\t')&&ext!=='csv')){
+    const c=(first.match(/,/g)||[]).length,sc=(first.match(/;/g)||[]).length;
+    d=sc>c?';':',';
+  }
+  const rows=csvRows(text,d).filter(r=>r.some(c=>String(c).trim()));
+  let off=0,start=0;
+  const h0=rows.length?rows[0].map(c=>String(c).trim()):[];
+  const hw=/^(сұрақ|вопрос|question)$/i;
+  if(h0.length&&(hw.test(h0[0])||(/^(№|#|n|nr|id)$/i.test(h0[0])&&hw.test(h0[1]||'')))){
+    start=1;
+    if(!hw.test(h0[0]))off=1;
+  }
+  const ru=rows.slice(start).some(r=>/^[БбГг]$/.test(String(r[off+5]||'').trim()));
+  for(let i=start;i<rows.length;i++){
+    const r=rows[i].map(c=>String(c).trim());
+    const q={text:r[off]||'',options:[r[off+1],r[off+2],r[off+3],r[off+4]].map(x=>x||''),correct:-1,line:i+1};
+    const v=(r[off+5]||'').trim();
+    if(/^[1-4]$/.test(v))q.correct=+v-1;
+    else if(/^[A-Da-dА-Да-д]$/.test(v))q.correct=letterIdx(v,ru);
+    else if(v)q.correct=q.options.findIndex(x=>x.toLowerCase()===v.toLowerCase());
+    addParsed(res,q);
+  }
+  return res;
+}
+function parseTextQs(text){
+  const res={questions:[],errors:[],meta:{},format:'text'};
+  const lines=text.split('\n');
+  const optRe=/^\s*([*+]?)\s*([AaBbCcDdEeАаБбВвГгДдЕеСс])\s*[).:]\s*(.*)$/;
+  const ansRe=/^\s*(?:жауап(?:ы)?|дұрыс(?:\s+жауап)?|ответ|answer|ans|key)\s*[:=\-–]\s*(.+?)\s*$/i;
+  const metaRe=/^\s*(тақырып|тема|topic|пән|предмет|subject)\s*[:=]\s*(.+?)\s*$/i;
+  const numRe=/^\s*\d+\s*[.)]\s*(.*)$/;
+  let cur=null,blank=false,started=false,orphan=false;
+  function fin(){
+    if(!cur)return;
+    const q=cur;cur=null;
+    if(q.correct<0&&q.marks.length===1)q.correct=q.marks[0];
+    else if(q.correct<0&&q.marks.length>1){res.errors.push({line:q.line,msg:'«'+shortT(q.text)+'» — бірнеше дұрыс жауап белгіленген'});return}
+    addParsed(res,q);
+  }
+  for(let i=0;i<lines.length;i++){
+    const L=i+1,line=lines[i].trim();
+    if(!line){if(cur)blank=true;continue}
+    if(!started&&!cur){
+      const mm=metaRe.exec(line);
+      if(mm){const k=mm[1].toLowerCase();if(/тақырып|тема|topic/.test(k))res.meta.topic=mm[2];else res.meta.subject=mm[2];continue}
+    }
+    const am=ansRe.exec(line);
+    if(am&&cur&&cur.options.length){
+      const v=am[1].trim();
+      let idx=-1;
+      const m1=/^([A-Za-zА-Яа-я]|[1-9])\s*[).]?$/.exec(v);
+      if(m1){
+        if(/\d/.test(m1[1]))idx=+m1[1]-1;
+        else{
+          const want=normLetter(m1[1]);
+          idx=cur.labels.findIndex(l=>normLetter(l)===want);
+          if(idx<0)idx=letterIdx(m1[1],cur.labels.some(l=>/[БбГг]/.test(l)));
+        }
+      }
+      else idx=cur.options.findIndex(x=>x.trim().toLowerCase()===v.toLowerCase());
+      cur.correct=idx;
+      fin();blank=false;continue;
+    }
+    const om=optRe.exec(line);
+    if(om){
+      if(!cur){if(!orphan){res.errors.push({line:L,msg:'нұсқа сұрақсыз тұр: «'+shortT(line)+'»'});orphan=true}continue}
+      cur.options.push(om[3]);cur.labels.push(om[2]);
+      if(om[1])cur.marks.push(cur.options.length-1);
+      blank=false;continue;
+    }
+    const nm=numRe.exec(line);
+    if(cur&&cur.options.length){
+      if(nm||blank||cur.options.length>=4)fin();
+      else{cur.options[cur.options.length-1]+=' '+line;continue}
+    }else if(cur){
+      if(nm||blank)fin();
+      else{cur.text+=' '+line;blank=false;continue}
+    }
+    cur={text:nm?nm[1]:line,options:[],labels:[],marks:[],correct:-1,line:L};
+    started=true;blank=false;orphan=false;
+  }
+  fin();
+  return res;
+}
+
+const bulk={c:null,e:null,f:null};
+const bulkName={c:'',e:'',f:''};
+function bulkInfoHTML(r){
+  if(!r)return '';
+  let h='';
+  if(r.questions.length)h+='<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:8px">✅ <b>'+r.questions.length+'</b> сұрақ танылды'+(r.meta&&r.meta.topic?' · тақырып: <b>'+esc(r.meta.topic)+'</b>':'')+'</div>';
+  if(r.errors.length){
+    h+='<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;padding:10px 12px;font-size:12px;margin-bottom:8px">⚠ <b>'+r.errors.length+'</b> сұрақта қате бар (олар қосылмайды):<ul style="margin:6px 0 0 18px">'
+      +r.errors.slice(0,8).map(e=>'<li>'+(e.line?e.line+'-жол: ':'')+esc(e.msg)+'</li>').join('')+'</ul>'+(r.errors.length>8?'<div>… және тағы '+(r.errors.length-8)+'</div>':'')+'</div>';
+  }
+  if(!r.questions.length&&!r.errors.length)h='<div class="sub">Сұрақ табылмады. Үлгі форматты қараңыз.</div>';
+  return h;
+}
+function bulkRefresh(ctx,fname){
+  const txt=document.getElementById(ctx+'-bulk-text').value;
+  bulk[ctx]=txt.trim()?parseQuestions(txt,fname||''):null;
+  document.getElementById(ctx+'-bulk-info').innerHTML=bulkInfoHTML(bulk[ctx]);
+}
+function bulkFromFile(ctx,inp){
+  const f=inp.files&&inp.files[0];if(!f)return;
+  if(f.size>2*1024*1024){alert('Файл тым үлкен (2 МБ-тан аспауы керек)');inp.value='';return}
+  const rd=new FileReader();
+  rd.onload=()=>{
+    const txt=String(rd.result);
+    if(txt.indexOf('\uFFFD')>=0)alert('Файл UTF-8 кодтауында емес болуы мүмкін. Excel-де «CSV UTF-8» ретінде сақтаңыз.');
+    document.getElementById(ctx+'-bulk-text').value=txt;
+    bulkName[ctx]=f.name;
+    bulkRefresh(ctx,f.name);
+  };
+  rd.onerror=()=>alert('Файлды оқу мүмкін болмады');
+  rd.readAsText(f,'utf-8');
+}
+function clearBulk(ctx){
+  bulk[ctx]=null;bulkName[ctx]='';
+  const t=document.getElementById(ctx+'-bulk-text');if(t)t.value='';
+  const fi=document.getElementById(ctx+'-bulk-file');if(fi)fi.value='';
+  const inf=document.getElementById(ctx+'-bulk-info');if(inf)inf.innerHTML='';
+}
+function bulkBlock(ctx){
+  const btns={
+    c:'<button class="btn btn-ok" onclick="addBulkToDraft()">➕ Сұрақтарды тізімге қосу</button>',
+    e:'<button class="btn btn-ok" onclick="addBulkToExisting()">➕ Тестке қосу</button>',
+    f:'<button class="btn btn-p" onclick="startFromFile()">▶ Тестті бастау</button><button class="btn btn-ok" onclick="saveFromFile()">💾 Менің тесттеріме сақтау</button>'
+  }[ctx];
+  return `<div class="card">
+    <h3 style="margin-bottom:6px">📥 ${ctx==='f'?'Сұрақтар файлы':'Көп сұрақты бірден қосу (50–100+)'}</h3>
+    <p class="sub" style="margin-bottom:10px">Файл таңдаңыз (.txt, .csv) немесе мәтінді / Excel-ден көшірілген кестені қойыңыз. Бір реттен 500 сұраққа дейін.</p>
+    <details style="margin-bottom:12px"><summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--p)">Формат үлгісі</summary>
+      <pre style="font-size:12px;background:var(--bg);border-radius:10px;padding:10px;margin:8px 0;white-space:pre-wrap">1. Сұрақ мәтіні
+A) нұсқа
+B) нұсқа
+C) нұсқа
+D) нұсқа
+Жауап: B
+
+(Жауапты *C) деп белгілеуге де болады.
+Excel/CSV: 6 баған — сұрақ, A, B, C, D, дұрыс жауап (A–D))</pre>
+      <button class="btn btn-s btn-sm" onclick="downloadSample()">⬇ Үлгі файл</button>
+    </details>
+    <div class="fg"><label>Файлдан жүктеу</label><input type="file" id="${ctx}-bulk-file" accept=".txt,.csv,.tsv,.json,text/plain,text/csv" onchange="bulkFromFile('${ctx}',this)"></div>
+    <div class="fg"><label>немесе мәтінді осында қойыңыз</label><textarea id="${ctx}-bulk-text" style="min-height:160px;font-family:monospace;font-size:13px" placeholder="1. Сұрақ...&#10;A) ...&#10;B) ...&#10;C) ...&#10;D) ...&#10;Жауап: B" oninput="bulkRefresh('${ctx}','')"></textarea></div>
+    <div id="${ctx}-bulk-info"></div>
+    <div class="row" style="justify-content:flex-start">${btns}</div>
+  </div>`;
+}
+function takeBulkQs(ctx){
+  const r=bulk[ctx];
+  if(!r||!r.questions.length){alert('Алдымен сұрақтарды қойыңыз немесе файл таңдаңыз');return null}
+  if(r.errors.length&&!confirm(r.errors.length+' сұрақта қате бар, олар қосылмайды. Жалғастыру керек пе?'))return null;
+  const base='q_'+Date.now().toString(36);
+  return{qs:r.questions.map((q,i)=>({id:base+'_'+i,text:q.text,options:q.options.slice(),correct:q.correct,points:1})),meta:r.meta||{}};
+}
+function matchSubject(sub){
+  const el=document.getElementById('c-subject');
+  if(!sub||!el)return null;
+  const x=String(sub).trim().toLowerCase();
+  return Array.from(el.options||[]).find(o=>o.value&&(o.value===x||String(o.text).toLowerCase()===x))||null;
+}
+function addBulkToDraft(){
+  const r=takeBulkQs('c');if(!r)return;
+  if(draft.questions.length+r.qs.length>MAX_Q){alert('Бір тестте '+MAX_Q+' сұрақтан аспауы керек');return}
+  draft.questions.push(...r.qs);
+  const tp=document.getElementById('c-topic');
+  if(r.meta.topic&&!tp.value.trim())tp.value=r.meta.topic;
+  const so=matchSubject(r.meta.subject),sel=document.getElementById('c-subject');
+  if(so&&!sel.value)sel.value=so.value;
+  clearBulk('c');renderDraftQs();
+  alert('✅ '+r.qs.length+' сұрақ қосылды. Енді пән мен тақырыпты тексеріп, «Тестті сақтау» басыңыз.');
+}
+function addBulkToExisting(){
+  const r=takeBulkQs('e');if(!r)return;
+  const all=allTests();const t=all.find(x=>x.id===editingId);if(!t)return;
+  if(t.questions.length+r.qs.length>MAX_Q){alert('Бір тестте '+MAX_Q+' сұрақтан аспауы керек');return}
+  t.questions.push(...r.qs);saveAllTests(all);
+  clearBulk('e');renderEditList(t);
+  alert('✅ '+r.qs.length+' сұрақ қосылды');
+}
+function showFileTest(){clearBulk('f');showScr('s-file')}
+function startFromFile(){
+  const r=takeBulkQs('f');if(!r)return;
+  const label=r.meta.topic||(bulkName.f||'').replace(/\.[^.]+$/,'')||'Файлдан тест';
+  st=baseState();
+  st.questions=r.qs.map(q=>({...q,subjectName:label}));
+  st.subjectName=label;
+  st.timerSeconds=Math.max(r.qs.length*90,600);
+  beginTest();
+}
+function saveFromFile(){
+  const r=takeBulkQs('f');if(!r)return;
+  let topic=prompt('Тест тақырыбы:',r.meta.topic||(bulkName.f||'').replace(/\.[^.]+$/,'')||'');
+  if(topic===null)return;
+  topic=topic.trim();
+  if(!topic){alert('Тақырыпты жазыңыз');return}
+  const so=matchSubject(r.meta.subject);
+  const test={id:'t_'+Date.now(),subject:so?so.value:'other',subjectName:so?so.text:(r.meta.subject||'Басқа'),topic,desc:'',isPublic:false,status:'private',authorId:user.id,authorName:user.name,questions:r.qs,createdAt:new Date().toISOString()};
+  const all=allTests();all.unshift(test);saveAllTests(all);
+  clearBulk('f');alert('✅ Тест сақталды: '+r.qs.length+' сұрақ');showMyTests();
+}
+function testToText(topic,subjectName,qs){
+  let o='Тақырып: '+topic+'\n'+(subjectName?'Пән: '+subjectName+'\n':'')+'\n';
+  qs.forEach((q,i)=>{
+    o+=(i+1)+'. '+String(q.text).replace(/\s*\n\s*/g,' ')+'\n';
+    q.options.forEach((x,j)=>{o+='ABCD'[j]+') '+String(x).replace(/\s*\n\s*/g,' ')+'\n'});
+    o+='Жауап: '+'ABCD'[q.correct]+'\n\n';
+  });
+  return o;
+}
+function safeName(x){return String(x||'test').replace(/[\\/:*?"<>|]+/g,'_').trim().slice(0,60)||'test'}
+function downloadText(name,text){
+  try{
+    const blob=new Blob(['\uFEFF'+text],{type:'text/plain;charset=utf-8'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);a.download=name;
+    document.body.appendChild(a);a.click();
+    setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1000);
+  }catch(e){alert('Файлды жүктеу мүмкін болмады')}
+}
+function exportTest(id){
+  const t=allTests().find(x=>x.id===id);
+  if(!t||!t.questions.length){alert('Сұрақ жоқ');return}
+  downloadText(safeName(t.topic)+'.txt',testToText(t.topic,t.subjectName,t.questions));
+}
+function exportDraft(){
+  if(!draft.questions.length){alert('Алдымен сұрақ қосыңыз');return}
+  const topic=document.getElementById('c-topic').value.trim()||'Тест';
+  const sel=document.getElementById('c-subject');
+  const sn=sel.value?sel.options[sel.selectedIndex].text:'';
+  downloadText(safeName(topic)+'.txt',testToText(topic,sn,draft.questions));
+}
+function downloadSample(){downloadText('ulgi_suraqtar.txt',SAMPLE_TXT)}
+['c','e','f'].forEach(c=>{const h=document.getElementById(c+'-bulk-host');if(h)h.innerHTML=bulkBlock(c)});
 
 document.addEventListener('click',e=>{const side=document.getElementById('sidebar');if(side&&side.classList.contains('open')&&!side.contains(e.target)&&!e.target.classList.contains('side-tog'))side.classList.remove('open')});
 </script>
