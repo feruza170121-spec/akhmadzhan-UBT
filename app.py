@@ -615,6 +615,8 @@ body.dark #admin-chat input,body.dark #admin-chat textarea{color:#111}
     </div>
     <div class="card" style="padding:20px">
       <h3 style="margin-bottom:12px">👥 Тіркелгендер</h3>
+      <div class="fg"><input id="admin-user-q" placeholder="🔍 Атын жазып іздеу..." oninput="renderAdminUsers()"></div>
+      <div id="admin-user-count" class="sub" style="margin-bottom:8px"></div>
       <div id="admin-users" class="list"></div>
     </div>
     <div class="card" style="padding:20px">
@@ -947,6 +949,38 @@ function getLeaderboard(){
 }
 (function(){const u=LS.get('ubt_current');if(u&&u.name){user=u;enterApp()}})();
 
+function renderAdminUsers(){
+  const el=document.getElementById('admin-users');if(!el)return;
+  const q=((document.getElementById('admin-user-q')||{}).value||'').trim().toLowerCase();
+  const tests=allTests();
+  let users=Object.values(LS.get('ubt_profiles',{})).map(p=>{
+    const st0=getUserStats(p.id);
+    const pub=tests.filter(t=>t.authorId===p.id&&(t.isPublic||t.status==='approved'));
+    return{p,s:st0,pub};
+  });
+  users.sort((a,b)=>(b.s.stars||0)-(a.s.stars||0)||(b.s.title?1:0)-(a.s.title?1:0)||(b.s.points||0)-(a.s.points||0)||String(a.p.name).localeCompare(String(b.p.name)));
+  if(q)users=users.filter(u=>String(u.p.name||'').toLowerCase().indexOf(q)>=0);
+  const cnt=document.getElementById('admin-user-count');
+  if(cnt)cnt.textContent=q?('Табылды: '+users.length):('Барлығы: '+users.length+' · атақты/жұлдызы көптен бастап');
+  el.innerHTML=users.length?users.map(u=>{
+    const p=u.p,s=u.s;
+    return `<div class="item" style="flex-wrap:wrap">
+      <div style="position:relative">
+        <div style="width:40px;height:40px;border-radius:50%;background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700">${esc((p.name||'?')[0].toUpperCase())}</div>
+        ${s.verified?'<span style="position:absolute;bottom:-2px;right:-2px;background:#2563eb;color:#fff;width:16px;height:16px;border-radius:50%;font-size:10px;line-height:16px;text-align:center">✓</span>':''}
+      </div>
+      <div class="info"><h4>${esc(p.name)}</h4>
+        <p>🔑 пароль: <b>${esc(p.password||'—')}</b></p>
+        <p>⭐ ${s.points||0} · ${esc(s.title||'Атақ жоқ')} · <span style="color:#f59e0b">${starStr(s.stars||0)}</span></p>
+        <p>🌐 Жариялаған тест: <b>${u.pub.length}</b>${u.pub.length?' — '+esc(u.pub.slice(0,3).map(t=>t.topic).join(', '))+(u.pub.length>3?'…':''):''}</p></div>
+      <div class="acts">
+        <button class="btn btn-p btn-sm" onclick="adminViewUser(${jsq(p.id)})">Профиль</button>
+        <button class="btn btn-ok btn-sm" onclick="adminToggleVerify(${jsq(p.id)})">${s.verified?'✓ Бар':'Галочка'}</button>
+        <button class="btn btn-w btn-sm" onclick="adminSetTitle(${jsq(p.id)})">Атақ</button>
+        <button class="btn btn-s btn-sm" onclick="adminSetStars(${jsq(p.id)})">Жұлдыз</button>
+        <button class="btn btn-d btn-sm" onclick="adminDelUser(${jsq(p.id)})">Өшіру</button>
+      </div></div>`}).join(''):'<p class="sub">Ешкім табылмады</p>';
+}
 function showAdmin(){
   if(!user||!user.isAdmin){alert('Қолжетімсіз');return}
   const tests=allTests();
@@ -970,21 +1004,7 @@ function showAdmin(){
         <button class="btn btn-d btn-sm" onclick="rejectTest('${t.id}')">✕ Бас тарту</button>
       </div></div>`).join(''):'<p class="sub">Күтіп тұрған тест жоқ</p>';
 
-  document.getElementById('admin-users').innerHTML=users.length?users.map(p=>{
-    const s=getUserStats(p.id);
-    return `<div class="item" style="flex-wrap:wrap">
-      <div style="position:relative">
-        <div style="width:40px;height:40px;border-radius:50%;background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700">${esc((p.name||'?')[0].toUpperCase())}</div>
-        ${s.verified?'<span style="position:absolute;bottom:-2px;right:-2px;background:#2563eb;color:#fff;width:16px;height:16px;border-radius:50%;font-size:10px;line-height:16px;text-align:center">✓</span>':''}
-      </div>
-      <div class="info"><h4>${esc(p.name)}</h4><p>⭐ ${s.points||0} · ${esc(s.title||'Атақ жоқ')} · <span style="color:#f59e0b">${starStr(s.stars||0)}</span></p></div>
-      <div class="acts">
-        <button class="btn btn-p btn-sm" onclick="adminViewUser(${jsq(p.id)})">Профиль</button>
-        <button class="btn btn-ok btn-sm" onclick="adminToggleVerify(${jsq(p.id)})">${s.verified?'✓ Бар':'Галочка'}</button>
-        <button class="btn btn-w btn-sm" onclick="adminSetTitle(${jsq(p.id)})">Атақ</button>
-        <button class="btn btn-s btn-sm" onclick="adminSetStars(${jsq(p.id)})">Жұлдыз</button>
-        <button class="btn btn-d btn-sm" onclick="adminDelUser(${jsq(p.id)})">Өшіру</button>
-      </div></div>`}).join(''):'<p class="sub">Профиль жоқ</p>';
+  renderAdminUsers();
   // password change block
   let passBox=document.getElementById('admin-pass-box');
   if(!passBox){
