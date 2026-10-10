@@ -222,6 +222,7 @@ body.dark #admin-chat input,body.dark #admin-chat textarea{color:#111}
       <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doLogin()">Кіру</button>
       <button class="btn btn-s" style="width:100%;margin-bottom:10px" onclick="showRegister()">Тіркелу</button>
       <button class="btn btn-s btn-sm" style="width:100%;margin-bottom:10px" onclick="showForgot()">Парольді ұмыттым</button>
+      <button class="btn btn-s btn-sm" style="width:100%;margin-bottom:10px" onclick="showTeacherReg()">👨‍🏫 Мұғалімдерге арналған кабинет</button>
       <button class="btn btn-w btn-sm" style="width:100%" onclick="showContactAdmin()">💬 Админге жазу</button>
     </div>
     <div class="card" id="register-box" style="display:none">
@@ -230,6 +231,17 @@ body.dark #admin-chat input,body.dark #admin-chat textarea{color:#111}
       <div class="fg"><label>Пароль *</label><input id="reg-pass" type="password" placeholder="Кемінде 4 таңба"></div>
       <div class="fg"><label>Парольді қайталаңыз *</label><input id="reg-pass2" type="password" placeholder="Қайталаңыз"></div>
       <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doRegister()">Тіркелу</button>
+      <button class="btn btn-s btn-sm" style="width:100%;margin-bottom:10px" onclick="showTeacherReg()">👨‍🏫 Мұғалім ретінде тіркелу</button>
+      <button class="btn btn-s" style="width:100%" onclick="showLoginBox()">Артқа</button>
+    </div>
+    <div class="card" id="teacher-reg-box" style="display:none">
+      <h3 style="margin-bottom:6px">👨‍🏫 Мұғалімдерге арналған кабинет</h3>
+      <p class="sub" style="margin-bottom:12px">Тіркелгеннен кейін өтініш админге түседі. Админ рұқсат бергенше мұғалім мүмкіндіктері ашылмайды.</p>
+      <div class="fg"><label>Аты-жөніңіз (логин) *</label><input id="tr-name" placeholder="Мыс: Айгүл Серікқызы" maxlength="30"></div>
+      <div class="fg"><label>Мектеп / пән</label><input id="tr-info" placeholder="Мыс: №12 мектеп, математика" maxlength="80"></div>
+      <div class="fg"><label>Пароль *</label><input id="tr-pass" type="password" placeholder="Кемінде 4 таңба"></div>
+      <div class="fg"><label>Парольді қайталаңыз *</label><input id="tr-pass2" type="password" placeholder="Қайталаңыз"></div>
+      <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doRegisterTeacher()">Өтініш жіберу</button>
       <button class="btn btn-s" style="width:100%" onclick="showLoginBox()">Артқа</button>
     </div>
     <div class="card" id="forgot-box" style="display:none">
@@ -587,7 +599,8 @@ body.dark #admin-chat input,body.dark #admin-chat textarea{color:#111}
 <div id="s-teacher" class="screen">
   <div class="wrap wide">
     <div class="hdr"><h2>👨‍🏫 Мұғалім / Куратор</h2><p class="sub">Сынып құрып, оқушылардың нәтижесін бақылаңыз</p></div>
-    <div class="card">
+    <div id="tch-notice"></div>
+    <div class="card" id="tch-create-card">
       <h3 style="margin-bottom:10px">➕ Жаңа сынып</h3>
       <div class="fg"><input id="tch-name" placeholder="Сынып атауы (мыс: 11 «А»)" maxlength="40"></div>
       <button class="btn btn-ok btn-sm" onclick="createClass()">Сынып құру</button>
@@ -612,6 +625,10 @@ body.dark #admin-chat input,body.dark #admin-chat textarea{color:#111}
     <div class="card" style="padding:20px">
       <h3 style="margin-bottom:12px">⏳ Жариялау күтіп тұрған тесттер</h3>
       <div id="admin-pending" class="list"></div>
+    </div>
+    <div class="card" style="padding:20px">
+      <h3 style="margin-bottom:12px">👨‍🏫 Мұғалім өтініштері</h3>
+      <div id="admin-teacher-req" class="list"></div>
     </div>
     <div class="card" style="padding:20px">
       <h3 style="margin-bottom:12px">👥 Тіркелгендер</h3>
@@ -969,12 +986,13 @@ function renderAdminUsers(){
         <div style="width:40px;height:40px;border-radius:50%;background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700">${esc((p.name||'?')[0].toUpperCase())}</div>
         ${s.verified?'<span style="position:absolute;bottom:-2px;right:-2px;background:#2563eb;color:#fff;width:16px;height:16px;border-radius:50%;font-size:10px;line-height:16px;text-align:center">✓</span>':''}
       </div>
-      <div class="info"><h4>${esc(p.name)}</h4>
+      <div class="info"><h4>${esc(p.name)} ${p.role==='teacher'?(p.teacherApproved?'<span class="badge badge-pub">👨‍🏫 Мұғалім</span>':'<span class="badge" style="background:#fef3c7;color:#92400e">⏳ Мұғалім өтініші</span>'):''}</h4>
         <p>🔑 пароль: <b>${esc(p.password||'—')}</b></p>
         <p>⭐ ${s.points||0} · ${esc(s.title||'Атақ жоқ')} · <span style="color:#f59e0b">${starStr(s.stars||0)}</span></p>
         <p>🌐 Жариялаған тест: <b>${u.pub.length}</b>${u.pub.length?' — '+esc(u.pub.slice(0,3).map(t=>t.topic).join(', '))+(u.pub.length>3?'…':''):''}</p></div>
       <div class="acts">
         <button class="btn btn-p btn-sm" onclick="adminViewUser(${jsq(p.id)})">Профиль</button>
+        <button class="btn btn-sm ${p.role==='teacher'&&p.teacherApproved?'btn-s':'btn-ok'}" onclick="adminSetTeacher(${jsq(p.id)},${!(p.role==='teacher'&&p.teacherApproved)})">${p.role==='teacher'&&p.teacherApproved?'Мұғалімді алу':'Мұғалім ету'}</button>
         <button class="btn btn-ok btn-sm" onclick="adminToggleVerify(${jsq(p.id)})">${s.verified?'✓ Бар':'Галочка'}</button>
         <button class="btn btn-w btn-sm" onclick="adminSetTitle(${jsq(p.id)})">Атақ</button>
         <button class="btn btn-s btn-sm" onclick="adminSetStars(${jsq(p.id)})">Жұлдыз</button>
@@ -1172,10 +1190,10 @@ function createFromFile(){
   if(!draftQs.length){alert('Кемінде 1 сұрақ қосыңыз!');return}
   const r={qs:draftQs.slice()};
   const test={id:'t_'+Date.now(),subject,subjectName,topic,desc:document.getElementById('c-desc').value.trim(),isPublic:false,status:requestPub?'pending':'private',authorId:user.id,authorName:user.name,questions:r.qs,createdAt:new Date().toISOString()};
-  if(user.isAdmin&&requestPub){test.isPublic=true;test.status='approved'}
+  if((user.isAdmin||isTeacherUser())&&requestPub){test.isPublic=true;test.status='approved'}
   const all=allTests();all.unshift(test);saveAllTests(all);
   clearManual('c');
-  alert(requestPub&&!user.isAdmin?'✅ Тест сақталды ('+r.qs.length+' сұрақ). Админ мақұлдаған соң жарияланады.':'✅ Тест сақталды: '+r.qs.length+' сұрақ');
+  alert(requestPub&&!(user.isAdmin||isTeacherUser())?'✅ Тест сақталды ('+r.qs.length+' сұрақ). Админ мақұлдаған соң жарияланады.':'✅ Тест сақталды: '+r.qs.length+' сұрақ');
   showMyTests();
 }
 
@@ -1201,7 +1219,7 @@ function showMyTests(){
 function requestPub(id){
   const all=allTests();const t=all.find(x=>x.id===id);
   if(!t)return;
-  if(user.isAdmin){t.isPublic=true;t.status='approved';saveAllTests(all);alert('Жарияланды!');showMyTests();return}
+  if(user.isAdmin||isTeacherUser()){t.isPublic=true;t.status='approved';saveAllTests(all);alert('Жарияланды!');showMyTests();return}
   t.status='pending';t.isPublic=false;saveAllTests(all);alert('Админге жіберілді. Мақұлдаған соң жарияланады.');showMyTests();
 }
 function delTest(id){if(!confirm('Тестті өшіру керек пе?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showMyTests()}
@@ -2588,6 +2606,7 @@ function studentStats(id){
 }
 function showTeacher(){tchOpen=null;document.getElementById('tch-detail').innerHTML='';renderTeacher();showScr('s-teacher')}
 function createClass(){
+  if(!isTeacherUser())return;
   const n=document.getElementById('tch-name').value.trim();
   if(!n){alert('Сынып атауын жазыңыз');return}
   const a=getClasses();let code;
@@ -2601,6 +2620,7 @@ function delClass(id){
   document.getElementById('tch-detail').innerHTML='';renderTeacher();
 }
 function addStudent(cid){
+  if(!isTeacherUser())return;
   const inp=document.getElementById('tch-add-'+cid),login=inp.value.trim();if(!login)return;
   const u=findUserByLogin(login);
   if(!u){alert('Мұндай оқушы тіркелмеген. Алдымен оқушы «Тіркелу» арқылы аккаунт ашуы керек.');return}
@@ -2651,6 +2671,7 @@ function renderTeacher(){
   document.getElementById('tch-joined').innerHTML=joined.length?joined.map(c=>`<div class="item" style="margin-bottom:6px"><div class="info"><h4>${esc(c.name)}</h4><p>Мұғалім: ${esc(c.teacherName||'')}</p></div><button class="btn btn-s btn-sm" onclick="leaveClass('${c.id}')">Шығу</button></div>`).join(''):'';
 }
 function showStudent(cid,sid){
+  if(!isTeacherUser())return;
   const p=profileById(sid),s=studentStats(sid);
   const hist=LS.get('ubt_hist_'+sid,[]).slice(0,10),pg=getProg(sid),mist=LS.get('ubt_mistakes_'+sid,[]);
   const topics={};pg.forEach(x=>{const k=x.topic||'Тест';(topics[k]=topics[k]||[]).push(pctOf(x))});
@@ -2755,6 +2776,79 @@ function profExtra(){
   doLogout=function(){homeQuote=null;_lo()};
 })();
 applyTheme();
+
+// ================= Мұғалім рөлі =================
+function isTeacherUser(){
+  if(!user)return false;if(user.isAdmin)return true;
+  const p=findUserByLogin(user.name);
+  return !!(p&&p.role==='teacher'&&p.teacherApproved);
+}
+function isTeacherPending(){
+  if(!user||user.isAdmin)return false;
+  const p=findUserByLogin(user.name);
+  return !!(p&&p.role==='teacher'&&!p.teacherApproved);
+}
+function showTeacherReg(){
+  ['login-box','register-box','forgot-box','contact-box'].forEach(i=>document.getElementById(i).style.display='none');
+  document.getElementById('teacher-reg-box').style.display='block';
+}
+function doRegisterTeacher(){
+  const name=document.getElementById('tr-name').value.trim();
+  const info=document.getElementById('tr-info').value.trim();
+  const pass=document.getElementById('tr-pass').value,pass2=document.getElementById('tr-pass2').value;
+  if(!name||name.length<2){alert('Аты-жөніңізді жазыңыз');return}
+  if(!pass||pass.length<4){alert('Пароль кемінде 4 таңба');return}
+  if(pass!==pass2){alert('Парольдер сәйкес емес');return}
+  if(findUserByLogin(name)||name.toLowerCase()==='админ'||name.toLowerCase()==='admin'){alert('Бұл ат тіркелген. Басқа ат таңдаңыз');return}
+  const key=name.toLowerCase(),profiles=LS.get('ubt_profiles',{});
+  const u={name:name,password:pass,id:'u_'+key.replace(/[^\p{L}\p{N}]+/gu,'_')+'_'+Date.now().toString(36).slice(-4),isAdmin:false,role:'teacher',teacherApproved:false,teacherInfo:info};
+  profiles[key]=u;LS.set('ubt_profiles',profiles);
+  setUserStats(u.id,{points:0,title:'',stars:0,verified:false});
+  ['tr-name','tr-info','tr-pass','tr-pass2'].forEach(i=>document.getElementById(i).value='');
+  alert('✅ Өтініш админге жіберілді. Қазір оқушы ретінде кіре аласыз; админ рұқсат бергесін мұғалім кабинеті ашылады.');
+  showLoginBox();document.getElementById('login-name').value=u.name;
+}
+function mutateProfile(id,fn){
+  const profiles=LS.get('ubt_profiles',{});let ok=false;
+  Object.keys(profiles).forEach(k=>{if(profiles[k].id===id){fn(profiles[k]);ok=true}});
+  if(ok)LS.set('ubt_profiles',profiles);return ok;
+}
+function adminSetTeacher(id,on){
+  if(!user||!user.isAdmin)return;
+  mutateProfile(id,p=>{
+    if(on){p.role='teacher';p.teacherApproved=true}
+    else{delete p.role;delete p.teacherApproved;delete p.teacherInfo}
+  });
+  if(on){const s=getUserStats(id);if(!s.title){s.title='👨‍🏫 Мұғалім';setUserStats(id,s)}}
+  showAdmin();
+}
+function renderTeacherReq(){
+  const el=document.getElementById('admin-teacher-req');if(!el)return;
+  const pend=Object.values(LS.get('ubt_profiles',{})).filter(p=>p.role==='teacher'&&!p.teacherApproved);
+  el.innerHTML=pend.length?pend.map(p=>`<div class="item"><div class="info"><h4>${esc(p.name)}</h4><p>${esc(p.teacherInfo||'—')}</p></div><div class="acts"><button class="btn btn-ok btn-sm" onclick="adminSetTeacher(${jsq(p.id)},true)">✓ Мұғалім ету</button><button class="btn btn-d btn-sm" onclick="adminRejectTeacher(${jsq(p.id)})">✕ Бас тарту</button></div></div>`).join(''):'<p class="sub">Жаңа өтініш жоқ</p>';
+}
+function adminRejectTeacher(id){
+  if(!confirm('Өтінішті қабылдамау керек пе? Аккаунт оқушы ретінде қалады.'))return;
+  mutateProfile(id,p=>{delete p.role;delete p.teacherApproved;delete p.teacherInfo});showAdmin();
+}
+(function(){
+  ['showLoginBox','showRegister','showForgot','showContactAdmin'].forEach(n=>{
+    const f=window[n];
+    window[n]=function(){f.apply(this,arguments);const b=document.getElementById('teacher-reg-box');if(b)b.style.display='none'};
+  });
+  const _sa=showAdmin;
+  showAdmin=function(){_sa();try{renderTeacherReq()}catch(e){}};
+  const _rt=renderTeacher;
+  renderTeacher=function(){
+    _rt();
+    const T=isTeacherUser();
+    ['tch-create-card','tch-classes','tch-detail'].forEach(i=>{const e=document.getElementById(i);if(e)e.style.display=T?'':'none'});
+    const n=document.getElementById('tch-notice');
+    n.innerHTML=T?'':(isTeacherPending()
+      ?'<div class="card"><h3>⏳ Өтініш қаралуда</h3><p class="sub">Админ мұғалім рұқсатын бергенше сынып құру ашылмайды. Қазір сыныпқа кодпен қосыла аласыз.</p></div>'
+      :'<div class="card"><h3>🔒 Мұғалім кабинеті</h3><p class="sub">Сынып құру тек админ рұқсат берген мұғалімдерге ашық. Оқушы болсаңыз, төмендегі кодпен сыныпқа қосылыңыз.</p></div>');
+  };
+})();
 try{if(user&&document.getElementById('s-home').classList.contains('active'))renderHomeExtras()}catch(e){}
 </script>
 </body>
