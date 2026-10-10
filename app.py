@@ -210,6 +210,11 @@ body.dark #admin-chat input,body.dark #admin-chat textarea{color:#111}
 .crow{display:flex;gap:8px;margin-top:8px}
 .crow input{flex:1;padding:10px 12px;border:1px solid var(--b);border-radius:10px;background:var(--bg);color:var(--t);font-family:inherit;font-size:14px}
 body.dark .cmsg.sys{background:#422006;color:#fcd34d}
+.ch-it{display:flex;align-items:center;gap:10px;background:var(--c);border:2px solid var(--b);border-radius:11px;padding:10px 12px;margin-bottom:8px;cursor:grab}
+.ch-it.ok{border-color:var(--ok)}.ch-it.bad{border-color:var(--err)}
+.ch-n{width:26px;height:26px;border-radius:50%;background:var(--bg);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex-shrink:0;color:var(--m)}
+.ch-t{flex:1;font-size:14px}.ch-y{color:var(--p);font-size:15px}.ch-b{display:flex;gap:4px}
+#rep-ov{display:none;position:fixed;inset:0;z-index:100001;background:rgba(15,23,42,.6);align-items:center;justify-content:center;padding:16px;overflow-y:auto}
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
@@ -221,6 +226,14 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
 <canvas id="confetti"></canvas>
 
 <div id="lock-ov"><div class="box"><div style="font-size:46px">🔒</div><h2 id="lock-title">Тест жалғасуда</h2><p id="lock-msg"></p><button class="btn btn-p" onclick="returnToTest()">Толық экранға оралу</button></div></div>
+
+<div id="rep-ov"><div class="card" style="max-width:460px;width:100%;margin:0">
+  <h3>⚠ Сұраққа шағымдану</h3>
+  <div class="sub" id="rep-q" style="margin:6px 0 12px;max-height:90px;overflow:auto"></div>
+  <div class="fg"><label>Қате түрі</label><select id="rep-type"><option>Дұрыс емес жауап белгіленген</option><option>Дұрыс жауап нұсқада жоқ</option><option>Бірнеше нұсқа дұрыс</option><option>Грамматикалық / емле қатесі</option><option>Омоним / екі мағыналы сөз</option><option>Басқа</option></select></div>
+  <div class="fg"><label>Түсініктеме (міндетті емес)</label><textarea id="rep-note" maxlength="400" placeholder="Не қате екенін қысқаша жазыңыз"></textarea></div>
+  <div class="row"><button class="btn btn-p" onclick="sendReport()">Жіберу</button><button class="btn btn-s" onclick="closeReport()">Болдырмау</button></div>
+</div></div>
 
 <div id="s-login" class="screen active">
   <div class="wrap">
@@ -345,6 +358,7 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
       <button class="btn btn-s btn-sm" onclick="showHistory()">📋 Тарих</button>
       <button class="btn btn-s btn-sm" onclick="startQuickSubject()">⚡ Жылдам</button>
       <button class="btn btn-s btn-sm" onclick="show140()">🎓 ҰБТ 140</button>
+      <button class="btn btn-s btn-sm" onclick="showChrono()">🕰 Хронология</button>
       <button class="btn btn-s btn-sm" onclick="showFileTest()">📂 Файлдан</button>
       <button class="btn btn-s btn-sm" onclick="showMyProfile()">📈 График</button>
       <button class="btn btn-s btn-sm" onclick="showFlash()">🃏 Флеш-карталар</button>
@@ -493,7 +507,7 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
         <div class="prog-t" id="viol" style="display:none;background:#fef2f2;color:var(--err)"></div>
       </div>
       <div class="qc">
-        <div class="qh"><span class="qnum" id="qnum">Сұрақ 1</span><span style="display:flex;gap:6px"><button class="flag" id="bm" onclick="togBm()" title="Таңдаулыға сақтау">☆</button><button class="flag" id="flag" onclick="togFlag()">🚩</button></span></div>
+        <div class="qh"><span class="qnum" id="qnum">Сұрақ 1</span><span style="display:flex;gap:6px"><button class="flag" id="bm" onclick="togBm()" title="Таңдаулыға сақтау">☆</button><button class="flag" id="rep" onclick="openReport()" title="Қатені хабарлау / Шағымдану">⚠</button><button class="flag" id="flag" onclick="togFlag()">🚩</button></span></div>
         <div class="qt" id="qtext"></div>
         <div class="opts" id="opts"></div>
       </div>
@@ -617,6 +631,24 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
   </div>
 </div>
 
+<div id="s-chrono" class="screen">
+  <div class="wrap">
+    <div class="hdr"><h2>🕰 Хронологиялық тренажер</h2><p class="sub">Оқиғаларды уақыт ретімен (ертеден кешке қарай) орналастырыңыз: сүйреңіз немесе ▲▼ басыңыз</p></div>
+    <div class="card" id="ch-setup">
+      <div class="fg"><label>Тақырып</label><select id="ch-cat"><option value="kz">Қазақстан тарихы</option><option value="world">Дүниежүзі тарихы</option><option value="mix">Аралас</option></select></div>
+      <div class="fg"><label>Оқиға саны</label><select id="ch-n"><option value="4">4</option><option value="5" selected>5</option></select></div>
+      <button class="btn btn-p" onclick="chStart()">▶ Бастау</button>
+    </div>
+    <div class="card" id="ch-play" style="display:none">
+      <div class="sub" id="ch-info" style="margin-bottom:10px"></div>
+      <div id="ch-list"></div>
+      <div class="row" style="margin-top:12px"><button class="btn btn-p" id="ch-check" onclick="chCheck()">✓ Тексеру</button><button class="btn btn-ok" id="ch-next" style="display:none" onclick="chStart()">Келесі →</button><button class="btn btn-s" onclick="showChrono()">Баптау</button></div>
+      <div id="ch-res" style="margin-top:12px"></div>
+    </div>
+    <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+  </div>
+</div>
+
 <div id="s-tset" class="screen">
   <div class="wrap">
     <div class="hdr"><h2>⚙ Тест баптаулары</h2><p class="sub" id="ts-name"></p></div>
@@ -684,6 +716,29 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
     <div class="card" style="padding:20px">
       <h3 style="margin-bottom:12px">⏳ Жариялау күтіп тұрған тесттер</h3>
       <div id="admin-pending" class="list"></div>
+    </div>
+    <div class="card" style="padding:20px">
+      <h3 style="margin-bottom:12px">⚠ Сұрақтарға шағымдар <span id="admin-reports-count" class="badge" style="background:#fef3c7;color:#92400e"></span></h3>
+      <div id="admin-reports" class="list"></div>
+    </div>
+    <div class="card" style="padding:20px">
+      <h3 style="margin-bottom:6px">🔐 Доступтар</h3>
+      <p class="sub" style="margin-bottom:12px">Қай мүмкіндікті кімге беру керегін өзіңіз басқарасыз: бәріне ортақ немесе жеке адамға бөлек. Қолданушыны бұғаттауға да болады.</p>
+      <h4 style="margin-bottom:8px">👥 Барлығына</h4>
+      <div id="perm-global"></div>
+      <h4 style="margin:16px 0 8px">👤 Жеке қолданушы</h4>
+      <div class="fg"><select id="perm-user" onchange="renderPermUser()"></select></div>
+      <div id="perm-user-box"></div>
+      <h4 style="margin:18px 0 8px;padding-top:14px;border-top:1px solid var(--b)">➕ Адам қосу (логин + пароль)</h4>
+      <div class="fg"><label>Логин</label><input id="np-name" maxlength="30" placeholder="Логин"></div>
+      <div class="fg"><label>Пароль (кемінде 4 таңба)</label><input id="np-pass" type="text" placeholder="Пароль"></div>
+      <div class="fg"><label>Рөлі</label><select id="np-role"><option value="student">Оқушы</option><option value="teacher">Мұғалім</option><option value="admin">Админ (көмекші)</option></select></div>
+      <button class="btn btn-ok btn-sm" onclick="adminAddPerson()">➕ Қосу</button>
+    </div>
+    <div class="card" style="padding:20px">
+      <h3 style="margin-bottom:6px">📶 Офлайн және синхрондау</h3>
+      <p class="sub" style="margin-bottom:10px">Интернет жоқ кезде нәтижелер құрылғыда сақталады. Желі қосылғанда төмендегі мекенжайға автоматты жіберіледі.</p>
+      <div id="admin-sync"></div>
     </div>
     <div class="card" style="padding:20px">
       <h3 style="margin-bottom:6px">🏫 Барлық сыныптар</h3>
@@ -830,10 +885,11 @@ function doLogin(){
   const u=findUserByLogin(login);
   if(!u){alert('Аккаунт табылмады. Тіркеліңіз.');return}
   if(u.password&&u.password!==pass){alert('Қате пароль!');return}
+  if(u.blocked){alert('⛔ Аккаунт админ тарапынан бұғатталған.');return}
   // legacy users without password
   if(!u.password){u.password=pass;const profiles=LS.get('ubt_profiles',{});
     Object.keys(profiles).forEach(k=>{if(profiles[k].id===u.id)profiles[k].password=pass});LS.set('ubt_profiles',profiles)}
-  user=u;LS.set('ubt_current',user);enterApp();
+  user=u.role==='admin'?{...u,isAdmin:true}:u;LS.set('ubt_current',user);enterApp();
 }
 function sendForgotCode(){
   const login=document.getElementById('forgot-login').value.trim();
@@ -1274,7 +1330,7 @@ function createFromFile(){
   const subject=subjEl.value;
   const subjectName=subjEl.options[subjEl.selectedIndex]?.text||'';
   const topic=document.getElementById('c-topic').value.trim();
-  let requestPub=document.getElementById('c-request')?.checked||false;
+  let requestPub=(document.getElementById('c-request')?.checked||false)&&hasPerm('publish');
   const staff=isTeacherUser();
   const fmt140=!createClassMode&&!!(document.getElementById('c-140')&&document.getElementById('c-140').checked);
   const classId=staff?(document.getElementById('c-class').value||''):'';
@@ -1325,6 +1381,7 @@ function showMyTests(){
   showScr('s-mytests');
 }
 function requestPub(id){
+  if(!hasPerm('publish')){denied();return}
   const all=allTests();const t=all.find(x=>x.id===id);
   if(!t)return;
   if(user.isAdmin||(isTeacherUser()&&!t.fmt140)){t.isPublic=true;t.status='approved';saveAllTests(all);alert('Жарияланды!');showMyTests();return}
@@ -1445,7 +1502,7 @@ function finishTest(force){
   const pct=max?score/max:0;
   if(pct>=1) gained+=50; else if(pct>=0.8) gained+=25; else if(pct>=0.5) gained+=10;
   if(!st.isMistakes) addPoints(gained);
-  st.lastWrong=wrong;st.lastScore={score,max,gained};try{logTestResult(score,max)}catch(e){}
+  st.lastWrong=wrong;st.lastScore={score,max,gained};try{logTestResult(score,max)}catch(e){}try{queueSync(score,max)}catch(e){}try{closeReport()}catch(e){}
   document.getElementById('sc').textContent=score;document.getElementById('sm').textContent=max;
   document.getElementById('res-break').innerHTML=`<div class="res-row"><span>${esc(st.subjectName||'Тест')}</span><span style="font-weight:700;color:var(--p)">${score} / ${max}</span></div>
     ${!st.isMistakes?`<div class="res-row"><span>Алынған ұпай</span><span style="font-weight:700;color:var(--ok)">+${gained} ⭐</span></div>`:''}
@@ -1921,7 +1978,7 @@ document.addEventListener('fullscreenchange',onFsChange);
 document.addEventListener('webkitfullscreenchange',onFsChange);
 document.addEventListener('visibilitychange',()=>{if(lock.on&&document.hidden)lockViolation()});
 window.addEventListener('blur',()=>{if(lock.on&&!lock.paused)setTimeout(()=>{if(lock.on&&!lock.paused&&!document.hasFocus())lockViolation()},250)});
-const blockEv=e=>{if(lock.on){e.preventDefault();return false}};
+const blockEv=e=>{if(lock.on){const t=e.target&&e.target.nodeType===3?e.target.parentElement:e.target;if(t&&t.closest&&t.closest('#rep-ov'))return;e.preventDefault();return false}};
 ['contextmenu','copy','cut','paste','dragstart','selectstart'].forEach(n=>document.addEventListener(n,blockEv));
 document.addEventListener('keydown',e=>{
   if(!lock.on)return;
@@ -3318,6 +3375,325 @@ function renderAdminClasses(){
   };
   const _sa=showAdmin;
   showAdmin=function(){_sa();try{renderAdminClasses()}catch(e){}};
+})();
+
+// ================= Доступтар, шағымдар, хронология, офлайн =================
+const PERMS=[['create','➕ Тест құру'],['publish','🌐 Жариялауға жіберу'],['file','📂 Файлдан тест'],['chrono','🕰 Хронология тренажері'],['report','⚠ Сұраққа шағымдану']];
+function hasPerm(key){
+  if(!user)return false;if(user.isAdmin)return true;
+  const p=findUserByLogin(user.name);
+  const ov=p&&p.perms?p.perms[key]:undefined;
+  if(ov===true)return true;if(ov===false)return false;
+  return LS.get('ubt_perm_global',{})[key]!==false;
+}
+function denied(){alert('⛔ Бұл мүмкіндік сізге ашық емес. Админге жазыңыз.')}
+function setGlobalPerm(k,v){if(!user||!user.isAdmin)return;const g=LS.get('ubt_perm_global',{});g[k]=!!v;LS.set('ubt_perm_global',g)}
+function setUserPerm(id,k,v){
+  if(!user||!user.isAdmin)return;
+  mutateProfile(id,p=>{p.perms=p.perms||{};if(v==='')delete p.perms[k];else p.perms[k]=(v==='1')});
+}
+function adminToggleBlock(id){
+  if(!user||!user.isAdmin)return;
+  mutateProfile(id,p=>{p.blocked=!p.blocked});renderPerms();
+}
+function adminSetRole(id,role){
+  if(!user||!user.isAdmin)return;
+  mutateProfile(id,p=>{
+    delete p.role;delete p.teacherApproved;delete p.teacherInfo;
+    if(role==='teacher'){p.role='teacher';p.teacherApproved=true}
+    if(role==='admin'){p.role='admin'}
+  });
+  if(role==='teacher'){const s=getUserStats(id);if(!s.title){s.title='👨‍🏫 Мұғалім';setUserStats(id,s)}}
+  renderPerms();renderAdminUsers();
+}
+function adminAddPerson(){
+  if(!user||!user.isAdmin)return;
+  const name=document.getElementById('np-name').value.trim();
+  const pass=document.getElementById('np-pass').value;
+  const role=document.getElementById('np-role').value;
+  if(!name||name.length<2){alert('Логинді жазыңыз (кемінде 2 таңба)');return}
+  if(!pass||pass.length<4){alert('Пароль кемінде 4 таңба');return}
+  const k=name.toLowerCase();
+  if(findUserByLogin(name)||k==='админ'||k==='admin'){alert('Бұл логин бос емес');return}
+  const profiles=LS.get('ubt_profiles',{});
+  const u={name:name,password:pass,id:'u_'+k.replace(/[^\p{L}\p{N}]+/gu,'_')+'_'+Date.now().toString(36).slice(-4),isAdmin:false};
+  if(role==='teacher'){u.role='teacher';u.teacherApproved=true}
+  if(role==='admin')u.role='admin';
+  profiles[k]=u;LS.set('ubt_profiles',profiles);
+  setUserStats(u.id,{points:0,title:role==='teacher'?'👨‍🏫 Мұғалім':'',stars:0,verified:false});
+  document.getElementById('np-name').value='';document.getElementById('np-pass').value='';
+  alert('✅ Қосылды: '+name+'\nЛогин: '+name+'\nПароль: '+pass);
+  renderAdminUsers();renderPerms();
+}
+function renderPerms(){
+  const g=LS.get('ubt_perm_global',{});
+  document.getElementById('perm-global').innerHTML=PERMS.map(([k,n])=>`<label class="switch" style="margin-bottom:8px"><input type="checkbox" ${g[k]!==false?'checked':''} onchange="setGlobalPerm('${k}',this.checked)"> ${n}</label>`).join('');
+  const us=Object.values(LS.get('ubt_profiles',{})).sort((a,b)=>String(a.name).localeCompare(String(b.name)));
+  const sel=document.getElementById('perm-user'),cur=sel.value;
+  sel.innerHTML='<option value="">— Қолданушыны таңдаңыз —</option>'+us.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}${p.role==='admin'?' (админ)':(p.role==='teacher'&&p.teacherApproved)?' (мұғалім)':''}${p.blocked?' 🚫':''}</option>`).join('');
+  sel.value=cur;renderPermUser();
+}
+function renderPermUser(){
+  const id=document.getElementById('perm-user').value,box=document.getElementById('perm-user-box');
+  const p=Object.values(LS.get('ubt_profiles',{})).find(x=>x.id===id);
+  if(!p){box.innerHTML='';return}
+  const selSt='padding:7px;border:1px solid var(--b);border-radius:8px;background:var(--bg);color:var(--t)';
+  const role=p.role==='admin'?'admin':(p.role==='teacher'&&p.teacherApproved)?'teacher':'student';
+  box.innerHTML=PERMS.map(([k,n])=>{const v=p.perms?p.perms[k]:undefined;
+    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:13px">${n}</span><select style="${selSt}" onchange="setUserPerm(${jsq(id)},'${k}',this.value)"><option value="" ${v==null?'selected':''}>Жалпы ережемен</option><option value="1" ${v===true?'selected':''}>✓ Рұқсат</option><option value="0" ${v===false?'selected':''}>✕ Тыйым</option></select></div>`}).join('')
+   +`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin:12px 0 8px"><span style="font-size:13px">👤 Рөлі</span><select style="${selSt}" onchange="adminSetRole(${jsq(id)},this.value)"><option value="student" ${role==='student'?'selected':''}>Оқушы</option><option value="teacher" ${role==='teacher'?'selected':''}>Мұғалім</option><option value="admin" ${role==='admin'?'selected':''}>Админ (көмекші)</option></select></div>
+    <button class="btn btn-sm ${p.blocked?'btn-ok':'btn-d'}" onclick="adminToggleBlock(${jsq(id)})">${p.blocked?'🔓 Бұғатты алу':'🚫 Кіруді бұғаттау'}</button>`;
+}
+
+// ---- Шағымдану ----
+let repCtx=null;
+function openReport(q0,tid,tname){
+  if(!user)return;
+  if(!hasPerm('report')){denied();return}
+  let q=q0,testId=tid,testName=tname;
+  if(!q){q=st.questions[st.currentIndex];testId=st.testId;testName=st.subjectName}
+  if(!q)return;
+  repCtx={q:{id:q.id,text:q.text,options:q.options,correct:q.correct},testId:testId||null,testName:testName||''};
+  document.getElementById('rep-q').textContent=q.text;
+  document.getElementById('rep-note').value='';
+  lock.paused=true;
+  document.getElementById('rep-ov').style.display='flex';
+}
+function closeReport(){
+  const ov=document.getElementById('rep-ov');if(ov)ov.style.display='none';
+  repCtx=null;setTimeout(()=>{lock.paused=false},900);
+}
+function sendReport(){
+  if(!repCtx||!user)return;
+  const a=LS.get('ubt_reports',[]);
+  const type=document.getElementById('rep-type').value,note=document.getElementById('rep-note').value.trim();
+  const dup=a.find(r=>r.uid===user.id&&r.qid===repCtx.q.id&&r.testId===repCtx.testId&&r.status==='new');
+  if(dup){dup.type=type;dup.note=note;dup.t=Date.now()}
+  else a.push({id:'rp_'+Date.now().toString(36)+Math.random().toString(36).slice(2,5),qid:repCtx.q.id,qtext:repCtx.q.text,options:repCtx.q.options,correct:repCtx.q.correct,testId:repCtx.testId,testName:repCtx.testName,uid:user.id,name:user.name,type,note,t:Date.now(),status:'new'});
+  if(a.length>500)a.splice(0,a.length-500);
+  LS.set('ubt_reports',a);
+  closeReport();
+  guardPause(()=>alert('✅ Рақмет! Шағым админге жіберілді.'));
+}
+function reportTest(r){const t=r.testId?allTests().find(x=>x.id===r.testId):null;return(t&&t.questions.some(q=>q.id===r.qid))?t:null}
+function reportClose(rid,status){
+  const a=LS.get('ubt_reports',[]),r=a.find(x=>x.id===rid);if(!r)return;
+  a.forEach(x=>{if(x.status==='new'&&(x.id===rid||(status==='resolved'&&r.testId&&x.testId===r.testId&&x.qid===r.qid)))x.status=status});
+  LS.set('ubt_reports',a);renderReports();
+}
+function reportSet(rid,status){if(!user||!user.isAdmin)return;reportClose(rid,status)}
+function reportFixAns(rid){
+  if(!user||!user.isAdmin)return;
+  const r=LS.get('ubt_reports',[]).find(x=>x.id===rid);if(!r)return;
+  const all=allTests(),t=r.testId?all.find(x=>x.id===r.testId):null;
+  const q=t?t.questions.find(x=>x.id===r.qid):null;if(!q){alert('Сұрақ табылмады');return}
+  const v=prompt('Дұрыс жауап әрпін жазыңыз (A–'+['A','B','C','D','E'][q.options.length-1]+'):\n'+q.text);
+  if(v===null)return;
+  const i=['A','B','C','D','E'].indexOf(String(v).trim().toUpperCase());
+  if(i<0||i>=q.options.length){alert('Қате әріп');return}
+  q.correct=i;saveAllTests(all);reportClose(rid,'resolved');
+}
+function reportDelQ(rid){
+  if(!user||!user.isAdmin)return;
+  const r=LS.get('ubt_reports',[]).find(x=>x.id===rid);if(!r)return;
+  const all=allTests(),t=r.testId?all.find(x=>x.id===r.testId):null;if(!t)return;
+  if(!confirm('Сұрақты тесттен өшіру керек пе?'))return;
+  t.questions=t.questions.filter(q=>q.id!==r.qid);saveAllTests(all);reportClose(rid,'resolved');
+}
+function renderReports(){
+  const el=document.getElementById('admin-reports');if(!el)return;
+  const all=LS.get('ubt_reports',[]);
+  const nw=all.filter(r=>r.status==='new').sort((a,b)=>b.t-a.t);
+  const done=all.filter(r=>r.status!=='new').sort((a,b)=>b.t-a.t).slice(0,10);
+  const cnt=document.getElementById('admin-reports-count');if(cnt)cnt.textContent=nw.length?nw.length+' жаңа':'';
+  const L=['A','B','C','D','E'];
+  const row=(r,open)=>{
+    const hasT=!!reportTest(r);
+    return `<div class="item" style="flex-wrap:wrap"><div class="info" style="min-width:240px"><h4 style="white-space:normal">${esc(r.qtext)}</h4><p>${(r.options||[]).map((o,i)=>(i===r.correct?'✅ ':'')+L[i]+') '+esc(o)).join(' · ')}</p><p>⚠ <b>${esc(r.type)}</b>${r.note?' — '+esc(r.note):''}</p><p>👤 ${esc(r.name)} · ${esc(r.testName||'—')} · ${fmtT(r.t)}${open?'':' · '+(r.status==='resolved'?'✓ шешілді':'✕ қабылданбады')}</p></div>${open?`<div class="acts"><button class="btn btn-ok btn-sm" onclick="reportSet('${r.id}','resolved')">✓ Шешілді</button>${hasT?`<button class="btn btn-w btn-sm" onclick="reportFixAns('${r.id}')">✎ Жауапты түзету</button><button class="btn btn-d btn-sm" onclick="reportDelQ('${r.id}')">🗑 Сұрақты өшіру</button>`:''}<button class="btn btn-s btn-sm" onclick="reportSet('${r.id}','rejected')">✕ Қабылдамау</button></div>`:''}</div>`;
+  };
+  el.innerHTML=(nw.length?nw.map(r=>row(r,true)).join(''):'<p class="sub">Жаңа шағым жоқ</p>')+(done.length?'<h4 style="margin:12px 0 6px">Соңғы өңделгендер</h4>'+done.map(r=>row(r,false)).join(''):'');
+  mathIn(el);
+}
+
+// ---- Хронологиялық тренажер ----
+const CHRONO=[
+{c:'kz',y:751,t:'Талас шайқасы'},
+{c:'kz',y:1219,t:'Шыңғыс хан әскерінің Орта Азияға жорығының басталуы'},
+{c:'kz',y:1465,t:'Қазақ хандығының құрылуы'},
+{c:'kz',y:1511,t:'Қасым ханның билікке келуі'},
+{c:'kz',y:1723,t:'«Ақтабан шұбырынды, Алқакөл сұлама» (Ұлы жоңғар шапқыншылығы)'},
+{c:'kz',y:1729,t:'Аңырақай шайқасы'},
+{c:'kz',y:1822,t:'«Сібір қазақтары туралы жарғы» қабылданды'},
+{c:'kz',y:1837,t:'Кенесары Қасымұлы бастаған көтерілістің басталуы'},
+{c:'kz',y:1868,t:'Орынбор және Батыс Сібір қазақтарын басқару туралы Уақытша ереже'},
+{c:'kz',y:1916,t:'Ұлт-азаттық көтеріліс (Торғай, Жетісу)'},
+{c:'kz',y:1917,t:'Алаш партиясының құрылуы'},
+{c:'kz',y:1920,t:'Қазақ АКСР-інің құрылуы'},
+{c:'kz',y:1929,t:'Алматының Қазақстан астанасы болуы'},
+{c:'kz',y:1936,t:'Қазақ КСР-і одақтас республика мәртебесін алды'},
+{c:'kz',y:1949,t:'Семей полигонындағы алғашқы ядролық сынақ'},
+{c:'kz',y:1954,t:'Тың және тыңайған жерлерді игеру басталды'},
+{c:'kz',y:1986,t:'Желтоқсан оқиғасы'},
+{c:'kz',y:1991,t:'Қазақстан Республикасының Тәуелсіздігі жарияланды'},
+{c:'kz',y:1993,t:'Ұлттық валюта — теңгенің енгізілуі'},
+{c:'kz',y:1995,t:'Қазақстанның жаңа Конституциясы қабылданды'},
+{c:'kz',y:1997,t:'Астананың Ақмолаға көшірілуі'},
+{c:'world',y:476,t:'Батыс Рим империясының құлауы'},
+{c:'world',y:800,t:'Карл Ұлының император болып тәждендірілуі'},
+{c:'world',y:1066,t:'Гастингс шайқасы (Англияны норман жаулап алуы)'},
+{c:'world',y:1096,t:'Бірінші крест жорығының басталуы'},
+{c:'world',y:1206,t:'Шыңғыс хан Ұлы хан болып жарияланды'},
+{c:'world',y:1453,t:'Константинополь құлады'},
+{c:'world',y:1492,t:'Колумбтың Америкаға жетуі'},
+{c:'world',y:1517,t:'Реформацияның басталуы (М. Лютер)'},
+{c:'world',y:1648,t:'Вестфаль бейбітшілігі'},
+{c:'world',y:1776,t:'АҚШ-тың Тәуелсіздік декларациясы'},
+{c:'world',y:1789,t:'Ұлы француз революциясының басталуы'},
+{c:'world',y:1815,t:'Ватерлоо шайқасы'},
+{c:'world',y:1861,t:'Ресейде крепостнойлық құқықтың жойылуы'},
+{c:'world',y:1914,t:'Бірінші дүниежүзілік соғыстың басталуы'},
+{c:'world',y:1939,t:'Екінші дүниежүзілік соғыстың басталуы'},
+{c:'world',y:1945,t:'Екінші дүниежүзілік соғыстың аяқталуы, БҰҰ құрылды'},
+{c:'world',y:1961,t:'Ю. Гагариннің ғарышқа ұшуы'},
+{c:'world',y:1989,t:'Берлин қабырғасының құлауы'},
+{c:'world',y:1991,t:'КСРО-ның тарауы'}
+];
+let ch={items:[],done:false,drag:null};
+function chShuffle(a){a=a.slice();for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
+function chStats(){return LS.get('ubt_chrono_'+user.id,{rounds:0,perfect:0})}
+function showChrono(){
+  if(!hasPerm('chrono')){denied();return}
+  document.getElementById('ch-setup').style.display='';
+  document.getElementById('ch-play').style.display='none';
+  showScr('s-chrono');
+}
+function chStart(){
+  const cat=document.getElementById('ch-cat').value,n=parseInt(document.getElementById('ch-n').value)||5;
+  const seen=new Set(),pick=[];
+  chShuffle(CHRONO.filter(e=>cat==='mix'||e.c===cat)).forEach(e=>{if(pick.length<n&&!seen.has(e.y)){seen.add(e.y);pick.push({t:e.t,y:e.y})}});
+  const sorted=pick.slice().sort((a,b)=>a.y-b.y);
+  let order=chShuffle(pick),k=0;
+  while(k++<10&&order.every((e,i)=>e===sorted[i]))order=chShuffle(pick);
+  ch.items=order;ch.done=false;ch.drag=null;
+  document.getElementById('ch-setup').style.display='none';
+  document.getElementById('ch-play').style.display='';
+  document.getElementById('ch-check').style.display='';
+  document.getElementById('ch-next').style.display='none';
+  document.getElementById('ch-res').innerHTML='';
+  const s=chStats();
+  document.getElementById('ch-info').textContent='Ертеден кешке қарай реттеңіз · Ойналған: '+s.rounds+' · Мінсіз: '+s.perfect;
+  chRender();
+}
+function chRender(){
+  const n=ch.items.length;
+  document.getElementById('ch-list').innerHTML=ch.items.map((e,i)=>`<div class="ch-it ${ch.done?(e.ok?'ok':'bad'):''}" draggable="${ch.done?'false':'true'}" ondragstart="chDrag(event,${i})" ondragover="event.preventDefault()" ondrop="chDrop(event,${i})"><span class="ch-n">${i+1}</span><span class="ch-t">${esc(e.t)}</span>${ch.done?`<b class="ch-y">${e.y}</b>`:`<span class="ch-b"><button class="btn btn-s btn-sm" onclick="chMove(${i},-1)" ${i===0?'disabled':''}>▲</button><button class="btn btn-s btn-sm" onclick="chMove(${i},1)" ${i===n-1?'disabled':''}>▼</button></span>`}</div>`).join('');
+}
+function chMove(i,d){
+  if(ch.done)return;const j=i+d;if(j<0||j>=ch.items.length)return;
+  const x=ch.items[i];ch.items[i]=ch.items[j];ch.items[j]=x;chRender();
+}
+function chDrag(ev,i){ch.drag=i;try{ev.dataTransfer.setData('text/plain',String(i))}catch(e){}}
+function chDrop(ev,i){
+  ev.preventDefault();const f=ch.drag;ch.drag=null;
+  if(ch.done||f==null||f===i)return;
+  const m=ch.items.splice(f,1)[0];ch.items.splice(i,0,m);chRender();
+}
+function chCheck(){
+  if(ch.done)return;
+  const sorted=ch.items.slice().sort((a,b)=>a.y-b.y);
+  let ok=0;ch.items.forEach((e,i)=>{e.ok=(sorted[i]===e);if(e.ok)ok++});
+  ch.done=true;chRender();
+  const n=ch.items.length,perfect=ok===n;
+  let pts=ok*4+(perfect?10:0);
+  if(user&&!user.isAdmin){
+    addPoints(pts);
+    const s=chStats();s.rounds++;if(perfect)s.perfect++;LS.set('ubt_chrono_'+user.id,s);
+  }
+  if(perfect)try{confetti()}catch(e){}
+  document.getElementById('ch-res').innerHTML=`<div class="res-row"><span>Дұрыс орнында</span><b style="color:var(--p)">${ok} / ${n}</b></div>
+    ${user&&!user.isAdmin?`<div class="res-row"><span>Алынған ұпай</span><b style="color:var(--ok)">+${pts} ⭐</b></div>`:''}
+    ${perfect?'<p style="margin-top:8px">🎉 Мінсіз реттілік!</p>':'<p class="sub" style="margin-top:8px"><b>Дұрыс реттілік:</b><br>'+sorted.map(e=>e.y+' — '+esc(e.t)).join('<br>')+'</p>'}`;
+  document.getElementById('ch-check').style.display='none';
+  document.getElementById('ch-next').style.display='';
+}
+
+// ---- Офлайн / синхрондау / PWA ----
+let _bip=null;
+function syncCount(){return LS.get('ubt_sync_queue',[]).length}
+function queueSync(score,max){
+  if(!user||user.isAdmin)return;
+  const q=LS.get('ubt_sync_queue',[]);
+  q.push({uid:user.id,name:user.name,topic:st.subjectName||'',testId:st.testId||null,score,max,t:Date.now(),viol:lock.viol||0});
+  if(q.length>500)q.splice(0,q.length-500);
+  LS.set('ubt_sync_queue',q);syncQueue();
+}
+async function syncQueue(){
+  try{
+    const url=LS.get('ubt_sync_url',''),q=LS.get('ubt_sync_queue',[]);
+    if(!url||!q.length||!navigator.onLine)return;
+    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({results:q})});
+    if(r.ok){
+      const cur=LS.get('ubt_sync_queue',[]);
+      LS.set('ubt_sync_queue',cur.filter(x=>!q.some(y=>y.t===x.t&&y.uid===x.uid)));
+    }
+  }catch(e){}
+  try{refreshNet()}catch(e){}
+}
+function refreshNet(){try{if(user&&document.getElementById('s-home').classList.contains('active'))renderHomeExtras()}catch(e){}}
+function saveSyncUrl(){
+  if(!user||!user.isAdmin)return;
+  const v=document.getElementById('sync-url').value.trim();
+  if(v&&!/^https?:\/\//i.test(v)){alert('Мекенжай http:// немесе https:// деп басталуы керек');return}
+  LS.set('ubt_sync_url',v);renderSyncBox();syncQueue();
+}
+function renderSyncBox(){
+  const el=document.getElementById('admin-sync');if(!el)return;
+  el.innerHTML=`<div class="fg"><label>Сервер мекенжайы (POST, JSON)</label><input id="sync-url" value="${esc(LS.get('ubt_sync_url',''))}" placeholder="https://сіздің-сервер.kz/api/results"></div><button class="btn btn-p btn-sm" onclick="saveSyncUrl()">💾 Сақтау</button> <span class="sub" style="margin-left:8px">Кезекте: ${syncCount()} нәтиже</span>`;
+}
+function installPwa(){if(!_bip)return;_bip.prompt();_bip=null;refreshNet()}
+window.addEventListener('online',()=>{syncQueue();refreshNet()});
+window.addEventListener('offline',refreshNet);
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();_bip=e;refreshNet()});
+setInterval(syncQueue,60000);
+(function(){
+  if(window.frameElement)return; // Streamlit iframe ішінде PWA тіркелмейді
+  try{
+    [['manifest','manifest.json'],['apple-touch-icon','icon-192.png']].forEach(a=>{const l=document.createElement('link');l.rel=a[0];l.href=a[1];document.head.appendChild(l)});
+    const m=document.createElement('meta');m.name='theme-color';m.content='#2563eb';document.head.appendChild(m);
+    if('serviceWorker' in navigator&&/^https?:$/.test(location.protocol))window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
+  }catch(e){}
+})();
+
+(function(){
+  const _sc=showCreate;
+  showCreate=function(){if(!hasPerm('create')){denied();return}return _sc.apply(this,arguments)};
+  const _sf=showFileTest;
+  showFileTest=function(){if(!hasPerm('file')){denied();return}_sf()};
+  const _rh=renderHomeExtras;
+  renderHomeExtras=function(){
+    _rh();
+    try{
+      const el=document.getElementById('home-extras');if(!el||!user)return;
+      let c='';
+      if(!navigator.onLine)c+='<div class="chip warn">📴 Офлайн: нәтижелер құрылғыда сақталады</div>';
+      const n=syncCount();if(n&&LS.get('ubt_sync_url',''))c+=`<div class="chip">⏳ Серверге жіберілмеген: ${n}</div>`;
+      if(_bip)c+='<div class="chip" style="cursor:pointer" onclick="installPwa()">📲 Қосымша ретінде орнату</div>';
+      if(c)el.insertAdjacentHTML('afterbegin','<div class="chips">'+c+'</div>');
+    }catch(e){}
+  };
+  const _sa=showAdmin;
+  showAdmin=function(){_sa();try{renderPerms();renderReports();renderSyncBox()}catch(e){}};
+  const _ra=reviewAns;
+  reviewAns=function(){
+    _ra();
+    try{
+      document.querySelectorAll('#rev-list .rev').forEach((el,i)=>{
+        const q=st.questions[i],h=el.querySelector('.rh');if(!q||!h)return;
+        const b=document.createElement('button');b.className='flag';b.textContent='⚠';b.title='Қатені хабарлау';
+        b.onclick=()=>openReport(q,st.testId,st.subjectName);h.appendChild(b);
+      });
+    }catch(e){}
+  };
 })();
 </script>
 </body>
