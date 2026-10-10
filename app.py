@@ -929,7 +929,28 @@ function findUserByLogin(login){
 function genCode(){return String(Math.floor(1000+Math.random()*9000))}
 let pendingForgot=null;
 
-function doRegister(){
+// ===== Парольді қауіпсіз хэштеу (SHA-256 + тұз) =====
+async function hashPass(pass, salt){
+  const enc=new TextEncoder();
+  const data=enc.encode((salt||'')+'|'+pass+'|ustaz2026');
+  const buf=await crypto.subtle.digest('SHA-256',data);
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+function makeSalt(){return Math.random().toString(36).slice(2)+Date.now().toString(36)}
+async function verifyPass(pass, stored){
+  if(!stored)return false;
+  if(stored.indexOf('$')===-1)return stored===pass; // legacy plain
+  const [salt,hash]=stored.split('$');
+  const h=await hashPass(pass,salt);
+  return h===hash;
+}
+async function storePass(pass){
+  const salt=makeSalt();
+  const h=await hashPass(pass,salt);
+  return salt+'$'+h;
+}
+
+async function doRegister(){
   const name=document.getElementById('reg-name').value.trim();
   const pass=document.getElementById('reg-pass').value;
   const pass2=document.getElementById('reg-pass2').value;
@@ -939,7 +960,8 @@ function doRegister(){
   if(findUserByLogin(name)){alert('Бұл ат тіркелген. Басқа ат таңдаңыз');return}
   const key=name.toLowerCase();
   const profiles=LS.get('ubt_profiles',{});
-  const u={name:name,password:pass,
+  const hashed=await storePass(pass);
+  const u={name:name,password:hashed,
     id:'u_'+key.replace(/[^\p{L}\p{N}]+/gu,'_')+'_'+Date.now().toString(36).slice(-4),isAdmin:false};
   profiles[key]=u;LS.set('ubt_profiles',profiles);
   setUserStats(u.id,{points:0,title:'',stars:0,verified:false});
@@ -947,7 +969,7 @@ function doRegister(){
   showLoginBox();
   document.getElementById('login-name').value=u.name;
 }
-function doLogin(){
+async function doLogin(){
   const login=document.getElementById('login-name').value.trim();
   const pass=document.getElementById('login-pass').value;
   if(!login){alert('Логин жазыңыз');return}
@@ -959,11 +981,23 @@ function doLogin(){
   }
   const u=findUserByLogin(login);
   if(!u){alert('Аккаунт табылмады. Тіркеліңіз.');return}
-  if(u.password&&u.password!==pass){alert('Қате пароль!');return}
   if(u.blocked){alert('⛔ Аккаунт админ тарапынан бұғатталған.');return}
-  // legacy users without password
-  if(!u.password){u.password=pass;const profiles=LS.get('ubt_profiles',{});
-    Object.keys(profiles).forEach(k=>{if(profiles[k].id===u.id)profiles[k].password=pass});LS.set('ubt_profiles',profiles)}
+  if(u.password){
+    const ok=await verifyPass(pass,u.password);
+    if(!ok){alert('Қате пароль!');return}
+    // legacy plain → хэшке көшіру
+    if(u.password.indexOf('$')===-1){
+      const hashed=await storePass(pass);
+      const profiles=LS.get('ubt_profiles',{});
+      Object.keys(profiles).forEach(k=>{if(profiles[k].id===u.id)profiles[k].password=hashed});
+      LS.set('ubt_profiles',profiles);
+    }
+  }else{
+    const hashed=await storePass(pass);
+    const profiles=LS.get('ubt_profiles',{});
+    Object.keys(profiles).forEach(k=>{if(profiles[k].id===u.id)profiles[k].password=hashed});
+    LS.set('ubt_profiles',profiles);
+  }
   user=u.role==='admin'?{...u,isAdmin:true}:u;LS.set('ubt_current',user);enterApp();
 }
 function sendForgotCode(){
@@ -975,14 +1009,15 @@ function sendForgotCode(){
   alert('🔑 Демо код:\n\n'+code+'\n\n(Нақты SMS кейін қосылады)');
   document.getElementById('forgot-step2').style.display='block';
 }
-function doForgotReset(){
+async function doForgotReset(){
   if(!pendingForgot)return;
   const code=document.getElementById('forgot-code').value.trim();
   const pass=document.getElementById('forgot-pass').value;
   if(code!==pendingForgot.code){alert('Код қате!');return}
   if(!pass||pass.length<4){alert('Пароль кемінде 4 таңба');return}
+  const hashed=await storePass(pass);
   const profiles=LS.get('ubt_profiles',{});
-  Object.keys(profiles).forEach(k=>{if(profiles[k].id===pendingForgot.userId)profiles[k].password=pass});
+  Object.keys(profiles).forEach(k=>{if(profiles[k].id===pendingForgot.userId)profiles[k].password=hashed});
   LS.set('ubt_profiles',profiles);
   pendingForgot=null;
   alert('✅ Пароль өзгертілді! Кіріңіз.');
@@ -1256,7 +1291,7 @@ function showAdmin(){
 
   showScr('s-admin');
 }
-function adminDelTest(id){if(!confirm('Тестті өшіру?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showAdmin()}
+function adminDelTest(id){if(!user||!user.isAdmin)return;if(!confirm('Тестті өшіру?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showAdmin()}
 function approveTest(id){
   const all=allTests();const t=all.find(x=>x.id===id);
   if(t){t.isPublic=true;t.status='approved';saveAllTests(all);showAdmin()}
@@ -1462,7 +1497,17 @@ function requestPub(id){
   if(user.isAdmin||(isTeacherUser()&&!t.fmt140)){t.isPublic=true;t.status='approved';saveAllTests(all);alert('Жарияланды!');showMyTests();return}
   t.status='pending';t.isPublic=false;saveAllTests(all);alert('Админге жіберілді. Мақұлдаған соң жарияланады.');showMyTests();
 }
-function delTest(id){if(!confirm('Тестті өшіру керек пе?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showMyTests()}
+function delTest(id){
+  const t=allTests().find(x=>x.id===id);
+  if(!t)return;
+  // Қауіпсіздік: тек автор немесе админ өшіре алады. Жария/мақұлданған тесттерді қарапайым пайдаланушы өшіре алмайды.
+  if(!user)return;
+  if(!user.isAdmin && t.authorId!==user.id){alert('⛔ Тек автор немесе админ өшіре алады.');return}
+  if(!user.isAdmin && (t.isPublic||t.status==='approved'||t.fmt140)){alert('⛔ Жария немесе ҰБТ 140 тесттерін өшіруге болмайды. Админге жазыңыз.');return}
+  if(!confirm('Тестті өшіру керек пе? Сұрақтары бірге жойылады.'))return;
+  saveAllTests(allTests().filter(x=>x.id!==id));
+  showMyTests();
+}
 
 let pubSubj='';
 function showPublicTests(keep){
@@ -1491,9 +1536,17 @@ function renderEditList(t){
   document.getElementById('edit-qlist').innerHTML=t.questions.map((q,i)=>`<div class="item"><div class="info"><h4>${i+1}. ${esc(q.text)}</h4></div>
     <div class="acts"><button class="btn btn-d btn-sm" onclick="removeQFromTest('${t.id}',${i})">✕</button></div></div>`).join('');
 }
-function removeQFromTest(tid,idx){const all=allTests();const t=all.find(x=>x.id===tid);if(t){t.questions.splice(idx,1);saveAllTests(all);renderEditList(t)}}
+function removeQFromTest(tid,idx){
+  const all=allTests();const t=all.find(x=>x.id===tid);if(!t)return;
+  // Сұрақ құрылғаннан кейін қарапайым пайдаланушы жария тесттен өшіре алмайды
+  if(!user)return;
+  if(!user.isAdmin && t.authorId!==user.id){alert('⛔ Тек автор немесе админ өшіре алады.');return}
+  if(!user.isAdmin && (t.isPublic||t.status==='approved'||t.fmt140)){alert('⛔ Жария тесттегі сұрақты өшіруге болмайды.');return}
+  if(!confirm('Сұрақты өшіру керек пе?'))return;
+  t.questions.splice(idx,1);saveAllTests(all);renderEditList(t);
+}
 
-function baseState(){return{questions:[],currentIndex:0,answers:{},flags:{},timerSeconds:0,timerInterval:null,subjectName:'',isMistakes:false,testId:null,lastWrong:null}}
+function baseState(){return{questions:[],currentIndex:0,answers:{},flags:{},qTimes:{},qStart:0,timerSeconds:0,timerInterval:null,subjectName:'',isMistakes:false,testId:null,lastWrong:null,lastScore:null}}
 let st=baseState();
 
 function testMetaStr(t){let s='';if(t.timeMin>0)s+=' · ⏱ '+t.timeMin+' мин';if(t.limit>0)s+=' · 🔁 лимит '+t.limit;return s}
@@ -1539,8 +1592,16 @@ function startBank(key){
 function beginTest(){showScr('s-test');renderNav();renderQ();startTimer();updateProg();lockStart()}
 function renderNav(){document.getElementById('qnav').innerHTML=st.questions.map((_,i)=>`<button class="qn" onclick="goQ(${i})">${i+1}</button>`).join('');updNav()}
 function updNav(){document.querySelectorAll('.qn').forEach((b,i)=>{b.classList.remove('cur','ans','flg');if(i===st.currentIndex)b.classList.add('cur');if(st.answers[st.questions[i].id]!==undefined)b.classList.add('ans');if(st.flags[st.questions[i].id])b.classList.add('flg')})}
+function _saveQTime(){
+  if(!st.qStart||!st.questions[st.currentIndex])return;
+  const q=st.questions[st.currentIndex];
+  const spent=Math.round((Date.now()-st.qStart)/1000);
+  st.qTimes[q.id]=(st.qTimes[q.id]||0)+spent;
+  st.qStart=Date.now();
+}
 function renderQ(){
   const q=st.questions[st.currentIndex];if(!q)return;
+  if(!st.qStart)st.qStart=Date.now();
   document.getElementById('t-subj').textContent=q.subjectName||st.subjectName;
   document.getElementById('qnum').textContent='Сұрақ '+(st.currentIndex+1);
   document.getElementById('qtext').textContent=q.text;
@@ -1553,9 +1614,9 @@ function renderQ(){
 }
 function selOpt(i){st.answers[st.questions[st.currentIndex].id]=i;renderQ()}
 function togFlag(){const q=st.questions[st.currentIndex];st.flags[q.id]=!st.flags[q.id];renderQ()}
-function nextQ(){if(st.currentIndex<st.questions.length-1){st.currentIndex++;renderQ()}else finishTest()}
-function prevQ(){if(st.currentIndex>0){st.currentIndex--;renderQ()}}
-function goQ(i){st.currentIndex=i;renderQ();document.getElementById('sidebar').classList.remove('open')}
+function nextQ(){_saveQTime();if(st.currentIndex<st.questions.length-1){st.currentIndex++;renderQ()}else finishTest()}
+function prevQ(){_saveQTime();if(st.currentIndex>0){st.currentIndex--;renderQ()}}
+function goQ(i){_saveQTime();st.currentIndex=i;renderQ();document.getElementById('sidebar').classList.remove('open')}
 function updateProg(){const t=st.questions.length,c=st.currentIndex+1,a=Object.keys(st.answers).length;document.getElementById('prog-t').textContent=`Сұрақ ${c} / ${t}`;document.getElementById('prog-f').style.width=(a/t*100)+'%'}
 function togSide(){document.getElementById('sidebar').classList.toggle('open')}
 
@@ -1579,15 +1640,44 @@ function finishTest(force){
   if(!st.isMistakes) addPoints(gained);
   st.lastWrong=wrong;st.lastScore={score,max,gained};try{logTestResult(score,max)}catch(e){}try{queueSync(score,max)}catch(e){}try{closeReport()}catch(e){}
   document.getElementById('sc').textContent=score;document.getElementById('sm').textContent=max;
+  _saveQTime();
+  const timeRows=st.questions.map((q,i)=>{const s=st.qTimes[q.id]||0;return s?`<div class="res-row"><span>Сұрақ ${i+1}</span><span>${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}</span></div>`:''}).filter(Boolean).join('');
+  const weakTopics={};wrong.forEach(q=>{const k=q.subjectName||st.subjectName||'Басқа';weakTopics[k]=(weakTopics[k]||0)+1});
+  const weakHTML=Object.keys(weakTopics).length?`<div style="margin-top:10px"><b>📌 Әлсіз тақырыптар (қайталаңыз):</b><ul style="margin:6px 0 0 18px">${Object.entries(weakTopics).sort((a,b)=>b[1]-a[1]).map(([k,n])=>`<li>${esc(k)} — ${n} қате</li>`).join('')}</ul></div>`:'';
   document.getElementById('res-break').innerHTML=`<div class="res-row"><span>${esc(st.subjectName||'Тест')}</span><span style="font-weight:700;color:var(--p)">${score} / ${max}</span></div>
     ${!st.isMistakes?`<div class="res-row"><span>Алынған ұпай</span><span style="font-weight:700;color:var(--ok)">+${gained} ⭐</span></div>`:''}
-    ${lock.viol?`<div class="res-row"><span>Ереже бұзу ескертулері</span><span style="font-weight:700;color:var(--err)">${lock.viol} / ${MAX_VIOL}</span></div>`:''}`;
+    ${lock.viol?`<div class="res-row"><span>Ереже бұзу ескертулері</span><span style="font-weight:700;color:var(--err)">${lock.viol} / ${MAX_VIOL}</span></div>`:''}
+    ${timeRows?`<h4 style="margin:12px 0 6px">⏱ Сұрақтарға жұмсалған уақыт</h4>${timeRows}`:''}
+    ${weakHTML}
+    <div class="row" style="margin-top:14px"><button class="btn btn-ok btn-sm" onclick="downloadCert()">📄 Сертификат / PDF</button></div>`;
   showScr('s-res');
 }
+function downloadCert(){
+  const ls=st.lastScore||{score:0,max:0};
+  const pct=ls.max?Math.round(ls.score/ls.max*100):0;
+  const w=window.open('','_blank');
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>UstaZ сертификат</title>
+    <style>body{font-family:system-ui,sans-serif;padding:40px;max-width:640px;margin:0 auto;color:#0f172a}
+    .box{border:3px solid #2563eb;border-radius:16px;padding:32px;text-align:center}
+    h1{color:#2563eb;margin:0 0 8px}h2{margin:0 0 24px;font-weight:500}
+    .sc{font-size:48px;font-weight:800;color:#2563eb;margin:16px 0}
+    .meta{color:#64748b;font-size:14px;margin-top:24px}</style></head><body>
+    <div class="box"><h1>UstaZ</h1><h2>ҰБТ дайындық нәтижесі</h2>
+    <p><b>${esc(user?user.name:'Оқушы')}</b></p>
+    <div class="sc">${ls.score} / ${ls.max}</div>
+    <p>${pct}% · ${esc(st.subjectName||'Тест')}</p>
+    <p class="meta">${new Date().toLocaleString('kk-KZ')}<br>Бұл сертификат платформа ішіндегі нәтижені растайды.</p>
+    <button onclick="window.print()" style="margin-top:20px;padding:10px 20px;background:#2563eb;color:#fff;border:none;border-radius:8px;cursor:pointer">Басып шығару / PDF</button>
+    </div></body></html>`);
+  w.document.close();
+}
 function reviewAns(){
-  const L=['A','B','C','D'];
+  _saveQTime();
+  const L=['A','B','C','D','E'];
   document.getElementById('rev-list').innerHTML=st.questions.map((q,i)=>{const ua=st.answers[q.id],ok=ua===q.correct;
-    return `<div class="rev ${ok?'ok':'bad'}"><div class="rh"><span>Сұрақ ${i+1}</span><span>${ok?'✓ Дұрыс':'✗ Қате'}</span></div>
+    const sec=st.qTimes[q.id]||0;
+    const tstr=sec?` · ${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`:'';
+    return `<div class="rev ${ok?'ok':'bad'}"><div class="rh"><span>Сұрақ ${i+1}${tstr}</span><span>${ok?'✓ Дұрыс':'✗ Қате'}</span></div>
       <div class="rq">${esc(q.text)}</div>${ua!==undefined?`<div class="ra u">Сіз: <b>${L[ua]}) ${esc(q.options[ua])}</b></div>`:'<div class="ra u">Жауап жоқ</div>'}
       ${!ok?`<div class="ra c">Дұрыс: <b>${L[q.correct]}) ${esc(q.options[q.correct])}</b></div>`:''}</div>`}).join('');
   showScr('s-rev');
