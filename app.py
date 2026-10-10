@@ -145,15 +145,20 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
     <div class="card" id="contact-box" style="display:none;padding:0;overflow:hidden">
       <div style="background:#075e54;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:12px">
         <div style="width:40px;height:40px;border-radius:50%;background:#128c7e;display:flex;align-items:center;justify-content:center;font-weight:700">А</div>
-        <div style="flex:1"><div style="font-weight:600;font-size:15px">Админ</div><div style="font-size:12px;opacity:.85">ҰБТ+ қолдау</div></div>
-        <button class="btn btn-sm" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,.4)" onclick="showLoginBox()">✕</button>
+        <div style="flex:1"><div style="font-weight:600;font-size:15px">Админ</div><div id="chat-sub" style="font-size:12px;opacity:.85">ҰБТ+ қолдау</div></div>
+        <button class="btn btn-sm" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,.4)" onclick="closeChat()">✕</button>
       </div>
-      <div id="chat-messages" style="height:280px;overflow-y:auto;padding:12px;background:#e5ddd5;display:flex;flex-direction:column;gap:8px"></div>
-      <div style="padding:10px 12px;background:#f0f0f0;border-top:1px solid #ddd">
-        <div class="fg" style="margin-bottom:8px"><label style="font-size:11px">Сіздің логиніңіз (ат) *</label><input id="chat-login" placeholder="Кім екеніңізді жазыңыз" style="background:#fff"></div>
-        <div style="display:flex;gap:8px">
-          <input id="chat-text" placeholder="Хабарлама жазыңыз..." style="flex:1;padding:10px 12px;border:1px solid #ccc;border-radius:20px;font-size:14px;font-family:inherit;background:#fff" onkeydown="if(event.key==='Enter')sendChatMsg()">
-          <button class="btn btn-ok" style="border-radius:50%;width:42px;height:42px;padding:0" onclick="sendChatMsg()">➤</button>
+      <div id="chat-gate" style="padding:20px 16px;background:#f0f0f0">
+        <div class="fg"><label>Админмен чатты ашу үшін логиніңізді (атыңызды) жазыңыз</label><input id="chat-login" placeholder="Логин" maxlength="30" style="background:#fff" onkeydown="if(event.key==='Enter')enterChat()"></div>
+        <button class="btn btn-ok" style="width:100%" onclick="enterChat()">Чатты ашу</button>
+      </div>
+      <div id="chat-room" style="display:none">
+        <div id="chat-messages" style="height:280px;overflow-y:auto;padding:12px;background:#e5ddd5;display:flex;flex-direction:column;gap:8px"></div>
+        <div style="padding:10px 12px;background:#f0f0f0;border-top:1px solid #ddd">
+          <div style="display:flex;gap:8px">
+            <input id="chat-text" maxlength="1000" placeholder="Хабарлама жазыңыз..." style="flex:1;padding:10px 12px;border:1px solid #ccc;border-radius:20px;font-size:14px;font-family:inherit;background:#fff" onkeydown="if(event.key==='Enter')sendChatMsg()">
+            <button class="btn btn-ok" style="border-radius:50%;width:42px;height:42px;padding:0" onclick="sendChatMsg()">➤</button>
+          </div>
         </div>
       </div>
     </div>
@@ -452,7 +457,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
       <div id="admin-formulas" class="list"></div>
     </div>
     <div class="card" style="padding:20px">
-      <h3 style="margin-bottom:12px">💬 Хабарламалар (админге)</h3>
+      <h3 style="margin-bottom:12px">💬 Хабарламалар (әр логин бөлек)</h3>
       <div id="admin-chat" class="list"></div>
     </div>
     <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
@@ -464,6 +469,8 @@ const LS={get(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch{retur
 function getAdminPass(){return LS.get('ubt_admin_pass','admin123')}
 function setAdminPass(p){LS.set('ubt_admin_pass',p)}
 let user=null;
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function jsq(s){return esc(JSON.stringify(String(s)))}
 function checkAdminName(){
   const n=document.getElementById('login-name').value.trim().toLowerCase();
   document.getElementById('admin-pass-wrap').style.display=(n==='админ'||n==='admin')?'block':'none';
@@ -487,20 +494,39 @@ function showForgot(){
   document.getElementById('contact-box').style.display='none';
   document.getElementById('forgot-step2').style.display='none';
 }
+let chatLogin=null;
 function showContactAdmin(){
   document.getElementById('login-box').style.display='none';
   document.getElementById('register-box').style.display='none';
   document.getElementById('forgot-box').style.display='none';
   document.getElementById('contact-box').style.display='block';
-  renderChatMessages();
+  if(chatLogin){openChatRoom()}
+  else{
+    document.getElementById('chat-room').style.display='none';
+    document.getElementById('chat-gate').style.display='block';
+    document.getElementById('chat-sub').textContent='ҰБТ+ қолдау';
+    document.getElementById('chat-login').value='';
+  }
 }
 function openContactFromApp(){
-  if(user&&user.name){
-    const el=document.getElementById('chat-login');
-    if(el) el.value=user.name;
-  }
-  showScr('s-login');
-  showContactAdmin();
+  if(user&&user.isAdmin){showAdmin();return}
+  chatLogin=(user&&user.name)?user.name:null;
+  showScr('s-login');showContactAdmin();
+}
+function enterChat(){
+  const l=document.getElementById('chat-login').value.trim();
+  if(l.length<2){alert('Логиніңізді жазыңыз (кемінде 2 таңба)');return}
+  chatLogin=l;openChatRoom();
+}
+function openChatRoom(){
+  document.getElementById('chat-gate').style.display='none';
+  document.getElementById('chat-room').style.display='block';
+  document.getElementById('chat-sub').textContent='👤 '+chatLogin;
+  renderChatMessages();
+}
+function closeChat(){
+  chatLogin=null;showLoginBox();
+  if(user&&!user.isAdmin)showScr('s-home');
 }
 function findUserByLogin(login){
   const profiles=LS.get('ubt_profiles',{});
@@ -522,7 +548,7 @@ function doRegister(){
   const key=name.toLowerCase();
   const profiles=LS.get('ubt_profiles',{});
   const u={name:name,password:pass,
-    id:'u_'+key.replace(/\s+/g,'_')+'_'+Date.now().toString(36).slice(-4),isAdmin:false};
+    id:'u_'+key.replace(/[^\p{L}\p{N}]+/gu,'_')+'_'+Date.now().toString(36).slice(-4),isAdmin:false};
   profiles[key]=u;LS.set('ubt_profiles',profiles);
   setUserStats(u.id,{points:0,title:'',stars:0,verified:false});
   alert('✅ Тіркелу сәтті! Енді кіріңіз.');
@@ -571,51 +597,120 @@ function doForgotReset(){
 }
 function getChatMessages(){return LS.get('ubt_chat',[])}
 function saveChatMessages(m){LS.set('ubt_chat',m)}
+function threadKey(x){return String(x||'').trim().toLowerCase()}
+function threadOf(m){return threadKey(m.role==='admin'?m.to:m.from)}
+function newMsgId(){return 'm_'+Date.now()+'_'+Math.random().toString(36).slice(2,7)}
 function sendChatMsg(){
-  const login=document.getElementById('chat-login').value.trim();
+  if(!chatLogin){alert('Алдымен логиніңізді жазыңыз');return}
   const text=document.getElementById('chat-text').value.trim();
-  if(!login||login.length<2){alert('Логиніңізді (атыңызды) жазыңыз — кім жазып тұрғанын білу үшін');return}
   if(!text){alert('Хабарлама жазыңыз');return}
   const msgs=getChatMessages();
-  msgs.push({id:'m_'+Date.now(),from:login,text:text,role:'user',time:new Date().toLocaleString('kk-KZ'),read:false});
+  msgs.push({id:newMsgId(),from:chatLogin,thread:threadKey(chatLogin),text:text,role:'user',time:new Date().toLocaleString('kk-KZ'),read:false});
   saveChatMessages(msgs);
   document.getElementById('chat-text').value='';
   renderChatMessages();
 }
+// Пайдаланушы тек өз логинінің чатын көреді; өшіру батырмасы жоқ
 function renderChatMessages(){
   const el=document.getElementById('chat-messages');
-  if(!el)return;
-  const login=(document.getElementById('chat-login')?.value||'').trim().toLowerCase();
-  const all=getChatMessages();
-  // show messages for this login + any admin replies to this login, or last few public if empty
-  const mine=all.filter(m=>(m.from||'').toLowerCase()===login || (m.to||'').toLowerCase()===login);
-  const list=mine.length?mine:all.slice(-15);
+  if(!el||!chatLogin)return;
+  const key=threadKey(chatLogin);
+  const list=getChatMessages().filter(m=>threadOf(m)===key);
   if(!list.length){
-    el.innerHTML='<div style="text-align:center;color:#667;padding:40px 16px;font-size:13px">Хабарлама жоқ.<br>Логин жазып, админге сұрағыңызды жіберіңіз.</div>';
+    el.innerHTML='<div style="text-align:center;color:#667;padding:40px 16px;font-size:13px">Хабарлама жоқ.<br>Админге сұрағыңызды жіберіңіз.</div>';
     return;
   }
   el.innerHTML=list.map(m=>{
     const isUser=m.role==='user';
     return `<div style="display:flex;justify-content:${isUser?'flex-end':'flex-start'}">
-      <div style="max-width:75%;padding:8px 12px;border-radius:12px;font-size:13px;line-height:1.4;background:${isUser?'#dcf8c6':'#fff'};box-shadow:0 1px 1px rgba(0,0,0,.08)">
+      <div style="max-width:75%;padding:8px 12px;border-radius:12px;font-size:13px;line-height:1.4;background:${isUser?'#dcf8c6':'#fff'};box-shadow:0 1px 1px rgba(0,0,0,.08);word-break:break-word">
         ${!isUser?'<div style="font-size:11px;color:#075e54;font-weight:600;margin-bottom:2px">Админ</div>':''}
-        ${isUser&&m.from?'<div style="font-size:11px;color:#075e54;font-weight:600;margin-bottom:2px">'+m.from+'</div>':''}
-        <div>${m.text}</div>
-        <div style="font-size:10px;color:#667;text-align:right;margin-top:4px">${m.time||''}</div>
+        <div>${esc(m.text)}</div>
+        <div style="font-size:10px;color:#667;text-align:right;margin-top:4px">${esc(m.time||'')}</div>
       </div>
     </div>`;
   }).join('');
   el.scrollTop=el.scrollHeight;
 }
-function adminReplyChat(toLogin){
-  const text=prompt('Жауап жазыңыз ('+toLogin+'):');
-  if(!text||!text.trim())return;
+
+// ---------- Админ жағы: әр логин бөлек чат, өшіруді тек админ жасай алады ----------
+let adminOpenThread=null;
+function renderAdminChat(){
+  const el=document.getElementById('admin-chat');if(!el)return;
   const msgs=getChatMessages();
-  msgs.push({id:'m_'+Date.now(),from:'Админ',to:toLogin,text:text.trim(),role:'admin',time:new Date().toLocaleString('kk-KZ'),read:true});
-  saveChatMessages(msgs);
-  showAdmin();
+  const threads={};
+  msgs.forEach((m,idx)=>{
+    const k=threadOf(m);if(!k)return;
+    const t=threads[k]||(threads[k]={key:k,name:'',list:[],lastIdx:0});
+    t.list.push(m);t.lastIdx=idx;
+    if(m.role!=='admin'&&m.from)t.name=m.from;
+  });
+  const arr=Object.values(threads).sort((a,b)=>b.lastIdx-a.lastIdx);
+  if(!arr.length){el.innerHTML='<p class="sub">Хабарлама жоқ</p>';return}
+  el.innerHTML=arr.map((t,i)=>{
+    const name=t.name||t.list[0].to||t.key;
+    const unread=t.list.filter(m=>m.role!=='admin'&&!m.read).length;
+    const inId='ar_'+i;
+    return `<details class="card" style="padding:12px 14px;margin-bottom:0" ${adminOpenThread===t.key?'open':''} ontoggle="adminToggleThread(${jsq(t.key)},this.open)">
+      <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <b>👤 ${esc(name)}</b>
+        ${unread?`<span class="badge" style="background:#fee2e2;color:var(--err)">${unread} жаңа</span>`:''}
+        <span class="sub">${t.list.length} хабарлама</span>
+      </summary>
+      <div style="display:flex;flex-direction:column;gap:8px;margin:12px 0;max-height:320px;overflow-y:auto;padding:10px;background:#e5ddd5;border-radius:10px">
+        ${t.list.map(m=>{
+          const isUser=m.role!=='admin';
+          return `<div style="display:flex;justify-content:${isUser?'flex-start':'flex-end'}">
+            <div style="max-width:80%;padding:8px 12px;border-radius:12px;font-size:13px;background:${isUser?'#fff':'#dcf8c6'};word-break:break-word">
+              <div style="font-size:11px;color:#075e54;font-weight:600;margin-bottom:2px">${isUser?esc(m.from||name):'Админ'}</div>
+              <div>${esc(m.text)}</div>
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:4px">
+                <span style="font-size:10px;color:#667">${esc(m.time||'')}</span>
+                <button class="btn btn-d btn-sm" style="padding:2px 8px;font-size:11px" onclick="adminDelChatMsg(${jsq(m.id)})">✕</button>
+              </div>
+            </div></div>`}).join('')}
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <input id="${inId}" placeholder="Жауап жазыңыз..." style="flex:1;padding:10px 12px;border:1px solid var(--b);border-radius:10px;font-size:14px;font-family:inherit" onkeydown="if(event.key==='Enter')adminSendReply(${jsq(t.key)},'${inId}')">
+        <button class="btn btn-p btn-sm" onclick="adminSendReply(${jsq(t.key)},'${inId}')">Жіберу</button>
+      </div>
+      <button class="btn btn-d btn-sm" onclick="adminDelThread(${jsq(t.key)})">🗑 Бүкіл чатты өшіру</button>
+    </details>`;
+  }).join('');
 }
-function doLogout(){LS.set('ubt_current',null);user=null;showScr('s-login')}
+function adminToggleThread(key,isOpen){
+  if(!user||!user.isAdmin)return;
+  if(isOpen){
+    adminOpenThread=key;
+    const msgs=getChatMessages();let ch=false;
+    msgs.forEach(m=>{if(threadOf(m)===key&&m.role!=='admin'&&!m.read){m.read=true;ch=true}});
+    if(ch)saveChatMessages(msgs);
+  }else if(adminOpenThread===key){adminOpenThread=null}
+}
+function adminSendReply(key,inputId){
+  if(!user||!user.isAdmin)return;
+  const inp=document.getElementById(inputId);if(!inp)return;
+  const text=inp.value.trim();if(!text)return;
+  const msgs=getChatMessages();
+  const first=msgs.find(m=>threadOf(m)===key&&m.role!=='admin');
+  msgs.push({id:newMsgId(),from:'Админ',to:first?first.from:key,thread:key,text:text,role:'admin',time:new Date().toLocaleString('kk-KZ'),read:true});
+  saveChatMessages(msgs);
+  adminOpenThread=key;renderAdminChat();
+}
+function adminDelChatMsg(id){
+  if(!user||!user.isAdmin)return;
+  if(!confirm('Хабарламаны өшіру?'))return;
+  saveChatMessages(getChatMessages().filter(m=>m.id!==id));
+  renderAdminChat();
+}
+function adminDelThread(key){
+  if(!user||!user.isAdmin)return;
+  if(!confirm('Осы адаммен барлық хабарламаны өшіру?'))return;
+  saveChatMessages(getChatMessages().filter(m=>threadOf(m)!==key));
+  if(adminOpenThread===key)adminOpenThread=null;
+  renderAdminChat();
+}
+function doLogout(){LS.set('ubt_current',null);user=null;chatLogin=null;showLoginBox();showScr('s-login')}
 function getUserStats(id){
   const all=LS.get('ubt_user_stats',{});
   if(!all[id]) all[id]={points:0,title:'',stars:0,verified:false};
@@ -687,10 +782,10 @@ function showRanking(){
   const medals=['🥇','🥈','🥉'];
   el.innerHTML=board.map((u,i)=>`
     <div class="item" style="${u.id===user.id?'border-color:var(--p);background:#eff6ff':''}">
-      <div style="width:36px;height:36px;border-radius:50%;background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0">${u.name[0].toUpperCase()}</div>
+      <div style="width:36px;height:36px;border-radius:50%;background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0">${esc(u.name[0].toUpperCase())}</div>
       <div class="info">
-        <h4>${medals[i]||('#'+(i+1))} ${u.name} ${u.id===user.id?'(сіз)':''}</h4>
-        <p>${u.title||(u.stars?('⭐'.repeat(Math.min(u.stars,5))):'—')}</p>
+        <h4>${medals[i]||('#'+(i+1))} ${esc(u.name)} ${u.id===user.id?'(сіз)':''}</h4>
+        <p>${esc(u.title||(u.stars?('⭐'.repeat(Math.min(u.stars,5))):'—'))}</p>
       </div>
       <div style="font-weight:700;color:var(--p);font-size:16px">⭐ ${u.points}</div>
     </div>`).join('');
@@ -714,8 +809,8 @@ function showAdmin(){
     <div class="mode" style="cursor:default"><div class="ic">🌐</div><h3>${approved.length}</h3><p>Жарияланған</p></div>`;
 
   document.getElementById('admin-pending').innerHTML=pending.length?pending.map(t=>`
-    <div class="item"><div class="info"><h4>${t.topic}</h4>
-      <p>${t.subjectName||''} · ${t.questions.length} сұрақ · ${t.authorName||''}</p></div>
+    <div class="item"><div class="info"><h4>${esc(t.topic)}</h4>
+      <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · ${esc(t.authorName||'')}</p></div>
       <div class="acts">
         <button class="btn btn-ok btn-sm" onclick="approveTest('${t.id}')">✓ Мақұлдау</button>
         <button class="btn btn-d btn-sm" onclick="rejectTest('${t.id}')">✕ Бас тарту</button>
@@ -725,16 +820,16 @@ function showAdmin(){
     const s=getUserStats(p.id);
     return `<div class="item" style="flex-wrap:wrap">
       <div style="position:relative">
-        <div style="width:40px;height:40px;border-radius:50%;background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700">${(p.name||'?')[0].toUpperCase()}</div>
+        <div style="width:40px;height:40px;border-radius:50%;background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700">${esc((p.name||'?')[0].toUpperCase())}</div>
         ${s.verified?'<span style="position:absolute;bottom:-2px;right:-2px;background:#2563eb;color:#fff;width:16px;height:16px;border-radius:50%;font-size:10px;line-height:16px;text-align:center">✓</span>':''}
       </div>
-      <div class="info"><h4>${p.name}</h4><p>⭐ ${s.points||0} · ${s.title||'Атақ жоқ'} · <span style="color:#f59e0b">${starStr(s.stars||0)}</span></p></div>
+      <div class="info"><h4>${esc(p.name)}</h4><p>⭐ ${s.points||0} · ${esc(s.title||'Атақ жоқ')} · <span style="color:#f59e0b">${starStr(s.stars||0)}</span></p></div>
       <div class="acts">
-        <button class="btn btn-p btn-sm" onclick="adminViewUser('${p.id}')">Профиль</button>
-        <button class="btn btn-ok btn-sm" onclick="adminToggleVerify('${p.id}')">${s.verified?'✓ Бар':'Галочка'}</button>
-        <button class="btn btn-w btn-sm" onclick="adminSetTitle('${p.id}')">Атақ</button>
-        <button class="btn btn-s btn-sm" onclick="adminSetStars('${p.id}')">Жұлдыз</button>
-        <button class="btn btn-d btn-sm" onclick="adminDelUser('${p.id}','${(p.name||'').replace(/'/g,'')}')">Өшіру</button>
+        <button class="btn btn-p btn-sm" onclick="adminViewUser(${jsq(p.id)})">Профиль</button>
+        <button class="btn btn-ok btn-sm" onclick="adminToggleVerify(${jsq(p.id)})">${s.verified?'✓ Бар':'Галочка'}</button>
+        <button class="btn btn-w btn-sm" onclick="adminSetTitle(${jsq(p.id)})">Атақ</button>
+        <button class="btn btn-s btn-sm" onclick="adminSetStars(${jsq(p.id)})">Жұлдыз</button>
+        <button class="btn btn-d btn-sm" onclick="adminDelUser(${jsq(p.id)})">Өшіру</button>
       </div></div>`}).join(''):'<p class="sub">Профиль жоқ</p>';
   // password change block
   let passBox=document.getElementById('admin-pass-box');
@@ -752,29 +847,15 @@ function showAdmin(){
   }
 
   document.getElementById('admin-tests').innerHTML=tests.length?tests.map(t=>`
-    <div class="item"><div class="info"><h4>${t.topic}</h4>
-      <p>${t.subjectName||''} · ${t.questions.length} сұрақ · ${t.authorName||''} · ${t.isPublic||t.status==='approved'?'🌐 Жария':t.status==='pending'?'⏳ Күту':'🔒 Жеке'}</p></div>
+    <div class="item"><div class="info"><h4>${esc(t.topic)}</h4>
+      <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · ${esc(t.authorName||'')} · ${t.isPublic||t.status==='approved'?'🌐 Жария':t.status==='pending'?'⏳ Күту':'🔒 Жеке'}</p></div>
     <div class="acts"><button class="btn btn-d btn-sm" onclick="adminDelTest('${t.id}')">Өшіру</button></div></div>`).join(''):'<p class="sub">Тест жоқ</p>';
 
   document.getElementById('admin-formulas').innerHTML=formulas.length?formulas.map((f,i)=>`
-    <div class="item"><div class="info"><h4>${f.title}</h4><p>${f.subject} · ${f.authorName||''} · ${f.body}</p></div>
+    <div class="item"><div class="info"><h4>${esc(f.title)}</h4><p>${esc(f.subject)} · ${esc(f.authorName||'')} · ${esc(f.body)}</p></div>
     <div class="acts"><button class="btn btn-d btn-sm" onclick="adminDelFormula(${i})">Өшіру</button></div></div>`).join(''):'<p class="sub">Формула жоқ</p>';
 
-  const chats=getChatMessages().slice().reverse();
-  const chatEl=document.getElementById('admin-chat');
-  if(chatEl){
-    chatEl.innerHTML=chats.length?chats.map(m=>{
-      const isUser=m.role==='user';
-      const who=isUser?(m.from||'?'):('Админ → '+(m.to||''));
-      return `<div class="item" style="flex-direction:column;align-items:stretch;gap:6px">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-          <div class="info"><h4>${isUser?'👤 ':'🛠 '}${who}</h4><p>${m.time||''}</p></div>
-          ${isUser?`<button class="btn btn-p btn-sm" onclick="adminReplyChat('${(m.from||'').replace(/'/g,"\\'")}')">Жауап</button>`:''}
-        </div>
-        <div style="font-size:13px;padding:8px 10px;background:${isUser?'#eff6ff':'#f0fdf4'};border-radius:8px">${m.text}</div>
-      </div>`;
-    }).join(''):'<p class="sub">Хабарлама жоқ</p>';
-  }
+  renderAdminChat();
 
   showScr('s-admin');
 }
@@ -787,9 +868,11 @@ function rejectTest(id){
   const all=allTests();const t=all.find(x=>x.id===id);
   if(t){t.isPublic=false;t.status='rejected';saveAllTests(all);showAdmin()}
 }
-function adminDelUser(id,name){
-  if(!confirm(name+' профилін өшіру?'))return;
+function adminDelUser(id){
+  if(!user||!user.isAdmin)return;
   const profiles=LS.get('ubt_profiles',{});
+  const pr=Object.values(profiles).find(x=>x.id===id);
+  if(!confirm((pr?pr.name:'')+' профилін өшіру?'))return;
   Object.keys(profiles).forEach(k=>{if(profiles[k].id===id)delete profiles[k]});
   LS.set('ubt_profiles',profiles);
   saveAllTests(allTests().filter(t=>t.authorId!==id));
@@ -835,11 +918,11 @@ function adminViewUser(id){
   document.getElementById('uv-curpass').value=p.password||'(пароль жоқ)';
   const hist=LS.get('ubt_hist_'+id,[]);
   document.getElementById('uv-hist').innerHTML=hist.length?hist.map(h=>`
-    <div class="item"><div class="info"><h4>${h.topic||'Тест'}</h4><p>${h.date}</p></div>
+    <div class="item"><div class="info"><h4>${esc(h.topic||'Тест')}</h4><p>${h.date}</p></div>
     <div style="font-weight:700;color:var(--p)">${h.score}/${h.max}</div></div>`).join(''):'<p class="sub">Тест тапсырмаған</p>';
   const mist=LS.get('ubt_mistakes_'+id,[]);
   document.getElementById('uv-mist').innerHTML=mist.length?mist.map(q=>`
-    <div class="item"><div class="info"><h4>${(q.text||'').substring(0,80)}</h4><p>${q.subjectName||''}</p></div></div>`).join(''):'<p class="sub">Қате жоқ</p>';
+    <div class="item"><div class="info"><h4>${esc((q.text||'').substring(0,80))}</h4><p>${esc(q.subjectName||'')}</p></div></div>`).join(''):'<p class="sub">Қате жоқ</p>';
   document.getElementById('uv-newpass').value='';
   showScr('s-user-view');
 }
@@ -880,9 +963,9 @@ function renderFormulas(){
   const list=document.getElementById('formula-list');
   const all=LS.get('ubt_formulas',[]);
   if(!all.length){list.innerHTML='<div class="empty"><div class="ic">📐</div><p>Әзірге формула жоқ</p></div>';return}
-  list.innerHTML=all.map(f=>`<div class="item"><div class="info"><h4>${f.title}</h4>
-    <p style="font-family:monospace;font-size:14px;color:var(--t);margin:6px 0">${f.body}</p>
-    <p>${f.subject} · ${f.authorName||''}</p></div></div>`).join('');
+  list.innerHTML=all.map(f=>`<div class="item"><div class="info"><h4>${esc(f.title)}</h4>
+    <p style="font-family:monospace;font-size:14px;color:var(--t);margin:6px 0">${esc(f.body)}</p>
+    <p>${esc(f.subject)} · ${esc(f.authorName||'')}</p></div></div>`).join('');
 }
 function addFormula(){
   const title=document.getElementById('f-title').value.trim();
@@ -909,61 +992,52 @@ function showCreate(){
 }
 function genWrong(){
   const correct=document.getElementById('c-correct').value.trim();
-  if(!correct){alert('Алдымен дұрыс жауапты жазыңыз!');return}
+  if(!correct){alert('Алдымен дұрыс жауапты жазыңыз!');return false}
   const wrongs=makeDistractors(correct);
-  // shuffle: put correct at random position
   const pos=Math.floor(Math.random()*4);
   const opts=['','','',''];
   opts[pos]=correct;
-  let wi=0;
-  for(let i=0;i<4;i++){if(i!==pos)opts[i]=wrongs[wi++]}
+  if(wrongs){let wi=0;for(let i=0;i<4;i++){if(i!==pos)opts[i]=wrongs[wi++]}}
   opts.forEach((o,i)=>document.getElementById('c-o'+i).value=o);
   document.querySelector('input[name="c-cor"][value="'+pos+'"]').checked=true;
   document.getElementById('opts-block').style.display='block';
+  if(!wrongs){alert('Бұл жауап үшін қате нұсқаларды автоматты түрде жасау мүмкін емес. Қалған 3 нұсқаны өзіңіз жазыңыз.');return false}
+  return true;
 }
+// Тек жыл/сан түріндегі жауаптарға ғана сапалы қате нұсқа жасайды, әйтпесе null қайтарады
 function makeDistractors(ans){
-  const out=[];
-  // Year like 1465 / 1465 ж.
+  const out=new Set();
   const yearM=ans.match(/(\d{3,4})/);
   if(yearM){
     const y=+yearM[1];
-    const deltas=[-10,-5,-1,1,2,3,5,10,15,20,50,100].sort(()=>Math.random()-0.5);
+    const deltas=[-100,-50,-20,-15,-10,-5,-3,-2,-1,1,2,3,5,10,15,20,50,100].sort(()=>Math.random()-0.5);
     for(const d of deltas){
-      const ny=y+d;if(ny===y||ny<100)continue;
-      out.push(ans.replace(String(y),String(ny)));
-      if(out.length>=3)break;
+      const ny=y+d;if(ny<100)continue;
+      out.add(ans.replace(yearM[1],String(ny)));
+      if(out.size>=3)break;
     }
   }
-  // Pure number
-  const numM=ans.match(/^-?\d+([.,]\d+)?$/);
-  if(numM&&out.length<3){
-    const n=parseFloat(ans.replace(',','.'));
-    const cands=[n+1,n-1,n+2,n-2,n*2,Math.round(n/2),n+10,n-10,n+5].filter(x=>x!==n&&!isNaN(x));
-    for(const c of cands){out.push(String(c));if(out.length>=3)break}
-  }
-  // Short text distractors (common alternatives)
-  if(out.length<3){
-    const pool=['дұрыс емес','басқа нұсқа','белгісіз','ешқайсысы','барлығы','ешқашан','әрқашан','кейде','жиі','сирек'];
-    // character tweak
-    if(ans.length>2){
-      const arr=ans.split('');
-      const i=Math.floor(Math.random()*(arr.length-1))+1;
-      arr[i]=arr[i]==='а'?'ә':(arr[i]==='е'?'ё':String.fromCharCode(arr[i].charCodeAt(0)+1));
-      out.push(arr.join(''));
-    }
-    while(out.length<3){
-      const p=pool[Math.floor(Math.random()*pool.length)];
-      if(!out.includes(p)&&p!==ans)out.push(p);
+  const numM=ans.match(/^(-?\d+(?:[.,]\d+)?)(\s+[^\d].*|[°%])?$/);
+  if(out.size<3&&numM){
+    const comma=numM[1].includes(',');
+    const n=parseFloat(numM[1].replace(',','.'));
+    const suf=numM[2]||'';
+    const cands=[n+1,n-1,n+2,n-2,n*2,n/2,n+10,n-10,n+5,n-5,n*10,-n].filter(x=>isFinite(x)&&x!==n).sort(()=>Math.random()-0.5);
+    for(const c of cands){
+      let t=String(Math.round(c*100)/100);
+      if(comma)t=t.replace('.',',');
+      out.add(t+suf);
+      if(out.size>=3)break;
     }
   }
-  // unique
-  return [...new Set(out)].filter(x=>x!==ans).slice(0,3);
+  const res=[...out].filter(x=>x!==ans);
+  return res.length>=3?res.slice(0,3):null;
 }
 function addQToDraft(){
   const text=document.getElementById('c-qtext').value.trim();
   const correctOnly=document.getElementById('c-correct').value.trim();
   // auto-gen if options empty
-  if(correctOnly&&!document.getElementById('c-o0').value.trim()){genWrong()}
+  if(correctOnly&&!document.getElementById('c-o0').value.trim()){if(!genWrong())return}
   const opts=[0,1,2,3].map(i=>document.getElementById('c-o'+i).value.trim());
   const correct=+document.querySelector('input[name="c-cor"]:checked').value;
   if(!text){alert('Сұрақ жазыңыз!');return}
@@ -978,7 +1052,7 @@ function renderDraftQs(){
   document.getElementById('c-count').textContent=draft.questions.length;
   const el=document.getElementById('c-qlist');
   if(!draft.questions.length){el.innerHTML='<p class="sub">Әзірге сұрақ жоқ</p>';return}
-  el.innerHTML=draft.questions.map((q,i)=>`<div class="item"><div class="info"><h4>${i+1}. ${q.text}</h4><p>Дұрыс: ${['A','B','C','D'][q.correct]}</p></div>
+  el.innerHTML=draft.questions.map((q,i)=>`<div class="item"><div class="info"><h4>${i+1}. ${esc(q.text)}</h4><p>Дұрыс: ${['A','B','C','D'][q.correct]}</p></div>
     <div class="acts"><button class="btn btn-d btn-sm" onclick="draft.questions.splice(${i},1);renderDraftQs()">✕</button></div></div>`).join('');
 }
 function saveTest(){
@@ -1013,8 +1087,8 @@ function showMyTests(){
     if(t.isPublic||t.status==='approved')badge='<span class="badge badge-pub">🌐 Жария</span>';
     else if(t.status==='pending')badge='<span class="badge" style="background:#fef3c7;color:#92400e">⏳ Күтуде</span>';
     else if(t.status==='rejected')badge='<span class="badge badge-err">Бас тартылған</span>';
-    return `<div class="item"><div class="info"><h4>${t.topic}</h4>
-    <p>${t.subjectName||''} · ${t.questions.length} сұрақ · ${badge}</p></div>
+    return `<div class="item"><div class="info"><h4>${esc(t.topic)}</h4>
+    <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · ${badge}</p></div>
     <div class="acts">
       <button class="btn btn-p btn-sm" onclick="startUserTest('${t.id}')">Бастау</button>
       <button class="btn btn-s btn-sm" onclick="editTest('${t.id}')">+ Сұрақ</button>
@@ -1034,8 +1108,8 @@ function delTest(id){if(!confirm('Тестті өшіру керек пе?'))ret
 function showPublicTests(){
   const list=document.getElementById('public-list');const tests=publicTests();
   if(!tests.length){list.innerHTML='<div class="empty"><div class="ic">🌐</div><p>Әзірге жария тест жоқ.<br>Өзіңіз құрып, «Интернетке шығару» белгілеңіз.</p></div>'}
-  else{list.innerHTML=tests.map(t=>`<div class="item"><div class="info"><h4>${t.topic}</h4>
-    <p>${t.subjectName||''} · ${t.questions.length} сұрақ · Автор: ${t.authorName||'Аноним'}${t.desc?' · '+t.desc:''}</p></div>
+  else{list.innerHTML=tests.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic)}</h4>
+    <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · Автор: ${esc(t.authorName||'Аноним')}${t.desc?' · '+esc(t.desc):''}</p></div>
     <div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest('${t.id}')">Тапсыру</button></div></div>`).join('')}
   showScr('s-public');
 }
@@ -1048,7 +1122,7 @@ function editTest(id){
   document.querySelector('input[name="e-cor"][value="0"]').checked=true;renderEditList(t);showScr('s-edit');
 }
 function renderEditList(t){
-  document.getElementById('edit-qlist').innerHTML=t.questions.map((q,i)=>`<div class="item"><div class="info"><h4>${i+1}. ${q.text}</h4></div>
+  document.getElementById('edit-qlist').innerHTML=t.questions.map((q,i)=>`<div class="item"><div class="info"><h4>${i+1}. ${esc(q.text)}</h4></div>
     <div class="acts"><button class="btn btn-d btn-sm" onclick="removeQFromTest('${t.id}',${i})">✕</button></div></div>`).join('');
 }
 function addQToExisting(){
@@ -1091,7 +1165,7 @@ function renderQ(){
   document.getElementById('qtext').textContent=q.text;
   document.getElementById('flag').classList.toggle('on',!!st.flags[q.id]);
   const L=['A','B','C','D','E'];
-  document.getElementById('opts').innerHTML=q.options.map((o,i)=>`<div class="op${st.answers[q.id]===i?' sel':''}" onclick="selOpt(${i})"><span class="ol">${L[i]}</span><span class="ot">${o}</span></div>`).join('');
+  document.getElementById('opts').innerHTML=q.options.map((o,i)=>`<div class="op${st.answers[q.id]===i?' sel':''}" onclick="selOpt(${i})"><span class="ol">${L[i]}</span><span class="ot">${esc(o)}</span></div>`).join('');
   document.getElementById('prev').disabled=st.currentIndex===0;
   document.getElementById('next').textContent=st.currentIndex===st.questions.length-1?'Аяқтау':'Келесі →';
   updNav();updateProg();
@@ -1104,12 +1178,12 @@ function goQ(i){st.currentIndex=i;renderQ();document.getElementById('sidebar').c
 function updateProg(){const t=st.questions.length,c=st.currentIndex+1,a=Object.keys(st.answers).length;document.getElementById('prog-t').textContent=`Сұрақ ${c} / ${t}`;document.getElementById('prog-f').style.width=(a/t*100)+'%'}
 function togSide(){document.getElementById('sidebar').classList.toggle('open')}
 
-function startTimer(){stopTimer();updTimer();st.timerInterval=setInterval(()=>{st.timerSeconds--;updTimer();if(st.timerSeconds<=0){stopTimer();alert('Уақыт аяқталды!');finishTest()}},1000)}
+function startTimer(){stopTimer();updTimer();st.timerInterval=setInterval(()=>{st.timerSeconds--;updTimer();if(st.timerSeconds<=0){stopTimer();alert('Уақыт аяқталды!');finishTest(true)}},1000)}
 function stopTimer(){if(st.timerInterval){clearInterval(st.timerInterval);st.timerInterval=null}}
 function updTimer(){const t=Math.max(0,st.timerSeconds);const h=Math.floor(t/3600),m=Math.floor((t%3600)/60),s=t%60;const el=document.getElementById('timer');el.textContent=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;el.classList.remove('warn','dang');if(t<=300)el.classList.add('dang');else if(t<=900)el.classList.add('warn')}
 
-function finishTest(){
-  if(!confirm('Тестті аяқтау керек пе?'))return;stopTimer();
+function finishTest(force){
+  if(!force&&!confirm('Тестті аяқтау керек пе?'))return;stopTimer();
   let score=0,max=st.questions.length,wrong=[];
   st.questions.forEach(q=>{if(st.answers[q.id]===q.correct)score++;else wrong.push({...q,userAnswer:st.answers[q.id]})});
   if(!st.isMistakes&&wrong.length){let m=LS.get('ubt_mistakes_'+user.id,[]);const ids=new Set(m.map(x=>x.id));wrong.forEach(q=>{if(!ids.has(q.id))m.push(q)});LS.set('ubt_mistakes_'+user.id,m)}
@@ -1122,7 +1196,7 @@ function finishTest(){
   if(!st.isMistakes) addPoints(gained);
   st.lastWrong=wrong;st.lastScore={score,max,gained};
   document.getElementById('sc').textContent=score;document.getElementById('sm').textContent=max;
-  document.getElementById('res-break').innerHTML=`<div class="res-row"><span>${st.subjectName||'Тест'}</span><span style="font-weight:700;color:var(--p)">${score} / ${max}</span></div>
+  document.getElementById('res-break').innerHTML=`<div class="res-row"><span>${esc(st.subjectName||'Тест')}</span><span style="font-weight:700;color:var(--p)">${score} / ${max}</span></div>
     ${!st.isMistakes?`<div class="res-row"><span>Алынған ұпай</span><span style="font-weight:700;color:var(--ok)">+${gained} ⭐</span></div>`:''}`;
   showScr('s-res');
 }
@@ -1130,20 +1204,20 @@ function reviewAns(){
   const L=['A','B','C','D'];
   document.getElementById('rev-list').innerHTML=st.questions.map((q,i)=>{const ua=st.answers[q.id],ok=ua===q.correct;
     return `<div class="rev ${ok?'ok':'bad'}"><div class="rh"><span>Сұрақ ${i+1}</span><span>${ok?'✓ Дұрыс':'✗ Қате'}</span></div>
-      <div class="rq">${q.text}</div>${ua!==undefined?`<div class="ra u">Сіз: <b>${L[ua]}) ${q.options[ua]}</b></div>`:'<div class="ra u">Жауап жоқ</div>'}
-      ${!ok?`<div class="ra c">Дұрыс: <b>${L[q.correct]}) ${q.options[q.correct]}</b></div>`:''}</div>`}).join('');
+      <div class="rq">${esc(q.text)}</div>${ua!==undefined?`<div class="ra u">Сіз: <b>${L[ua]}) ${esc(q.options[ua])}</b></div>`:'<div class="ra u">Жауап жоқ</div>'}
+      ${!ok?`<div class="ra c">Дұрыс: <b>${L[q.correct]}) ${esc(q.options[q.correct])}</b></div>`:''}</div>`}).join('');
   showScr('s-rev');
 }
 function showHistory(){
   const hist=LS.get('ubt_hist_'+user.id,[]);
-  document.getElementById('hist-list').innerHTML=hist.length?hist.map(h=>`<div class="item"><div class="info"><h4>${h.topic||'Тест'}</h4><p>${h.date}</p></div>
+  document.getElementById('hist-list').innerHTML=hist.length?hist.map(h=>`<div class="item"><div class="info"><h4>${esc(h.topic||'Тест')}</h4><p>${h.date}</p></div>
     <div style="font-weight:700;color:var(--p)">${h.score}/${h.max}</div></div>`).join(''):'<div class="empty"><div class="ic">📭</div><p>Тарих бос</p></div>';
   showScr('s-hist');
 }
 function showMistakes(){
   const m=LS.get('ubt_mistakes_'+user.id,[]);const btn=document.getElementById('mist-start');
   if(!m.length){document.getElementById('mist-list').innerHTML='<div class="empty"><div class="ic">🎉</div><p>Қате жоқ!</p></div>';btn.style.display='none'}
-  else{document.getElementById('mist-list').innerHTML=m.map(q=>`<div class="item"><div class="info"><h4>${q.text.substring(0,70)}${q.text.length>70?'...':''}</h4><p>${q.subjectName||''}</p></div></div>`).join('');btn.style.display='inline-flex'}
+  else{document.getElementById('mist-list').innerHTML=m.map(q=>`<div class="item"><div class="info"><h4>${esc(q.text.substring(0,70)+(q.text.length>70?'...':''))}</h4><p>${esc(q.subjectName||'')}</p></div></div>`).join('');btn.style.display='inline-flex'}
   showScr('s-mist');
 }
 function clearMist(){if(confirm('Тазалау?')){LS.set('ubt_mistakes_'+user.id,[]);showMistakes()}}
