@@ -115,34 +115,47 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
   <div class="wrap">
     <div class="hdr"><div class="logo">Ұ+</div><h1>ҰБТ+</h1><p class="sub">ҰБТ-ға дайындық платформасы</p></div>
     <div class="card" id="login-box">
-      <div class="fg"><label>Логин (ат немесе телефон)</label><input id="login-name" placeholder="Атыңыз немесе +7..." oninput="checkAdminName()"></div>
+      <div class="fg"><label>Логин (атыңыз)</label><input id="login-name" placeholder="Атыңыз" oninput="checkAdminName()"></div>
       <div class="fg"><label>Пароль</label><input id="login-pass" type="password" placeholder="Пароль"></div>
       <div class="fg" id="admin-pass-wrap" style="display:none"><label class="sub">Админ ретінде кіру</label></div>
       <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doLogin()">Кіру</button>
       <button class="btn btn-s" style="width:100%;margin-bottom:10px" onclick="showRegister()">Тіркелу</button>
-      <button class="btn btn-s btn-sm" style="width:100%" onclick="showForgot()">Парольді ұмыттым</button>
+      <button class="btn btn-s btn-sm" style="width:100%;margin-bottom:10px" onclick="showForgot()">Парольді ұмыттым</button>
+      <button class="btn btn-w btn-sm" style="width:100%" onclick="showContactAdmin()">💬 Админге жазу</button>
     </div>
     <div class="card" id="register-box" style="display:none">
       <h3 style="margin-bottom:12px">Тіркелу</h3>
-      <div class="fg"><label>Атыңыз *</label><input id="reg-name" placeholder="Атыңыз" maxlength="30"></div>
-      <div class="fg"><label>Телефон *</label><input id="reg-phone" placeholder="+7 700 123 45 67"></div>
+      <div class="fg"><label>Атыңыз (логин) *</label><input id="reg-name" placeholder="Атыңыз" maxlength="30"></div>
       <div class="fg"><label>Пароль *</label><input id="reg-pass" type="password" placeholder="Кемінде 4 таңба"></div>
       <div class="fg"><label>Парольді қайталаңыз *</label><input id="reg-pass2" type="password" placeholder="Қайталаңыз"></div>
-      <button class="btn btn-w" style="width:100%;margin-bottom:10px" onclick="sendRegCode()">📱 Код жіберу</button>
-      <div class="fg" id="reg-code-wrap" style="display:none"><label>Телефонға келген код</label><input id="reg-code" placeholder="4 цифр" maxlength="6"></div>
-      <button class="btn btn-p" style="width:100%;margin-bottom:10px;display:none" id="reg-submit" onclick="doRegister()">Тіркелуді аяқтау</button>
+      <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doRegister()">Тіркелу</button>
       <button class="btn btn-s" style="width:100%" onclick="showLoginBox()">Артқа</button>
     </div>
     <div class="card" id="forgot-box" style="display:none">
       <h3 style="margin-bottom:12px">Парольді қалпына келтіру</h3>
-      <div class="fg"><label>Телефон нөмірі</label><input id="forgot-phone" placeholder="+7 700..."></div>
-      <button class="btn btn-w" style="width:100%;margin-bottom:10px" onclick="sendForgotCode()">📱 Код жіберу</button>
+      <div class="fg"><label>Логин (атыңыз)</label><input id="forgot-login" placeholder="Атыңыз"></div>
+      <button class="btn btn-w" style="width:100%;margin-bottom:10px" onclick="sendForgotCode()">Код алу</button>
       <div id="forgot-step2" style="display:none">
         <div class="fg"><label>Код</label><input id="forgot-code" placeholder="4 цифр" maxlength="6"></div>
         <div class="fg"><label>Жаңа пароль</label><input id="forgot-pass" type="password" placeholder="Жаңа пароль"></div>
         <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doForgotReset()">Парольді өзгерту</button>
       </div>
       <button class="btn btn-s" style="width:100%" onclick="showLoginBox()">Артқа</button>
+    </div>
+    <div class="card" id="contact-box" style="display:none;padding:0;overflow:hidden">
+      <div style="background:#075e54;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:12px">
+        <div style="width:40px;height:40px;border-radius:50%;background:#128c7e;display:flex;align-items:center;justify-content:center;font-weight:700">А</div>
+        <div style="flex:1"><div style="font-weight:600;font-size:15px">Админ</div><div style="font-size:12px;opacity:.85">ҰБТ+ қолдау</div></div>
+        <button class="btn btn-sm" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,.4)" onclick="showLoginBox()">✕</button>
+      </div>
+      <div id="chat-messages" style="height:280px;overflow-y:auto;padding:12px;background:#e5ddd5;display:flex;flex-direction:column;gap:8px"></div>
+      <div style="padding:10px 12px;background:#f0f0f0;border-top:1px solid #ddd">
+        <div class="fg" style="margin-bottom:8px"><label style="font-size:11px">Сіздің логиніңіз (ат) *</label><input id="chat-login" placeholder="Кім екеніңізді жазыңыз" style="background:#fff"></div>
+        <div style="display:flex;gap:8px">
+          <input id="chat-text" placeholder="Хабарлама жазыңыз..." style="flex:1;padding:10px 12px;border:1px solid #ccc;border-radius:20px;font-size:14px;font-family:inherit;background:#fff" onkeydown="if(event.key==='Enter')sendChatMsg()">
+          <button class="btn btn-ok" style="border-radius:50%;width:42px;height:42px;padding:0" onclick="sendChatMsg()">➤</button>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -157,7 +170,6 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
     <div class="card">
       <h3 style="margin-bottom:12px">👤 Аккаунт деректері</h3>
       <div class="fg"><label>Логин</label><input id="uv-login" readonly style="background:#f1f5f9"></div>
-      <div class="fg"><label>Телефон нөмірі</label><input id="uv-phone" readonly style="background:#f1f5f9"></div>
       <div class="fg"><label>Қазіргі пароль</label><input id="uv-curpass" readonly style="background:#f1f5f9"></div>
     </div>
     <div class="card" id="uv-pass-card">
@@ -202,6 +214,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
       <button class="btn btn-s btn-sm" onclick="showMistakes()">❌ Қателер</button>
       <button class="btn btn-s btn-sm" onclick="showHistory()">📋 Тарих</button>
       <button class="btn btn-s btn-sm" onclick="startQuickSubject()">⚡ Жылдам</button>
+      <button class="btn btn-w btn-sm" onclick="openContactFromApp()">💬 Админге</button>
       <button class="btn btn-w btn-sm" id="admin-btn" style="display:none" onclick="showAdmin()">🛠 Админ</button>
     </div>
   </div>
@@ -438,6 +451,10 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
       <h3 style="margin-bottom:12px">📐 Формулалар</h3>
       <div id="admin-formulas" class="list"></div>
     </div>
+    <div class="card" style="padding:20px">
+      <h3 style="margin-bottom:12px">💬 Хабарламалар (админге)</h3>
+      <div id="admin-chat" class="list"></div>
+    </div>
     <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
 </div>
@@ -455,59 +472,59 @@ function showLoginBox(){
   document.getElementById('login-box').style.display='block';
   document.getElementById('register-box').style.display='none';
   document.getElementById('forgot-box').style.display='none';
+  document.getElementById('contact-box').style.display='none';
 }
 function showRegister(){
   document.getElementById('login-box').style.display='none';
   document.getElementById('register-box').style.display='block';
   document.getElementById('forgot-box').style.display='none';
-  document.getElementById('reg-code-wrap').style.display='none';
-  document.getElementById('reg-submit').style.display='none';
+  document.getElementById('contact-box').style.display='none';
 }
 function showForgot(){
   document.getElementById('login-box').style.display='none';
   document.getElementById('register-box').style.display='none';
   document.getElementById('forgot-box').style.display='block';
+  document.getElementById('contact-box').style.display='none';
   document.getElementById('forgot-step2').style.display='none';
 }
-function normPhone(p){return (p||'').replace(/\D/g,'')}
+function showContactAdmin(){
+  document.getElementById('login-box').style.display='none';
+  document.getElementById('register-box').style.display='none';
+  document.getElementById('forgot-box').style.display='none';
+  document.getElementById('contact-box').style.display='block';
+  renderChatMessages();
+}
+function openContactFromApp(){
+  if(user&&user.name){
+    const el=document.getElementById('chat-login');
+    if(el) el.value=user.name;
+  }
+  showScr('s-login');
+  showContactAdmin();
+}
 function findUserByLogin(login){
   const profiles=LS.get('ubt_profiles',{});
   const key=login.toLowerCase().trim();
   if(profiles[key]) return profiles[key];
-  const phone=normPhone(login);
-  return Object.values(profiles).find(u=>normPhone(u.phone)===phone)||null;
+  return null;
 }
 function genCode(){return String(Math.floor(1000+Math.random()*9000))}
-let pendingReg=null, pendingForgot=null;
+let pendingForgot=null;
 
-function sendRegCode(){
+function doRegister(){
   const name=document.getElementById('reg-name').value.trim();
-  const phone=document.getElementById('reg-phone').value.trim();
   const pass=document.getElementById('reg-pass').value;
   const pass2=document.getElementById('reg-pass2').value;
   if(!name||name.length<2){alert('Атыңызды жазыңыз');return}
-  if(normPhone(phone).length<10){alert('Телефон нөмірін дұрыс жазыңыз');return}
   if(!pass||pass.length<4){alert('Пароль кемінде 4 таңба');return}
   if(pass!==pass2){alert('Парольдер сәйкес емес');return}
-  if(findUserByLogin(name)||findUserByLogin(phone)){alert('Бұл ат немесе телефон тіркелген');return}
-  const code=genCode();
-  pendingReg={name,phone,pass,code};
-  // DEMO: нақты SMS жоқ — кодты көрсетеміз
-  alert('📱 Демо: '+phone+' нөміріне код жіберілді:\n\n'+code+'\n\n(Нақты SMS кейін қосылады)');
-  document.getElementById('reg-code-wrap').style.display='block';
-  document.getElementById('reg-submit').style.display='block';
-}
-function doRegister(){
-  if(!pendingReg){alert('Алдымен код жіберіңіз');return}
-  const code=document.getElementById('reg-code').value.trim();
-  if(code!==pendingReg.code){alert('Код қате!');return}
-  const key=pendingReg.name.toLowerCase();
+  if(findUserByLogin(name)){alert('Бұл ат тіркелген. Басқа ат таңдаңыз');return}
+  const key=name.toLowerCase();
   const profiles=LS.get('ubt_profiles',{});
-  const u={name:pendingReg.name,phone:pendingReg.phone,password:pendingReg.pass,
+  const u={name:name,password:pass,
     id:'u_'+key.replace(/\s+/g,'_')+'_'+Date.now().toString(36).slice(-4),isAdmin:false};
   profiles[key]=u;LS.set('ubt_profiles',profiles);
   setUserStats(u.id,{points:0,title:'',stars:0,verified:false});
-  pendingReg=null;
   alert('✅ Тіркелу сәтті! Енді кіріңіз.');
   showLoginBox();
   document.getElementById('login-name').value=u.name;
@@ -531,12 +548,12 @@ function doLogin(){
   user=u;LS.set('ubt_current',user);enterApp();
 }
 function sendForgotCode(){
-  const phone=document.getElementById('forgot-phone').value.trim();
-  const u=findUserByLogin(phone);
-  if(!u){alert('Бұл нөмірмен аккаунт жоқ');return}
+  const login=document.getElementById('forgot-login').value.trim();
+  const u=findUserByLogin(login);
+  if(!u){alert('Бұл атпен аккаунт жоқ');return}
   const code=genCode();
-  pendingForgot={userId:u.id,phone,code};
-  alert('📱 Демо: '+phone+' нөміріне код:\n\n'+code);
+  pendingForgot={userId:u.id,login,code};
+  alert('🔑 Демо код:\n\n'+code+'\n\n(Нақты SMS кейін қосылады)');
   document.getElementById('forgot-step2').style.display='block';
 }
 function doForgotReset(){
@@ -551,6 +568,52 @@ function doForgotReset(){
   pendingForgot=null;
   alert('✅ Пароль өзгертілді! Кіріңіз.');
   showLoginBox();
+}
+function getChatMessages(){return LS.get('ubt_chat',[])}
+function saveChatMessages(m){LS.set('ubt_chat',m)}
+function sendChatMsg(){
+  const login=document.getElementById('chat-login').value.trim();
+  const text=document.getElementById('chat-text').value.trim();
+  if(!login||login.length<2){alert('Логиніңізді (атыңызды) жазыңыз — кім жазып тұрғанын білу үшін');return}
+  if(!text){alert('Хабарлама жазыңыз');return}
+  const msgs=getChatMessages();
+  msgs.push({id:'m_'+Date.now(),from:login,text:text,role:'user',time:new Date().toLocaleString('kk-KZ'),read:false});
+  saveChatMessages(msgs);
+  document.getElementById('chat-text').value='';
+  renderChatMessages();
+}
+function renderChatMessages(){
+  const el=document.getElementById('chat-messages');
+  if(!el)return;
+  const login=(document.getElementById('chat-login')?.value||'').trim().toLowerCase();
+  const all=getChatMessages();
+  // show messages for this login + any admin replies to this login, or last few public if empty
+  const mine=all.filter(m=>(m.from||'').toLowerCase()===login || (m.to||'').toLowerCase()===login);
+  const list=mine.length?mine:all.slice(-15);
+  if(!list.length){
+    el.innerHTML='<div style="text-align:center;color:#667;padding:40px 16px;font-size:13px">Хабарлама жоқ.<br>Логин жазып, админге сұрағыңызды жіберіңіз.</div>';
+    return;
+  }
+  el.innerHTML=list.map(m=>{
+    const isUser=m.role==='user';
+    return `<div style="display:flex;justify-content:${isUser?'flex-end':'flex-start'}">
+      <div style="max-width:75%;padding:8px 12px;border-radius:12px;font-size:13px;line-height:1.4;background:${isUser?'#dcf8c6':'#fff'};box-shadow:0 1px 1px rgba(0,0,0,.08)">
+        ${!isUser?'<div style="font-size:11px;color:#075e54;font-weight:600;margin-bottom:2px">Админ</div>':''}
+        ${isUser&&m.from?'<div style="font-size:11px;color:#075e54;font-weight:600;margin-bottom:2px">'+m.from+'</div>':''}
+        <div>${m.text}</div>
+        <div style="font-size:10px;color:#667;text-align:right;margin-top:4px">${m.time||''}</div>
+      </div>
+    </div>`;
+  }).join('');
+  el.scrollTop=el.scrollHeight;
+}
+function adminReplyChat(toLogin){
+  const text=prompt('Жауап жазыңыз ('+toLogin+'):');
+  if(!text||!text.trim())return;
+  const msgs=getChatMessages();
+  msgs.push({id:'m_'+Date.now(),from:'Админ',to:toLogin,text:text.trim(),role:'admin',time:new Date().toLocaleString('kk-KZ'),read:true});
+  saveChatMessages(msgs);
+  showAdmin();
 }
 function doLogout(){LS.set('ubt_current',null);user=null;showScr('s-login')}
 function getUserStats(id){
@@ -697,6 +760,22 @@ function showAdmin(){
     <div class="item"><div class="info"><h4>${f.title}</h4><p>${f.subject} · ${f.authorName||''} · ${f.body}</p></div>
     <div class="acts"><button class="btn btn-d btn-sm" onclick="adminDelFormula(${i})">Өшіру</button></div></div>`).join(''):'<p class="sub">Формула жоқ</p>';
 
+  const chats=getChatMessages().slice().reverse();
+  const chatEl=document.getElementById('admin-chat');
+  if(chatEl){
+    chatEl.innerHTML=chats.length?chats.map(m=>{
+      const isUser=m.role==='user';
+      const who=isUser?(m.from||'?'):('Админ → '+(m.to||''));
+      return `<div class="item" style="flex-direction:column;align-items:stretch;gap:6px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <div class="info"><h4>${isUser?'👤 ':'🛠 '}${who}</h4><p>${m.time||''}</p></div>
+          ${isUser?`<button class="btn btn-p btn-sm" onclick="adminReplyChat('${(m.from||'').replace(/'/g,"\\'")}')">Жауап</button>`:''}
+        </div>
+        <div style="font-size:13px;padding:8px 10px;background:${isUser?'#eff6ff':'#f0fdf4'};border-radius:8px">${m.text}</div>
+      </div>`;
+    }).join(''):'<p class="sub">Хабарлама жоқ</p>';
+  }
+
   showScr('s-admin');
 }
 function adminDelTest(id){if(!confirm('Тестті өшіру?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showAdmin()}
@@ -753,7 +832,6 @@ function adminViewUser(id){
   document.getElementById('uv-name').textContent=p.name+(s.verified?' ✓':'');
   document.getElementById('uv-info').textContent=`⭐ ${s.points||0} · ${s.title||'атақ жоқ'} · ${starStr(s.stars||0)}`;
   document.getElementById('uv-login').value=p.name||'';
-  document.getElementById('uv-phone').value=p.phone||'Тіркелмеген';
   document.getElementById('uv-curpass').value=p.password||'(пароль жоқ)';
   const hist=LS.get('ubt_hist_'+id,[]);
   document.getElementById('uv-hist').innerHTML=hist.length?hist.map(h=>`
