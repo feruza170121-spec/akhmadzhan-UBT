@@ -1,8 +1,13 @@
+import hashlib
+import hmac
 import json
 import os
+import re
+import secrets
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import streamlit as st
@@ -24,11 +29,33 @@ _NO_SYNC = ("ubt_current", "ubt_dark")
 # Streamlit Cloud-та файлдар қайта іске қосылғанда өшеді. Сондықтан барлық
 # өзгеріс сыртқы Supabase дерекқорына да жазылады (кесте: ubt_kv).
 # Кілттер Streamlit "Secrets" бөлімінде тұрады:
-#   SUPABASE_URL = "https://xxxx.supabase.co"
-#   SUPABASE_KEY = "service_role кілті"
+#   SUPABASE_URL   = "https://xxxx.supabase.co"
+#   SUPABASE_KEY   = "sb_secret_... (secret кілт)"
+#   ADMIN_PASSWORD = "админ паролі (кемінде 8 таңба)"
 # Кілт жоқ болса — бұрынғыдай тек ubt_data.json файлы қолданылады.
 # ======================================================================
 _TABLE = "ubt_kv"
+
+# ======================================================================
+# ҚАУІПСІЗДІК
+#  * Парольдер PBKDF2-SHA256 + жеке salt арқылы хэштеледі (ашық мәтін сақталмайды).
+#  * Хэштер мен админ паролі браузерге ЕШҚАШАН жіберілмейді.
+#  * Кіру/тіркелу/пароль ауыстыру толығымен серверде тексеріледі.
+#  * Әр қолданушыға сервер жасаған жеке сессия токені беріледі.
+#  * Деректерді жазу құқығы токен бойынша серверде тексеріледі.
+#  * Қате парольді қайта-қайта енгізуге шектеу бар (бұғаттау).
+# ======================================================================
+_PBKDF_ITER = 100_000
+_MIN_PASS = 6
+_SERVER_ONLY = ("ubt_admin_pass", "ubt_admin_ph")
+_ADMIN_NAMES = ("админ", "admin")
+_USER_TTL = 14 * 86400
+_ADMIN_TTL = 12 * 3600
+_USER_PREFIXES = ("ubt_mistakes_", "ubt_hist_", "ubt_prog_", "ubt_bm_", "ubt_plan_done_",
+                  "ubt_plan_", "ubt_qotd_", "ubt_streak_", "ubt_avatar_")
+_PRIVATE_PREFIXES = ("ubt_mistakes_", "ubt_plan_done_", "ubt_plan_", "ubt_bm_")
+_MAX_FAILS = 5
+_FAIL_WINDOW = 600
 
 
 def _sb_conf():
@@ -42,6 +69,16 @@ def _sb_conf():
     if url and key:
         return str(url).strip().rstrip("/"), str(key).strip()
     return None
+
+
+def _secret(name):
+    v = os.environ.get(name)
+    if not v:
+        try:
+            v = st.secrets.get(name)
+        except Exception:
+            v = None
+    return str(v) if v else None
 
 
 def _sb_call(conf, method, path, body=None, prefer=None, timeout=30):
@@ -90,6 +127,38 @@ def _sb_upsert(conf, items):
         _sb_call(conf, "POST", "%s?on_conflict=key" % _TABLE, batch, prefer="resolution=merge-duplicates,return=minimal")
 
 
+def _sb_delete(conf, key):
+    _sb_call(conf, "DELETE", "%s?key=eq.%s" % (_TABLE, urllib.parse.quote(key, safe="")), prefer="return=minimal")
+
+
+# ---------------------------------------------------------------- хэштеу
+def _hash_pw(pw, salt=None, it=_PBKDF_ITER):
+    salt = salt or secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), bytes.fromhex(salt), it)
+    return {"alg": "pbkdf2_sha256", "it": it, "salt": salt, "hash": dk.hex()}
+
+
+def _check_pw(pw, ph):
+    try:
+        dk = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), bytes.fromhex(ph["salt"]), int(ph["it"]))
+        return hmac.compare_digest(dk.hex(), str(ph["hash"]))
+    except Exception:
+        return False
+
+
+def _jload(raw, typ, default):
+    try:
+        v = json.loads(raw)
+    except Exception:
+        return default
+    return v if isinstance(v, typ) else default
+
+
+def _jdump(v):
+    return json.dumps(v, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------- күй (state)
 @st.cache_resource
 def _store():
     data = {}
@@ -100,10 +169,32 @@ def _store():
             data[k] = v["v"] if isinstance(v, dict) and "v" in v else v
     except Exception:
         data = {}
-    state = {"db": data, "sb": _sb_conf(), "ok": False, "err": "", "dirty": set(),
-             "lock": threading.RLock(), "flush_lock": threading.Lock(), "retry_t": 0.0}
+    state = {"db": data, "sb": _sb_conf(), "ok": False, "err": "", "dirty": set(), "deleted": set(),
+             "lock": threading.RLock(), "flush_lock": threading.Lock(), "retry_t": 0.0,
+             "sessions": {}, "fails": {}, "reg": {}}
     _remote_sync(state)
+    _migrate_start(state)
     return state
+
+
+def _put(state, k, v):
+    state["db"][k] = v
+    state["dirty"].add(k)
+    state["deleted"].discard(k)
+
+
+def _drop(state, k):
+    state["db"].pop(k, None)
+    state["dirty"].discard(k)
+    state["deleted"].add(k)
+
+
+def _commit(state):
+    try:
+        _db_save(state["db"])
+    except Exception:
+        pass
+    _flush_async(state)
 
 
 def _remote_sync(state):
@@ -120,7 +211,7 @@ def _remote_sync(state):
     with state["lock"]:
         db = state["db"]
         for k, v in remote.items():
-            if k not in state["dirty"]:
+            if k not in state["dirty"] and k not in state["deleted"]:
                 db[k] = v
         for k in list(db.keys()):
             if k not in remote:
@@ -128,6 +219,7 @@ def _remote_sync(state):
         state["ok"] = True
         state["err"] = ""
     _flush_async(state)
+    _migrate_start(state)
 
 
 def _flush(state):
@@ -140,18 +232,26 @@ def _flush(state):
             for k in list(state["dirty"]):
                 if k not in state["db"]:
                     state["dirty"].discard(k)
-        if not items:
-            return
-        try:
-            _sb_upsert(conf, items)
-        except Exception as e:
-            state["err"] = repr(e)[:200]
-            return
-        with state["lock"]:
-            for k, v in items:
-                if state["db"].get(k) == v:
-                    state["dirty"].discard(k)
-            state["err"] = ""
+            dels = list(state["deleted"])
+        if items:
+            try:
+                _sb_upsert(conf, items)
+            except Exception as e:
+                state["err"] = repr(e)[:200]
+                return
+            with state["lock"]:
+                for k, v in items:
+                    if state["db"].get(k) == v:
+                        state["dirty"].discard(k)
+                state["err"] = ""
+        for k in dels:
+            try:
+                _sb_delete(conf, k)
+            except Exception as e:
+                state["err"] = repr(e)[:200]
+                break
+            with state["lock"]:
+                state["deleted"].discard(k)
 
 
 def _flush_async(state):
@@ -165,7 +265,7 @@ def _ensure_remote(state):
     if not state["ok"]:
         if time.time() - state["retry_t"] > 20:
             _remote_sync(state)
-    elif state["dirty"]:
+    elif state["dirty"] or state["deleted"]:
         _flush_async(state)
 
 
@@ -182,21 +282,520 @@ def _db_save(db):
     os.replace(tmp, DATA_FILE)
 
 
+# ---------------------------------------------------------------- ескі парольдерді хэшке көшіру
+def _migrate_once(state):
+    """Ашық мәтінді парольдерді хэшке айналдырады. Ескі ubt_admin_pass кілтін өшіреді."""
+    with state["lock"]:
+        raw = state["db"].get("ubt_profiles")
+        profs = _jload(raw, dict, None) if isinstance(raw, str) else None
+        todo = []
+        if profs:
+            for k, p in profs.items():
+                if isinstance(p, dict) and "password" in p:
+                    todo.append((k, p.get("password")))
+    hashes = {}
+    for k, pw in todo:
+        if isinstance(pw, str) and pw:
+            hashes[k] = (pw, _hash_pw(pw))
+    changed = False
+    with state["lock"]:
+        raw = state["db"].get("ubt_profiles")
+        profs = _jload(raw, dict, None) if isinstance(raw, str) else None
+        if profs:
+            for k, p in profs.items():
+                if isinstance(p, dict) and "password" in p:
+                    old = p.pop("password")
+                    h = hashes.get(k)
+                    if h and h[0] == old and not p.get("ph"):
+                        p["ph"] = h[1]
+                    changed = True
+            if changed:
+                _put(state, "ubt_profiles", _jdump(profs))
+        ap = state["db"].get("ubt_admin_pass")
+        if ap is not None:
+            val = _jload(ap, str, "")
+            if val and len(val) >= 4 and val != "admin123" and not state["db"].get("ubt_admin_ph"):
+                _put(state, "ubt_admin_ph", _jdump(_hash_pw(val)))
+            _drop(state, "ubt_admin_pass")
+            changed = True
+        if changed:
+            _commit(state)
+    return changed
+
+
+def _migrate_start(state):
+    if state.get("migrating"):
+        return
+    state["migrating"] = True
+
+    def run():
+        try:
+            _migrate_once(state)
+        except Exception as e:
+            print("[ubt-sec] migration error:", repr(e)[:200])
+        finally:
+            state["migrating"] = False
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+# ---------------------------------------------------------------- профильдер, сессиялар
+def _profiles(state):
+    return _jload(state["db"].get("ubt_profiles", "{}"), dict, {})
+
+
+def _pub_user(p):
+    return {k: v for k, v in p.items() if k not in ("ph", "password")}
+
+
+def _new_session(state, uid, name, admin):
+    now = time.time()
+    if len(state["sessions"]) > 5000:
+        for t in [t for t, s in state["sessions"].items() if s["exp"] < now]:
+            state["sessions"].pop(t, None)
+    tok = secrets.token_urlsafe(32)
+    state["sessions"][tok] = {"uid": uid, "name": name, "admin": bool(admin),
+                              "exp": now + (_ADMIN_TTL if admin else _USER_TTL)}
+    return tok
+
+
+def _session(state, tok):
+    if not isinstance(tok, str) or not tok:
+        return None
+    s = state["sessions"].get(tok)
+    if not s:
+        return None
+    if s["exp"] < time.time():
+        state["sessions"].pop(tok, None)
+        return None
+    return s
+
+
+def _revoke_uid(state, uid):
+    for t in [t for t, s in state["sessions"].items() if s["uid"] == uid]:
+        state["sessions"].pop(t, None)
+
+
+def _is_teacher(state, uid):
+    for p in _profiles(state).values():
+        if isinstance(p, dict) and p.get("id") == uid:
+            return p.get("role") == "teacher" and bool(p.get("teacherApproved"))
+    return False
+
+
+# ---------------------------------------------------------------- қате әрекеттерді шектеу
+def _locked(state, key):
+    now = time.time()
+    lst = [t for t in state["fails"].get(key, []) if now - t < _FAIL_WINDOW]
+    if lst:
+        state["fails"][key] = lst
+    else:
+        state["fails"].pop(key, None)
+    return len(lst) >= _MAX_FAILS
+
+
+def _fail(state, *keys):
+    if len(state["fails"]) > 20000:
+        state["fails"].clear()
+    for k in keys:
+        state["fails"].setdefault(k, []).append(time.time())
+
+
+_MSG_LOCK = "Тым көп қате әрекет. 10 минуттан кейін қайталаңыз."
+_MSG_BAD = "Логин немесе пароль қате"
+
+
+def _new_uid(state, key):
+    ids = {p.get("id") for p in _profiles(state).values() if isinstance(p, dict)}
+    while True:
+        uid = "u_" + re.sub(r"[^\w]+", "_", key) + "_" + secrets.token_hex(2)
+        if uid not in ids:
+            return uid
+
+
+def _clean_name(raw):
+    name = str(raw or "").strip()
+    if len(name) < 2 or len(name) > 40 or re.search(r"[\x00-\x1f<>]", name):
+        return None
+    return name
+
+
+def _handle_req(state, sid, rq):
+    typ = rq.get("type")
+    d = rq.get("data") if isinstance(rq.get("data"), dict) else {}
+    sess = _session(state, rq.get("tok"))
+
+    if typ == "login":
+        name = str(d.get("name") or "").strip()[:60]
+        pw = str(d.get("pass") or "")[:200]
+        if not name:
+            return {"ok": False, "msg": "Логин жазыңыз"}
+        key = name.lower()
+        lk, sk = "u:" + key, "s:" + sid
+        with state["lock"]:
+            if _locked(state, lk) or _locked(state, sk):
+                return {"ok": False, "msg": _MSG_LOCK}
+            prof = _profiles(state).get(key) if key not in _ADMIN_NAMES else None
+            admin_ph = _jload(state["db"].get("ubt_admin_ph", ""), dict, None)
+        if key in _ADMIN_NAMES:
+            sec = _secret("ADMIN_PASSWORD")
+            if sec:
+                r = hmac.compare_digest(pw.encode("utf-8"), sec.encode("utf-8"))
+            elif admin_ph:
+                r = _check_pw(pw, admin_ph)
+            else:
+                return {"ok": False, "msg": "Админ паролі әлі орнатылмаған. Streamlit Secrets ішіне ADMIN_PASSWORD қосыңыз."}
+            with state["lock"]:
+                if not r:
+                    _fail(state, lk, sk)
+                    return {"ok": False, "msg": _MSG_BAD}
+                state["fails"].pop(lk, None)
+                tok = _new_session(state, "admin", "Админ", True)
+            return {"ok": True, "token": tok, "user": {"name": "Админ", "id": "admin", "isAdmin": True}}
+        if not isinstance(prof, dict):
+            _check_pw(pw, {"salt": "00", "it": _PBKDF_ITER, "hash": ""})  # уақытты теңестіру
+            with state["lock"]:
+                _fail(state, lk, sk)
+            return {"ok": False, "msg": _MSG_BAD}
+        ph = prof.get("ph")
+        if isinstance(ph, dict):
+            good = _check_pw(pw, ph)
+        elif isinstance(prof.get("password"), str) and prof["password"]:
+            # көшіру әлі аяқталмаған ескі аккаунт
+            good = hmac.compare_digest(pw.encode("utf-8"), prof["password"].encode("utf-8"))
+        else:
+            return {"ok": False, "msg": "Бұл аккаунтқа пароль орнатылмаған. «Админге хабарласу» арқылы жазыңыз."}
+        with state["lock"]:
+            if not good:
+                _fail(state, lk, sk)
+                return {"ok": False, "msg": _MSG_BAD}
+            state["fails"].pop(lk, None)
+            tok = _new_session(state, prof.get("id"), prof.get("name") or name, False)
+        return {"ok": True, "token": tok, "user": _pub_user(prof)}
+
+    if typ == "register":
+        name = _clean_name(d.get("name"))
+        pw = str(d.get("pass") or "")[:200]
+        if not name:
+            return {"ok": False, "msg": "Атыңызды жазыңыз (2-40 таңба)"}
+        if len(pw) < _MIN_PASS:
+            return {"ok": False, "msg": "Пароль кемінде %d таңба болсын" % _MIN_PASS}
+        key = name.lower()
+        now = time.time()
+        ph_new = _hash_pw(pw)
+        with state["lock"]:
+            lst = [t for t in state["reg"].get(sid, []) if now - t < 3600]
+            state["reg"][sid] = lst
+            if len(lst) >= 10:
+                return {"ok": False, "msg": "Тым көп тіркелу әрекеті. Кейінірек қайталаңыз."}
+            profs = _profiles(state)
+            if key in _ADMIN_NAMES or key in profs:
+                return {"ok": False, "msg": "Бұл ат тіркелген. Басқа ат таңдаңыз"}
+            if len(profs) >= 20000:
+                return {"ok": False, "msg": "Тіркелу уақытша жабық"}
+            uid = _new_uid(state, key)
+            prof = {"name": name, "id": uid, "isAdmin": False, "ph": ph_new}
+            if d.get("teacher"):
+                prof["role"] = "teacher"
+                prof["teacherApproved"] = False
+                prof["teacherInfo"] = str(d.get("info") or "")[:200]
+            profs[key] = prof
+            _put(state, "ubt_profiles", _jdump(profs))
+            stats = _jload(state["db"].get("ubt_user_stats", "{}"), dict, {})
+            stats[uid] = {"points": 0, "title": "", "stars": 0, "verified": False}
+            _put(state, "ubt_user_stats", _jdump(stats))
+            lst.append(now)
+            _commit(state)
+        return {"ok": True}
+
+    if typ == "resume":
+        with state["lock"]:
+            if not sess:
+                return {"ok": False, "msg": "expired"}
+            tok = rq.get("tok")
+            if sess["admin"]:
+                return {"ok": True, "token": tok, "user": {"name": "Админ", "id": "admin", "isAdmin": True}}
+            for p in _profiles(state).values():
+                if isinstance(p, dict) and p.get("id") == sess["uid"]:
+                    return {"ok": True, "token": tok, "user": _pub_user(p)}
+            state["sessions"].pop(tok, None)
+            return {"ok": False, "msg": "expired"}
+
+    if typ == "logout":
+        with state["lock"]:
+            state["sessions"].pop(rq.get("tok"), None)
+        return {"ok": True}
+
+    if typ == "chat_claim":
+        login = str(d.get("login") or "").strip()[:60]
+        if len(login) < 2:
+            return {"ok": False, "msg": "Логиніңізді жазыңыз (кемінде 2 таңба)"}
+        if sess:
+            return {"ok": True, "login": login if sess["admin"] else sess["name"]}
+        with state["lock"]:
+            if login.lower() in _ADMIN_NAMES or login.lower() in _profiles(state):
+                return {"ok": False, "msg": "Бұл ат тіркелген. Алдымен аккаунтқа кіріңіз немесе чат үшін басқа ат жазыңыз (мыс: аты-жөніңіз + сынып)."}
+        return {"ok": True, "login": login}
+
+    if typ == "admin_setpass":
+        if not (sess and sess["admin"]):
+            return {"ok": False, "msg": "Рұқсат жоқ"}
+        pw = str(d.get("pass") or "")[:200]
+        uid = str(d.get("uid") or "")
+        if len(pw) < _MIN_PASS:
+            return {"ok": False, "msg": "Пароль кемінде %d таңба болсын" % _MIN_PASS}
+        ph_new = _hash_pw(pw)
+        with state["lock"]:
+            profs = _profiles(state)
+            hit = False
+            for p in profs.values():
+                if isinstance(p, dict) and p.get("id") == uid:
+                    p["ph"] = ph_new
+                    p.pop("password", None)
+                    hit = True
+            if not hit:
+                return {"ok": False, "msg": "Қолданушы табылмады"}
+            _put(state, "ubt_profiles", _jdump(profs))
+            _revoke_uid(state, uid)
+            _commit(state)
+        return {"ok": True}
+
+    if typ == "admin_deluser":
+        if not (sess and sess["admin"]):
+            return {"ok": False, "msg": "Рұқсат жоқ"}
+        uid = str(d.get("uid") or "")
+        if not uid or uid == "admin":
+            return {"ok": False, "msg": "Қате"}
+        with state["lock"]:
+            profs = _profiles(state)
+            for k in [k for k, p in profs.items() if isinstance(p, dict) and p.get("id") == uid]:
+                profs.pop(k, None)
+            _put(state, "ubt_profiles", _jdump(profs))
+            stats = _jload(state["db"].get("ubt_user_stats", "{}"), dict, {})
+            stats.pop(uid, None)
+            _put(state, "ubt_user_stats", _jdump(stats))
+            tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
+            _put(state, "ubt_tests", _jdump([t for t in tests if not (isinstance(t, dict) and t.get("authorId") == uid)]))
+            _revoke_uid(state, uid)
+            _commit(state)
+        return {"ok": True}
+
+    return {"ok": False, "msg": "Белгісіз сұраныс"}
+
+
+def _process_reqs(state, sid, reqs):
+    if not isinstance(reqs, list):
+        return False
+    done = st.session_state.setdefault("_ubt_reqdone", {})
+    out = st.session_state.setdefault("_ubt_authres", {}).setdefault(sid, {})
+    last = done.get(sid, 0)
+    new = False
+    valid = [r for r in reqs if isinstance(r, dict) and isinstance(r.get("id"), int)]
+    for rq in sorted(valid, key=lambda r: r["id"])[:10]:
+        if rq["id"] <= last:
+            continue
+        try:
+            r = _handle_req(state, sid, rq)
+        except Exception as e:
+            print("[ubt-sec] request error:", repr(e)[:200])
+            r = {"ok": False, "msg": "Сервер қатесі. Қайталап көріңіз."}
+        out[str(rq["id"])] = r
+        last = rq["id"]
+        new = True
+    for k in sorted(out, key=int)[:-20]:
+        out.pop(k, None)
+    done[sid] = last
+    return new
+
+
+# ---------------------------------------------------------------- жазу құқығын тексеру
+def _merge_chat(state, sess, v):
+    inc = _jload(v, list, None)
+    if inc is None:
+        return None
+    if sess and sess["admin"]:
+        return _jdump([m for m in inc if isinstance(m, dict)])
+    stored = _jload(state["db"].get("ubt_chat", "[]"), list, [])
+    ids = {m.get("id") for m in stored if isinstance(m, dict)}
+    profs = _profiles(state)
+    add = []
+    for m in inc:
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        mid, text = m.get("id"), m.get("text")
+        if not isinstance(mid, str) or not mid or len(mid) > 60 or mid in ids:
+            continue
+        if not isinstance(text, str) or not text.strip() or len(text) > 2000:
+            continue
+        if sess:
+            frm = sess["name"]
+        else:
+            frm = str(m.get("from") or "").strip()[:60]
+            if len(frm) < 2 or frm.lower() in profs or frm.lower() in _ADMIN_NAMES:
+                continue
+        add.append({"id": mid, "from": frm, "thread": frm.strip().lower(), "text": text, "role": "user",
+                    "time": str(m.get("time") or "")[:40], "read": False})
+        ids.add(mid)
+        if len(add) >= 20:
+            break
+    if not add:
+        return None
+    return _jdump(stored + add)
+
+
+def _merge_profiles(state, sess, v):
+    inc = _jload(v, dict, None)
+    if inc is None:
+        return None
+    stored = _profiles(state)
+    out = dict(stored)
+    admin = sess["admin"]
+    for k, p in inc.items():
+        if not isinstance(k, str) or not isinstance(p, dict):
+            continue
+        s = stored.get(k)
+        if not isinstance(s, dict):
+            if admin:
+                n = {kk: vv for kk, vv in p.items() if kk not in ("password", "ph")}
+                n["isAdmin"] = False
+                out[k] = n
+            continue
+        if not admin and s.get("id") != sess["uid"]:
+            continue
+        n = {kk: vv for kk, vv in p.items() if kk not in ("password", "ph")}
+        n["id"], n["name"], n["isAdmin"] = s.get("id"), s.get("name"), False
+        if s.get("ph"):
+            n["ph"] = s["ph"]
+        elif s.get("password"):
+            n["password"] = s["password"]
+        if not admin:
+            if s.get("teacherApproved"):
+                for f in ("role", "teacherApproved", "teacherInfo"):
+                    if f in s:
+                        n[f] = s[f]
+                    else:
+                        n.pop(f, None)
+            elif n.get("role") == "teacher":
+                n["teacherApproved"] = False
+                n["teacherInfo"] = str(n.get("teacherInfo") or "")[:200]
+            else:
+                n.pop("role", None)
+                n.pop("teacherApproved", None)
+        out[k] = n
+    return _jdump(out)
+
+
+def _merge_stats(state, sess, v):
+    inc = _jload(v, dict, None)
+    if inc is None:
+        return None
+    stored = _jload(state["db"].get("ubt_user_stats", "{}"), dict, {})
+    out = dict(stored)
+    if sess["admin"]:
+        for uid, s in inc.items():
+            if isinstance(s, dict):
+                out[str(uid)] = s
+        return _jdump(out)
+    uid = sess["uid"]
+    s = inc.get(uid)
+    if not isinstance(s, dict):
+        return None
+    old = stored.get(uid) if isinstance(stored.get(uid), dict) else {}
+    n = dict(s)
+    n["title"] = old.get("title", "")
+    n["stars"] = old.get("stars", 0)
+    n["verified"] = bool(old.get("verified", False))
+    try:
+        n["points"] = max(0, int(n.get("points") or 0))
+    except Exception:
+        n["points"] = int(old.get("points", 0) or 0)
+    out[uid] = n
+    return _jdump(out)
+
+
+def _merge_tests(state, sess, v):
+    inc = _jload(v, list, None)
+    if inc is None:
+        return None
+    if sess["admin"]:
+        return _jdump([t for t in inc if isinstance(t, dict)])
+    stored = _jload(state["db"].get("ubt_tests", "[]"), list, [])
+    sby = {t.get("id"): t for t in stored if isinstance(t, dict)}
+    uid = sess["uid"]
+    teacher = _is_teacher(state, uid)
+    out, seen = [], set()
+    for t in inc:
+        if not isinstance(t, dict) or not isinstance(t.get("id"), str):
+            continue
+        tid = t["id"]
+        seen.add(tid)
+        s = sby.get(tid)
+        if s is not None:
+            if s.get("authorId") != uid:
+                out.append(s)
+                continue
+            n = dict(t)
+            n["authorId"] = uid
+            if not teacher:
+                n["isPublic"] = bool(s.get("isPublic"))
+                if s.get("status") != "approved" and not s.get("isPublic") and t.get("status") in ("pending", "private"):
+                    n["status"] = t["status"]
+                elif "status" in s:
+                    n["status"] = s["status"]
+                else:
+                    n.pop("status", None)
+            out.append(n)
+        elif tid == "seed_funksiya" and t.get("authorId") == "system":
+            out.append(t)
+        else:
+            n = dict(t)
+            n["authorId"] = uid
+            if not teacher:
+                n["isPublic"] = False
+                if n.get("status") not in ("pending", "private"):
+                    n["status"] = "private"
+            out.append(n)
+    for s in stored:
+        if isinstance(s, dict) and s.get("id") not in seen and s.get("authorId") != uid:
+            out.append(s)
+    return _jdump(out)
+
+
+def _authorize(state, sess, k, v):
+    """Жаңа мәнді қайтарады (түзетілген болуы мүмкін) немесе None (жазуға рұқсат жоқ)."""
+    if k == "ubt_chat":
+        return _merge_chat(state, sess, v)
+    if not sess:
+        return None
+    if k == "ubt_profiles":
+        return _merge_profiles(state, sess, v)
+    if k == "ubt_user_stats":
+        return _merge_stats(state, sess, v)
+    if k == "ubt_tests":
+        return _merge_tests(state, sess, v)
+    if k != "ubt_qotd_day" and any(k.startswith(p) for p in _USER_PREFIXES):
+        if sess["admin"] or any(k == p + sess["uid"] for p in _USER_PREFIXES):
+            return v
+        return None
+    return v
+
+
 def _key_ok(k):
     return (isinstance(k, str) and k.startswith("ubt_") and len(k) < 200
-            and k not in _NO_SYNC and not k.startswith("ubt_cd_"))
+            and k not in _NO_SYNC and k not in _SERVER_ONLY and not k.startswith("ubt_cd_"))
 
 
 def _apply_ops(res):
-    """Браузерден келген жазбаларды қолданады. Жаңа жазба болса True қайтарады."""
+    """Браузерден келген сұраныстар мен жазбаларды қолданады. Жаңа нәрсе болса True қайтарады."""
     state = _store()
     _ensure_remote(state)
     if not isinstance(res, dict):
         return False
     sid = res.get("sid")
     ops = res.get("ops")
-    if not isinstance(sid, str) or not isinstance(ops, list):
+    if not isinstance(sid, str) or not isinstance(ops, list) or len(sid) > 40:
         return False
+    new_req = _process_reqs(state, sid, res.get("reqs"))
     acks = st.session_state.setdefault("_ubt_ack", {})
     last = acks.get(sid, 0)
     changed = False
@@ -208,9 +807,13 @@ def _apply_ops(res):
                 continue
             k, v = op.get("key"), op.get("value")
             if _key_ok(k) and isinstance(v, str) and len(v) < 8_000_000:
-                if db.get(k) != v:
-                    db[k] = v
+                nv = _authorize(state, _session(state, op.get("tok")), k, v)
+                if nv is None:
+                    print("[ubt-sec] write rejected:", k[:60])
+                elif db.get(k) != nv:
+                    db[k] = nv
                     state["dirty"].add(k)
+                    state["deleted"].discard(k)
                     changed = True
             last = n
         if changed:
@@ -220,15 +823,50 @@ def _apply_ops(res):
                 pass
     if changed:
         _flush_async(state)
-    new = last > acks.get(sid, 0)
+    new = last > acks.get(sid, 0) or new_req
     acks[sid] = last
     return new
 
 
-def _snapshot():
+def _chat_for(raw, sess, claim):
+    if sess and sess["admin"]:
+        return raw if isinstance(raw, str) else "[]"
+    key = (sess["name"] if sess else str(claim or "")).strip().lower()
+    if not key:
+        return "[]"
+    out = []
+    for m in _jload(raw, list, []) if isinstance(raw, str) else []:
+        if not isinstance(m, dict):
+            continue
+        who = m.get("to") if m.get("role") == "admin" else m.get("from")
+        if str(who or "").strip().lower() == key:
+            out.append(m)
+    return _jdump(out)
+
+
+def _snapshot(tok="", claim=""):
+    """Браузерге жіберілетін дерек: хэштер жоқ, бөтен чаттар жоқ, кірмеген адамға — ештеңе жоқ."""
     state = _store()
     with state["lock"]:
-        return dict(state["db"])
+        db = dict(state["db"])
+        sess = _session(state, tok)
+        profs = _profiles(state) if sess else {}
+        teacher = bool(sess and not sess["admin"] and _is_teacher(state, sess["uid"]))
+    for k in _SERVER_ONLY:
+        db.pop(k, None)
+    chat = _chat_for(db.get("ubt_chat"), sess, claim)
+    if not sess:
+        return {"ubt_chat": chat}
+    db["ubt_chat"] = chat
+    if "ubt_profiles" in db:
+        db["ubt_profiles"] = _jdump({k: _pub_user(p) for k, p in profs.items() if isinstance(p, dict)})
+    if not sess["admin"]:
+        for k in list(db.keys()):
+            if k.startswith(_PRIVATE_PREFIXES) and not (k.endswith(sess["uid"]) and any(k == p + sess["uid"] for p in _PRIVATE_PREFIXES)):
+                if teacher and k.startswith("ubt_mistakes_"):
+                    continue
+                db.pop(k, None)
+    return db
 
 
 st.set_page_config(page_title="ҰБТ+", page_icon="📘", layout="wide", initial_sidebar_state="collapsed")
@@ -521,7 +1159,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
     <div class="card" id="register-box" style="display:none">
       <h3 style="margin-bottom:12px">Тіркелу</h3>
       <div class="fg"><label>Атыңыз (логин) *</label><input id="reg-name" placeholder="Атыңыз" maxlength="30"></div>
-      <div class="fg"><label>Пароль *</label><input id="reg-pass" type="password" placeholder="Кемінде 4 таңба"></div>
+      <div class="fg"><label>Пароль *</label><input id="reg-pass" type="password" placeholder="Кемінде 6 таңба"></div>
       <div class="fg"><label>Парольді қайталаңыз *</label><input id="reg-pass2" type="password" placeholder="Қайталаңыз"></div>
       <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doRegister()">Тіркелу</button>
       <button class="btn btn-s btn-sm" style="width:100%;margin-bottom:10px" onclick="showTeacherReg()">👨‍🏫 Мұғалім ретінде тіркелу</button>
@@ -532,7 +1170,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <p class="sub" style="margin-bottom:12px">Өтініш админге түседі. Админ мақұлдағанға дейін мұғалім болу және сынып ашу мүмкін емес.</p>
       <div class="fg"><label>Аты-жөніңіз (логин) *</label><input id="tr-name" placeholder="Мыс: Айгүл Серікқызы" maxlength="30"></div>
       <div class="fg"><label>Мектеп / пән</label><input id="tr-info" placeholder="Мыс: №12 мектеп, математика" maxlength="80"></div>
-      <div class="fg"><label>Пароль *</label><input id="tr-pass" type="password" placeholder="Кемінде 4 таңба"></div>
+      <div class="fg"><label>Пароль *</label><input id="tr-pass" type="password" placeholder="Кемінде 6 таңба"></div>
       <div class="fg"><label>Парольді қайталаңыз *</label><input id="tr-pass2" type="password" placeholder="Қайталаңыз"></div>
       <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doRegisterTeacher()">Өтініш жіберу</button>
       <button class="btn btn-s" style="width:100%" onclick="showLoginBox()">Артқа</button>
@@ -1064,8 +1702,23 @@ function importAll(inp){
   r.readAsText(f);inp.value='';
 }
 
-function getAdminPass(){return LS.get('ubt_admin_pass','admin123')}
-function setAdminPass(p){LS.set('ubt_admin_pass',p)}
+function getAdminPass(){return ''}
+function setAdminPass(p){}
+function authCall(type,data){
+  try{return window.__bridge.call(type,data)}catch(e){return Promise.resolve({ok:false,msg:'Серверге қосылу мүмкін болмады'})}
+}
+function getChatClaim(){return (typeof chatLogin!=='undefined'&&chatLogin)?chatLogin:''}
+let __busy=false;
+async function guarded(fn){
+  if(__busy)return;__busy=true;document.body.style.cursor='progress';
+  try{await fn()}finally{__busy=false;document.body.style.cursor=''}
+}
+async function startSession(r){
+  window.__token=r.token;user=r.user;
+  LS.set('ubt_current',Object.assign({},r.user,{token:r.token}));
+  try{await window.__bridge.refresh()}catch(e){}
+  enterApp();
+}
 let user=null;
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function jsq(s){return esc(JSON.stringify(String(s)))}
@@ -1085,13 +1738,7 @@ function showRegister(){
   document.getElementById('forgot-box').style.display='none';
   document.getElementById('contact-box').style.display='none';
 }
-function showForgot(){
-  document.getElementById('login-box').style.display='none';
-  document.getElementById('register-box').style.display='none';
-  document.getElementById('forgot-box').style.display='block';
-  document.getElementById('contact-box').style.display='none';
-  document.getElementById('forgot-step2').style.display='none';
-}
+function showForgot(){sendForgotCode()}
 let chatLogin=null;
 function showContactAdmin(){
   document.getElementById('login-box').style.display='none';
@@ -1114,7 +1761,13 @@ function openContactFromApp(){
 function enterChat(){
   const l=document.getElementById('chat-login').value.trim();
   if(l.length<2){alert('Логиніңізді жазыңыз (кемінде 2 таңба)');return}
-  chatLogin=l;openChatRoom();
+  guarded(async()=>{
+    const r=await authCall('chat_claim',{login:l});
+    if(!r.ok){alert(r.msg||'Қате');return}
+    chatLogin=r.login||l;
+    try{await window.__bridge.refresh()}catch(e){}
+    openChatRoom();
+  });
 }
 function openChatRoom(){
   document.getElementById('chat-gate').style.display='none';
@@ -1135,64 +1788,31 @@ function findUserByLogin(login){
 function genCode(){return String(Math.floor(1000+Math.random()*9000))}
 let pendingForgot=null;
 
-function doRegister(){
+function doRegister(){return guarded(async()=>{
   const name=document.getElementById('reg-name').value.trim();
   const pass=document.getElementById('reg-pass').value;
   const pass2=document.getElementById('reg-pass2').value;
   if(!name||name.length<2){alert('Атыңызды жазыңыз');return}
-  if(!pass||pass.length<4){alert('Пароль кемінде 4 таңба');return}
+  if(!pass||pass.length<6){alert('Пароль кемінде 6 таңба');return}
   if(pass!==pass2){alert('Парольдер сәйкес емес');return}
-  if(findUserByLogin(name)){alert('Бұл ат тіркелген. Басқа ат таңдаңыз');return}
-  const key=name.toLowerCase();
-  const profiles=LS.get('ubt_profiles',{});
-  const u={name:name,password:pass,
-    id:'u_'+key.replace(/[^\p{L}\p{N}]+/gu,'_')+'_'+Date.now().toString(36).slice(-4),isAdmin:false};
-  profiles[key]=u;LS.set('ubt_profiles',profiles);
-  setUserStats(u.id,{points:0,title:'',stars:0,verified:false});
+  const r=await authCall('register',{name:name,pass:pass});
+  if(!r.ok){alert(r.msg||'Қате');return}
+  ['reg-name','reg-pass','reg-pass2'].forEach(i=>{const e=document.getElementById(i);if(e)e.value=''});
   alert('✅ Тіркелу сәтті! Енді кіріңіз.');
   showLoginBox();
-  document.getElementById('login-name').value=u.name;
-}
-function doLogin(){
+  document.getElementById('login-name').value=name;
+})}
+function doLogin(){return guarded(async()=>{
   const login=document.getElementById('login-name').value.trim();
   const pass=document.getElementById('login-pass').value;
   if(!login){alert('Логин жазыңыз');return}
-  const key=login.toLowerCase();
-  if(key==='админ'||key==='admin'){
-    if(pass!==getAdminPass()){alert('Қате пароль!');return}
-    user={name:'Админ',id:'admin',isAdmin:true};
-    LS.set('ubt_current',user);enterApp();return;
-  }
-  const u=findUserByLogin(login);
-  if(!u){alert('Аккаунт табылмады. Тіркеліңіз.');return}
-  if(u.password&&u.password!==pass){alert('Қате пароль!');return}
-  // legacy users without password
-  if(!u.password){u.password=pass;const profiles=LS.get('ubt_profiles',{});
-    Object.keys(profiles).forEach(k=>{if(profiles[k].id===u.id)profiles[k].password=pass});LS.set('ubt_profiles',profiles)}
-  user=u;LS.set('ubt_current',user);enterApp();
-}
-function sendForgotCode(){
-  const login=document.getElementById('forgot-login').value.trim();
-  const u=findUserByLogin(login);
-  if(!u){alert('Бұл атпен аккаунт жоқ');return}
-  const code=genCode();
-  pendingForgot={userId:u.id,login,code};
-  alert('🔑 Демо код:\n\n'+code+'\n\n(Нақты SMS кейін қосылады)');
-  document.getElementById('forgot-step2').style.display='block';
-}
-function doForgotReset(){
-  if(!pendingForgot)return;
-  const code=document.getElementById('forgot-code').value.trim();
-  const pass=document.getElementById('forgot-pass').value;
-  if(code!==pendingForgot.code){alert('Код қате!');return}
-  if(!pass||pass.length<4){alert('Пароль кемінде 4 таңба');return}
-  const profiles=LS.get('ubt_profiles',{});
-  Object.keys(profiles).forEach(k=>{if(profiles[k].id===pendingForgot.userId)profiles[k].password=pass});
-  LS.set('ubt_profiles',profiles);
-  pendingForgot=null;
-  alert('✅ Пароль өзгертілді! Кіріңіз.');
-  showLoginBox();
-}
+  const r=await authCall('login',{name:login,pass:pass});
+  if(!r.ok){alert(r.msg||'Қате пароль!');return}
+  document.getElementById('login-pass').value='';
+  await startSession(r);
+})}
+function sendForgotCode(){alert('Парольді ұмытсаңыз, «Админге хабарласу» батырмасы арқылы админге жазыңыз. Админ жаңа пароль орнатады.')}
+function doForgotReset(){sendForgotCode()}
 function getChatMessages(){return LS.get('ubt_chat',[])}
 function saveChatMessages(m){LS.set('ubt_chat',m)}
 function threadKey(x){return String(x||'').trim().toLowerCase()}
@@ -1308,7 +1928,12 @@ function adminDelThread(key){
   if(adminOpenThread===key)adminOpenThread=null;
   renderAdminChat();
 }
-function doLogout(){LS.set('ubt_current',null);user=null;chatLogin=null;showLoginBox();showScr('s-login')}
+function doLogout(){
+  try{authCall('logout',{})}catch(e){}
+  window.__token='';LS.set('ubt_current',null);user=null;chatLogin=null;
+  try{window.__bridge.clearLocal()}catch(e){}
+  showLoginBox();showScr('s-login')
+}
 function getUserStats(id){
   const all=LS.get('ubt_user_stats',{});
   if(!all[id]) all[id]={points:0,title:'',stars:0,verified:false};
@@ -1445,7 +2070,15 @@ function openPubProfile(id){
   showScr('s-pubprof');
 }
 
-(function(){const u=LS.get('ubt_current');if(u&&u.name){user=u;enterApp()}})();
+(function(){
+  const u=LS.get('ubt_current');
+  if(u&&u.name&&u.token){
+    window.__token=u.token;
+    authCall('resume',{}).then(r=>{
+      if(r&&r.ok){startSession(r)}else{window.__token='';LS.set('ubt_current',null)}
+    }).catch(()=>{});
+  }else if(u){LS.set('ubt_current',null)}
+})();
 
 function renderAdminUsers(){
   const el=document.getElementById('admin-users');if(!el)return;
@@ -1468,7 +2101,7 @@ function renderAdminUsers(){
         ${s.verified?'<span style="position:absolute;bottom:-2px;right:-2px;background:#2563eb;color:#fff;width:16px;height:16px;border-radius:50%;font-size:10px;line-height:16px;text-align:center">✓</span>':''}
       </div>
       <div class="info"><h4>${esc(p.name)} ${p.role==='teacher'?(p.teacherApproved?'<span class="badge badge-pub">👨‍🏫 Мұғалім</span>':'<span class="badge" style="background:#fef3c7;color:#92400e">⏳ Мұғалім өтініші</span>'):''}</h4>
-        <p>🔑 пароль: <b>${esc(p.password||'—')}</b></p>
+        <p>🔒 пароль хэштелген (көрінбейді)</p>
         <p>⭐ ${s.points||0} · ${esc(s.title||'Атақ жоқ')} · <span style="color:#f59e0b">${starStr(s.stars||0)}</span></p>
         <p>🌐 Жариялаған тест: <b>${u.pub.length}</b>${u.pub.length?' — '+esc(u.pub.slice(0,3).map(t=>t.topic).join(', '))+(u.pub.length>3?'…':''):''}</p></div>
       <div class="acts">
@@ -1514,8 +2147,7 @@ function showAdmin(){
     passBox.style.padding='20px';
     passBox.style.marginTop='12px';
     passBox.innerHTML=`<h3 style="margin-bottom:12px">🔑 Админ паролі</h3>
-      <div class="fg"><label>Жаңа пароль</label><input id="new-admin-pass" type="password" placeholder="Жаңа пароль"></div>
-      <button class="btn btn-p btn-sm" onclick="changeAdminPass()">Парольді өзгерту</button>`;
+      <p class="sub">Қауіпсіздік үшін админ паролі Streamlit → App settings → Secrets ішіндегі <b>ADMIN_PASSWORD</b> арқылы өзгертіледі.</p>`;
     wrap.appendChild(passBox);
   }
 
@@ -1541,17 +2173,16 @@ function rejectTest(id){
   const all=allTests();const t=all.find(x=>x.id===id);
   if(t){t.isPublic=false;t.status='rejected';saveAllTests(all);showAdmin()}
 }
-function adminDelUser(id){
+function adminDelUser(id){return guarded(async()=>{
   if(!user||!user.isAdmin)return;
   const profiles=LS.get('ubt_profiles',{});
   const pr=Object.values(profiles).find(x=>x.id===id);
   if(!confirm((pr?pr.name:'')+' профилін өшіру?'))return;
-  Object.keys(profiles).forEach(k=>{if(profiles[k].id===id)delete profiles[k]});
-  LS.set('ubt_profiles',profiles);
-  saveAllTests(allTests().filter(t=>t.authorId!==id));
-  const stats=LS.get('ubt_user_stats',{});delete stats[id];LS.set('ubt_user_stats',stats);
+  const r=await authCall('admin_deluser',{uid:id});
+  if(!r.ok){alert(r.msg||'Қате');return}
+  try{await window.__bridge.refresh()}catch(e){}
   showAdmin();
-}
+})}
 function adminSetTitle(id){
   const s=getUserStats(id);
   const t=prompt('Атақ беріңіз (мыс: Алтын оқушы, Шебер):',s.title||'');
@@ -1569,13 +2200,7 @@ function adminToggleVerify(id){
   s.verified=!s.verified;
   setUserStats(id,s);showAdmin();
 }
-function changeAdminPass(){
-  const p=document.getElementById('new-admin-pass').value.trim();
-  if(!p||p.length<4){alert('Пароль кемінде 4 таңба болсын!');return}
-  setAdminPass(p);
-  document.getElementById('new-admin-pass').value='';
-  alert('Админ паролі өзгертілді!');
-}
+function changeAdminPass(){alert('Админ паролі Streamlit Secrets ішіндегі ADMIN_PASSWORD арқылы өзгертіледі')}
 let viewingUserId=null;
 function adminViewUser(id){
   if(!user||!user.isAdmin)return;
@@ -1588,7 +2213,7 @@ function adminViewUser(id){
   document.getElementById('uv-name').textContent=p.name+(s.verified?' ✓':'');
   document.getElementById('uv-info').textContent=`⭐ ${s.points||0} · ${s.title||'атақ жоқ'} · ${starStr(s.stars||0)}`;
   document.getElementById('uv-login').value=p.name||'';
-  document.getElementById('uv-curpass').value=p.password||'(пароль жоқ)';
+  document.getElementById('uv-curpass').value='🔒 хэштелген (көрсетілмейді)';
   const hist=LS.get('ubt_hist_'+id,[]);
   document.getElementById('uv-hist').innerHTML=hist.length?hist.map(h=>`
     <div class="item"><div class="info"><h4>${esc(h.topic||'Тест')}</h4><p>${h.date}</p></div>
@@ -1600,17 +2225,15 @@ function adminViewUser(id){
   renderProgress('uv-chart',null,getProg(id));
   showScr('s-user-view');
 }
-function adminChangeUserPass(){
-  if(!viewingUserId)return;
+function adminChangeUserPass(){return guarded(async()=>{
+  if(!viewingUserId||!user||!user.isAdmin)return;
   const pass=document.getElementById('uv-newpass').value;
-  if(!pass||pass.length<4){alert('Пароль кемінде 4 таңба');return}
-  const profiles=LS.get('ubt_profiles',{});
-  Object.keys(profiles).forEach(k=>{if(profiles[k].id===viewingUserId)profiles[k].password=pass});
-  LS.set('ubt_profiles',profiles);
+  if(!pass||pass.length<6){alert('Пароль кемінде 6 таңба');return}
+  const r=await authCall('admin_setpass',{uid:viewingUserId,pass:pass});
+  if(!r.ok){alert(r.msg||'Қате');return}
   document.getElementById('uv-newpass').value='';
-  document.getElementById('uv-curpass').value=pass;
   alert('Пароль өзгертілді!');
-}
+})}
 function adminDelFormula(i){
   if(!confirm('Формуланы өшіру?'))return;
   const f=LS.get('ubt_formulas',[]);f.splice(i,1);LS.set('ubt_formulas',f);showAdmin();
@@ -3312,22 +3935,19 @@ function showTeacherReg(){
   ['login-box','register-box','forgot-box','contact-box'].forEach(i=>document.getElementById(i).style.display='none');
   document.getElementById('teacher-reg-box').style.display='block';
 }
-function doRegisterTeacher(){
+function doRegisterTeacher(){return guarded(async()=>{
   const name=document.getElementById('tr-name').value.trim();
   const info=document.getElementById('tr-info').value.trim();
   const pass=document.getElementById('tr-pass').value,pass2=document.getElementById('tr-pass2').value;
   if(!name||name.length<2){alert('Аты-жөніңізді жазыңыз');return}
-  if(!pass||pass.length<4){alert('Пароль кемінде 4 таңба');return}
+  if(!pass||pass.length<6){alert('Пароль кемінде 6 таңба');return}
   if(pass!==pass2){alert('Парольдер сәйкес емес');return}
-  if(findUserByLogin(name)||name.toLowerCase()==='админ'||name.toLowerCase()==='admin'){alert('Бұл ат тіркелген. Басқа ат таңдаңыз');return}
-  const key=name.toLowerCase(),profiles=LS.get('ubt_profiles',{});
-  const u={name:name,password:pass,id:'u_'+key.replace(/[^\p{L}\p{N}]+/gu,'_')+'_'+Date.now().toString(36).slice(-4),isAdmin:false,role:'teacher',teacherApproved:false,teacherInfo:info};
-  profiles[key]=u;LS.set('ubt_profiles',profiles);
-  setUserStats(u.id,{points:0,title:'',stars:0,verified:false});
+  const r=await authCall('register',{name:name,pass:pass,teacher:true,info:info});
+  if(!r.ok){alert(r.msg||'Қате');return}
   ['tr-name','tr-info','tr-pass','tr-pass2'].forEach(i=>document.getElementById(i).value='');
   alert('✅ Өтініш админге жіберілді. Қазір оқушы ретінде кіре аласыз; админ рұқсат бергесін мұғалім кабинеті ашылады.');
-  showLoginBox();document.getElementById('login-name').value=u.name;
-}
+  showLoginBox();document.getElementById('login-name').value=name;
+})}
 function mutateProfile(id,fn){
   const profiles=LS.get('ubt_profiles',{});let ok=false;
   Object.keys(profiles).forEach(k=>{if(profiles[k].id===id){fn(profiles[k]);ok=true}});
@@ -3795,14 +4415,35 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
 <script>
 // ===== Streamlit екі жақты компонент көпірі =====
 (function(){
-  var sid=Math.random().toString(36).slice(2,10),n=0,pend={},unacked=[],pollN=0,booted=false,connected=false,first=true,flushT=null,lastH=0;
+  var sid=Math.random().toString(36).slice(2,10),n=0,pend={},unacked=[],pollN=0,booted=false,connected=false,first=true,flushT=null,lastH=0,reqN=0,reqs=[],waiters={},renderWaiters=[];
   function noSync(k){return k==='ubt_current'||k==='ubt_dark'||k.indexOf('ubt_cd_')===0||k.indexOf('ubt_')!==0}
   function post(m){m.isStreamlitMessage=true;try{window.parent.postMessage(m,'*')}catch(e){}}
-  function send(){post({type:'streamlit:setComponentValue',dataType:'json',value:{sid:sid,ops:unacked,poll:++pollN}})}
+  function send(){post({type:'streamlit:setComponentValue',dataType:'json',value:{sid:sid,ops:unacked,reqs:reqs,token:window.__token||'',chat:(window.getChatClaim?window.getChatClaim():''),poll:++pollN}})}
+  function call(type,data){
+    return new Promise(function(resolve){
+      var id=++reqN,done=false;
+      reqs.push({id:id,type:type,data:data||{},tok:window.__token||''});
+      var t=setTimeout(function(){if(done)return;done=true;delete waiters[id];reqs=reqs.filter(function(r){return r.id!==id});resolve({ok:false,msg:'Серверге қосылу мүмкін болмады. Қайталап көріңіз.'})},25000);
+      waiters[id]=function(res){if(done)return;done=true;clearTimeout(t);reqs=reqs.filter(function(r){return r.id!==id});resolve(res)};
+      send();
+    });
+  }
+  function refresh(){
+    return new Promise(function(res){
+      var t=setTimeout(function(){res(false)},8000);
+      renderWaiters.push(function(){clearTimeout(t);res(true)});
+      send();
+    });
+  }
+  function clearLocal(){
+    send();
+    try{var ks=[];for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(!noSync(k))ks.push(k)}ks.forEach(function(k){localStorage.removeItem(k)})}catch(e){}
+    unacked=[];pend={};first=true;
+  }
   function push(items){
     items.forEach(function(it){
       n++;unacked=unacked.filter(function(o){return o.key!==it.key});
-      unacked.push({n:n,key:it.key,value:it.value});pend[it.key]=n;
+      unacked.push({n:n,key:it.key,value:it.value,tok:window.__token||''});pend[it.key]=n;
     });
     if(flushT)clearTimeout(flushT);
     flushT=setTimeout(function(){flushT=null;send()},250);
@@ -3860,16 +4501,19 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
       if(noSync(k)||pend[k]!==undefined)return;
       try{if(localStorage.getItem(k)!==db[k]){localStorage.setItem(k,db[k]);changed++}}catch(e){}
     });
-    if(first){
+    var ar=(args.authres||{})[sid]||{};
+    Object.keys(ar).forEach(function(id){if(waiters[id]){var w=waiters[id];delete waiters[id];w(ar[id])}});
+    if(first&&window.__token){
       first=false;var up=[];
       try{for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(!noSync(k)&&!(k in db))up.push({key:k,value:localStorage.getItem(k)})}}catch(e){}
       if(up.length)push(up);
     }
     connected=true;height();
+    if(renderWaiters.length&&(args.tk||'')===(window.__token||'')){var rw=renderWaiters;renderWaiters=[];rw.forEach(function(f){try{f()}catch(e){}})}
     if(!booted)boot();
     else{try{setSyncInd(true);if(changed)syncRefresh()}catch(e){}}
   });
-  window.__bridge={push:push,connected:function(){return connected}};
+  window.__bridge={push:push,call:call,refresh:refresh,clearLocal:clearLocal,connected:function(){return connected}};
   post({type:'streamlit:componentReady',apiVersion:1});height();
   setInterval(function(){if(connected&&document.visibilityState!=='hidden')send()},5000);
   setTimeout(boot,2500);
@@ -3898,6 +4542,14 @@ _write_frontend()
 _ubt_comp = components.declare_component("ubt_plus", path=FRONT_DIR)
 
 _apply_ops(st.session_state.get("ubt_comp"))
-_res = _ubt_comp(db=_snapshot(), ack=dict(st.session_state.get("_ubt_ack", {})), store=_store_mode(_store()), err=str(_store().get("err") or "")[:160], key="ubt_comp", default=None)
+_cur = st.session_state.get("ubt_comp")
+_cur = _cur if isinstance(_cur, dict) else {}
+_tok = str(_cur.get("token") or "")
+_st = _store()
+with _st["lock"]:
+    _tk = _tok if _session(_st, _tok) else ""
+_res = _ubt_comp(db=_snapshot(_tok, str(_cur.get("chat") or "")), ack=dict(st.session_state.get("_ubt_ack", {})),
+                 authres=dict(st.session_state.get("_ubt_authres", {})), tk=_tk,
+                 store=_store_mode(_st), err=str(_st.get("err") or "")[:160], key="ubt_comp", default=None)
 if _apply_ops(_res):
     st.rerun()
