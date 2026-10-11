@@ -450,6 +450,49 @@ body.dark #admin-chat input,body.dark #admin-chat textarea{color:#111}
 .crow{display:flex;gap:8px;margin-top:8px}
 .crow input{flex:1;padding:10px 12px;border:1px solid var(--b);border-radius:10px;background:var(--bg);color:var(--t);font-family:inherit;font-size:14px}
 body.dark .cmsg.sys{background:#422006;color:#fcd34d}
+
+/* ===== Жаңа дизайн (v2) ===== */
+:root{--r:18px;--sh:0 6px 24px rgba(30,41,59,.07);--grad:linear-gradient(135deg,#2563eb,#7c3aed)}
+body{background:radial-gradient(900px 420px at 0% -5%,rgba(37,99,235,.14),transparent 60%),radial-gradient(800px 420px at 100% 0%,rgba(124,58,237,.13),transparent 55%),var(--bg);background-attachment:fixed}
+body.dark{background:radial-gradient(900px 420px at 0% -5%,rgba(59,130,246,.16),transparent 60%),radial-gradient(800px 420px at 100% 0%,rgba(139,92,246,.14),transparent 55%),var(--bg);background-attachment:fixed}
+.topback{background:color-mix(in srgb,var(--bg) 90%,transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.screen.active{animation:scrIn .25s ease}
+@keyframes scrIn{from{opacity:0}to{opacity:1}}
+.hdr h1,.hdr h2{letter-spacing:-.3px}
+.card{border-radius:var(--r);box-shadow:var(--sh);border-color:rgba(148,163,184,.28)}
+.btn{border-radius:12px}
+.btn:active{transform:scale(.98)}
+.btn-p{background:var(--grad);box-shadow:0 4px 14px rgba(37,99,235,.28)}
+.btn-p:hover{background:var(--grad);filter:brightness(1.08);transform:translateY(-1px)}
+.btn-s{box-shadow:0 1px 3px rgba(15,23,42,.06)}
+.mode{border-radius:var(--r);border:1px solid rgba(148,163,184,.3);box-shadow:var(--sh);position:relative;overflow:hidden}
+.mode::before{content:'';position:absolute;left:0;right:0;top:0;height:4px;background:var(--grad);opacity:0;transition:.2s}
+.mode:hover::before{opacity:1}
+.mode .ic{width:58px;height:58px;border-radius:16px;background:linear-gradient(135deg,rgba(37,99,235,.12),rgba(124,58,237,.16));display:flex;align-items:center;justify-content:center;margin:0 auto 10px;font-size:28px}
+.profile-bar{border-radius:0 0 var(--r) var(--r);box-shadow:0 4px 18px rgba(30,41,59,.07);border-bottom:none}
+.avatar{background:var(--grad);background-size:cover;background-position:center;box-shadow:0 2px 8px rgba(37,99,235,.3);flex-shrink:0;overflow:hidden}
+.item{border-radius:14px;box-shadow:0 2px 8px rgba(30,41,59,.04);transition:.15s}
+.item[onclick]:hover{transform:translateY(-2px);box-shadow:var(--sh);border-color:#93c5fd}
+.item.rk.r1{background:linear-gradient(90deg,rgba(251,191,36,.20),var(--c) 70%);border-color:#fbbf24}
+.item.rk.r2{background:linear-gradient(90deg,rgba(148,163,184,.24),var(--c) 70%);border-color:#cbd5e1}
+.item.rk.r3{background:linear-gradient(90deg,rgba(194,118,58,.20),var(--c) 70%);border-color:#e0a46f}
+.item.rk.me{box-shadow:0 0 0 2px var(--p)}
+.stat{border-radius:14px;background:linear-gradient(135deg,rgba(37,99,235,.07),rgba(124,58,237,.08))}
+.tbar .tb i,.prog-f{background:var(--grad)}
+.score-c{background:var(--grad)}
+.pod .avatar{margin:0 auto;border:3px solid #fff}
+.pod.p1 .pbase{box-shadow:0 8px 20px rgba(245,158,11,.35)}
+.pod{cursor:pointer}
+.fg input:focus,.fg select:focus,.fg textarea:focus{outline:none;border-color:var(--p);box-shadow:0 0 0 3px rgba(37,99,235,.15);background:var(--c)}
+#s-profile .hdr,#s-pubprof .hdr{background:var(--grad);color:#fff;border-radius:24px;padding:26px 16px 22px;box-shadow:0 12px 32px rgba(79,70,229,.35);position:relative;overflow:hidden}
+#s-profile .hdr::after,#s-pubprof .hdr::after{content:'';position:absolute;width:220px;height:220px;border-radius:50%;background:rgba(255,255,255,.10);right:-60px;top:-80px}
+#s-profile .hdr>*,#s-pubprof .hdr>*{position:relative;z-index:1}
+#s-profile .hdr .sub,#s-pubprof .hdr .sub{color:rgba(255,255,255,.88)}
+#s-profile .hdr [style*="color:var(--p)"]{color:#fff!important}
+#s-profile .hdr .avatar,#s-pubprof .hdr .avatar{border-color:rgba(255,255,255,.75)!important;box-shadow:0 6px 20px rgba(0,0,0,.25)}
+.ro-note{background:linear-gradient(135deg,#eff6ff,#f5f3ff);border-style:dashed;font-size:13px;text-align:center;color:#334155}
+body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd5e1}
+@media(max-width:768px){.mode{padding:16px 10px}.mode .ic{width:48px;height:48px;font-size:24px}}
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
@@ -601,8 +644,8 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
 <div id="s-profile" class="screen">
   <div class="wrap">
     <div class="hdr">
-      <div style="position:relative;width:80px;margin:0 auto 12px">
-        <div class="avatar" id="prof-avatar" style="width:80px;height:80px;font-size:32px;border:4px solid #93c5fd">?</div>
+      <div style="position:relative;width:96px;margin:0 auto 12px">
+        <div class="avatar" id="prof-avatar" style="width:96px;height:96px;font-size:38px;border:4px solid #93c5fd">?</div>
         <span id="prof-verified" style="display:none;position:absolute;bottom:0;right:0;background:#2563eb;color:#fff;width:24px;height:24px;border-radius:50%;font-size:14px;line-height:24px;text-align:center;border:2px solid #fff">✓</span>
       </div>
       <h2 id="prof-name">User</h2>
@@ -610,6 +653,7 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
       <div id="prof-stars" style="font-size:22px;letter-spacing:3px;color:#f59e0b;margin:8px 0">☆☆☆☆☆</div>
       <div style="margin-top:8px;font-size:22px;font-weight:700;color:var(--p)">⭐ <span id="prof-points">0</span> ұпай</div>
       <p class="sub" id="prof-rank" style="margin-top:6px">Рейтинг: —</p>
+      <div class="row" style="margin-top:14px"><label class="btn btn-s btn-sm" style="cursor:pointer">📷 Фото қою / ауыстыру<input type="file" accept="image/*" style="display:none" onchange="uploadAvatar(this)"></label><button class="btn btn-s btn-sm" id="av-del" style="display:none" onclick="removeAvatar()">🗑 Өшіру</button></div>
     </div>
     <div class="card" id="prof-extra"></div>
     <div class="card"><h3 style="margin-bottom:10px">📈 Менің графигім</h3><div id="prof-chart"></div></div>
@@ -626,6 +670,24 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
     <div id="rank-list" class="list"></div>
     <div id="rank-hall"></div>
     <div class="row" style="margin-top:16px"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+  </div>
+</div>
+
+<div id="s-pubprof" class="screen">
+  <div class="wrap">
+    <div class="hdr">
+      <div class="avatar" id="pp-avatar" style="width:96px;height:96px;font-size:38px;margin:0 auto 12px;border:4px solid #93c5fd">?</div>
+      <h2 id="pp-name">User</h2>
+      <p class="sub" id="pp-title">Атақ жоқ</p>
+      <div id="pp-stars" style="font-size:22px;letter-spacing:3px;color:#fbbf24;margin:8px 0">☆☆☆☆☆</div>
+      <div style="margin-top:8px;font-size:22px;font-weight:700">⭐ <span id="pp-points">0</span> ұпай</div>
+      <p class="sub" id="pp-rank" style="margin-top:6px">Рейтинг: —</p>
+    </div>
+    <div class="card ro-note">🔒 Бұл — басқа қолданушының профилі. Оның тапсырған тесттерінің нәтижесін ғана көре аласыз; тесттерді оның орнына тапсыру мүмкін емес.</div>
+    <div class="card"><h3 style="margin-bottom:10px">📈 График</h3><div id="pp-chart"></div></div>
+    <div class="card"><h3 style="margin-bottom:10px">📊 Тақырыптар бойынша орташа нәтиже</h3><div id="pp-topics"></div></div>
+    <div class="card"><h3 style="margin-bottom:10px">📋 Тапсырған тесттері</h3><div id="pp-hist" class="list"></div></div>
+    <div class="row"><button class="btn btn-s" onclick="showRanking()">Артқа</button></div>
   </div>
 </div>
 
@@ -974,6 +1036,7 @@ function syncRefresh(){
     else if(id==='s-public')showPublicTests(pubSubj);
     else if(id==='s-mytests')showMyTests();
     else if(id==='s-ranking')showRanking();
+    else if(id==='s-pubprof'&&ppId)openPubProfile(ppId);
   }catch(e){}
 }
 function exportAll(){
@@ -1269,7 +1332,7 @@ function addPoints(pts){
 function refreshProfileBar(){
   if(!user)return;
   document.getElementById('pname').textContent=user.name;
-  document.getElementById('avatar').textContent=user.name[0].toUpperCase();
+  setAv(document.getElementById('avatar'),user.id,user.name);
   const s=user.isAdmin?{points:0,title:'👑 Админ',stars:5,verified:true}:getUserStats(user.id);
   document.getElementById('p-points').textContent=s.points||0;
   document.getElementById('p-title').textContent=s.title||'Жаңа ойыншы';
@@ -1284,7 +1347,7 @@ function enterApp(){
 }
 function showMyProfile(){
   const s=user.isAdmin?{points:0,title:'👑 Админ',stars:5,verified:true}:getUserStats(user.id);
-  document.getElementById('prof-avatar').textContent=user.name[0].toUpperCase();
+  setAv(document.getElementById('prof-avatar'),user.id,user.name);const dv=document.getElementById('av-del');if(dv)dv.style.display=getAvatar(user.id)?'':'none';
   document.getElementById('prof-name').textContent=user.name+(s.verified?' ✓':'');
   document.getElementById('prof-title').textContent=s.title||'Атақ жоқ';
   document.getElementById('prof-stars').textContent=starStr(s.stars||0);
@@ -1311,6 +1374,77 @@ function getLeaderboard(){
   list.sort((a,b)=>b.points-a.points);
   return list;
 }
+// ================= Профиль фотосы =================
+function getAvatar(id){return id?LS.get('ubt_avatar_'+id,null):null}
+function setAv(el,id,name){
+  if(!el)return;
+  const a=getAvatar(id);
+  if(a){el.style.backgroundImage='url('+a+')';el.style.backgroundSize='cover';el.style.backgroundPosition='center';el.textContent=''}
+  else{el.style.backgroundImage='';el.textContent=String(name||'?')[0].toUpperCase()}
+}
+function avHTML(id,name,size){
+  const a=getAvatar(id);
+  const s='width:'+size+'px;height:'+size+'px;font-size:'+Math.round(size*0.4)+'px;'+(a?'background-image:url('+a+');background-size:cover;background-position:center;':'');
+  return '<div class="avatar" style="'+s+'">'+(a?'':esc(String(name||'?')[0].toUpperCase()))+'</div>';
+}
+function uploadAvatar(inp){
+  const f=inp.files&&inp.files[0];inp.value='';
+  if(!f||!user)return;
+  if(!/^image\//.test(f.type)){alert('Сурет файлын таңдаңыз (JPG, PNG...)');return}
+  if(f.size>15*1024*1024){alert('Файл тым үлкен. 15 МБ-тан кіші сурет таңдаңыз');return}
+  const r=new FileReader();
+  r.onload=()=>{
+    const img=new Image();
+    img.onload=()=>{
+      const S=192,c=document.createElement('canvas');c.width=S;c.height=S;
+      const x=c.getContext('2d'),m=Math.min(img.width,img.height);
+      x.drawImage(img,(img.width-m)/2,(img.height-m)/2,m,m,0,0,S,S);
+      LS.set('ubt_avatar_'+user.id,c.toDataURL('image/jpeg',0.82));
+      refreshProfileBar();showMyProfile();
+    };
+    img.onerror=()=>alert('Сурет оқылмады. Басқа файл таңдаңыз');
+    img.src=r.result;
+  };
+  r.readAsDataURL(f);
+}
+function removeAvatar(){
+  if(!user||!getAvatar(user.id))return;
+  if(!confirm('Фотоны өшіру керек пе?'))return;
+  LS.set('ubt_avatar_'+user.id,null);
+  refreshProfileBar();showMyProfile();
+}
+
+// ================= Рейтинг: топ-10 =================
+function podiumHTML(board){
+  if(!board.length)return '';
+  const cups=['🏆','🥈','🥉'];
+  return '<div class="podium">'+[1,0,2].filter(i=>board[i]).map(i=>`<div class="pod p${i+1}" onclick="openPubProfile(${jsq(board[i].id)})"><div class="pcup">${cups[i]}</div><div style="display:flex;justify-content:center;margin:4px 0">${avHTML(board[i].id,board[i].name,i===0?64:48)}</div><div class="pname">${esc(board[i].name)}</div><div class="ppts">⭐ ${board[i].points}</div><div class="pbase">${i+1}</div></div>`).join('')+'</div>';
+}
+
+// ================= Басқа қолданушының профилі (тек оқуға) =================
+let ppId=null;
+function openPubProfile(id){
+  if(!user)return;
+  if(id===user.id){showMyProfile();return}
+  const p=profileById(id);
+  if(!p){alert('Профиль табылмады');return}
+  ppId=id;
+  const s=getUserStats(id),hist=LS.get('ubt_hist_'+id,[]),prog=getProg(id);
+  const ri=getLeaderboard().findIndex(x=>x.id===id);
+  setAv(document.getElementById('pp-avatar'),id,p.name);
+  document.getElementById('pp-name').textContent=p.name+(s.verified?' ✓':'');
+  document.getElementById('pp-title').textContent=s.title||'Атақ жоқ';
+  document.getElementById('pp-stars').textContent=starStr(s.stars||0);
+  document.getElementById('pp-points').textContent=s.points||0;
+  document.getElementById('pp-rank').textContent=ri>=0?('Рейтинг: #'+(ri+1)):'Рейтинг: —';
+  renderProgress('pp-chart','pp-topics',prog);
+  document.getElementById('pp-hist').innerHTML=hist.length?hist.map(h=>{
+    const pc=h.max?Math.round(h.score/h.max*100):0,c=pc>=80?'#16a34a':pc>=50?'#2563eb':'#dc2626';
+    return `<div class="item"><div class="info"><h4>${esc(h.topic||'Тест')}</h4><p>${esc(h.date||'')}</p></div><div style="text-align:right"><div style="font-weight:700;color:${c}">${esc(h.score)}/${esc(h.max)}</div><div class="sub" style="font-size:11px">${pc}%</div></div></div>`;
+  }).join(''):'<div class="empty"><div class="ic">📋</div><p>Бұл қолданушы әлі тест тапсырмаған</p></div>';
+  showScr('s-pubprof');
+}
+
 (function(){const u=LS.get('ubt_current');if(u&&u.name){user=u;enterApp()}})();
 
 function renderAdminUsers(){
@@ -1450,7 +1584,7 @@ function adminViewUser(id){
   const p=Object.values(profiles).find(x=>x.id===id);
   if(!p){alert('Табылмады');return}
   const s=getUserStats(id);
-  document.getElementById('uv-avatar').textContent=(p.name||'?')[0].toUpperCase();
+  setAv(document.getElementById('uv-avatar'),id,p.name);
   document.getElementById('uv-name').textContent=p.name+(s.verified?' ✓':'');
   document.getElementById('uv-info').textContent=`⭐ ${s.points||0} · ${s.title||'атақ жоқ'} · ${starStr(s.stars||0)}`;
   document.getElementById('uv-login').value=p.name||'';
@@ -2744,7 +2878,7 @@ function classBoard(){
   }).sort((a,b)=>b.avg-a.avg||b.total-a.total||b.n-a.n);
 }
 function showClassRanking(){
-  const board=classBoard(),cups=['🏆','🥈','🥉'],medals=['🥇','🥈','🥉'];
+  const board=classBoard().slice(0,10),cups=['🏆','🥈','🥉'],medals=['🥇','🥈','🥉'];
   document.getElementById('rank-sub').textContent='Үздік сыныптар · оқушылардың орташа ұпайы бойынша';
   document.getElementById('rank-podium').innerHTML=board.length?`<div class="podium">`+[1,0,2].filter(i=>board[i]).map(i=>`<div class="pod p${i+1}"><div class="pcup">${cups[i]}</div><div class="pname">${esc(board[i].name)}</div><div class="ppts">⭐ ${board[i].avg}</div><div class="pbase">${i+1}</div></div>`).join('')+`</div>`:'';
   const el=document.getElementById('rank-list');
@@ -2770,17 +2904,23 @@ function showRanking(mode){
     board=seasonBoard(tag);
     document.getElementById('rank-sub').textContent=(rankMode==='w'?'Апталық жарыс':'Айлық жарыс')+' · '+seasonLabel(tag)+' · аяқталғанда топ-3 кубок алады';
   }
-  const cups=['🏆','🥈','🥉'];
-  document.getElementById('rank-podium').innerHTML=board.length?`<div class="podium">`+[1,0,2].filter(i=>board[i]).map(i=>`<div class="pod p${i+1}"><div class="pcup">${cups[i]}</div><div class="pname">${esc(board[i].name)}</div><div class="ppts">⭐ ${board[i].points}</div><div class="pbase">${i+1}</div></div>`).join('')+`</div>`:'';
+  const full=board;
+  board=full.slice(0,10);
+  document.getElementById('rank-podium').innerHTML=podiumHTML(board);
   const el=document.getElementById('rank-list');
   if(!board.length)el.innerHTML='<div class="empty"><div class="ic">🏆</div><p>Әзірге ешкім жоқ</p></div>';
   else{
     const medals=['🥇','🥈','🥉'];
-    el.innerHTML=board.map((u,i)=>`<div class="item${user&&u.id===user.id?' me':''}">
-      <div style="width:36px;height:36px;border-radius:50%;background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0">${esc(String(u.name||'?')[0].toUpperCase())}</div>
-      <div class="info"><h4>${medals[i]||('#'+(i+1))} ${esc(u.name)} ${user&&u.id===user.id?'(сіз)':''}</h4><p>${esc(u.title||(u.stars?('⭐'.repeat(Math.min(u.stars,5))):'—'))}</p></div>
-      <div style="font-weight:700;color:var(--p);font-size:16px">⭐ ${u.points}</div></div>`).join('');
+    const row=(u,i)=>{const me=user&&u.id===user.id;return `<div class="item rk${i<3?' r'+(i+1):''}${me?' me':''}" style="cursor:pointer" onclick="openPubProfile(${jsq(u.id)})">
+      ${avHTML(u.id,u.name,40)}
+      <div class="info"><h4>${medals[i]||('#'+(i+1))} ${esc(u.name)} ${me?'(сіз)':''}</h4><p>${esc(u.title||(u.stars?('⭐'.repeat(Math.min(u.stars,5))):'Профильді көру'))}</p></div>
+      <div style="font-weight:700;color:var(--p);font-size:16px">⭐ ${u.points}</div></div>`};
+    let html='<p class="sub" style="text-align:center;margin-bottom:10px">🏅 Топ-10 · атын басып, профильді көріңіз</p>'+board.map(row).join('');
+    const mi=user?full.findIndex(u=>u.id===user.id):-1;
+    if(mi>=10)html+='<div class="sub" style="text-align:center">⋮</div>'+row(full[mi],mi);
+    el.innerHTML=html;
   }
+  const cups=['🏆','🥈','🥉'];
   const type=rankMode==='w'?'w':'m';
   const hall=LS.get('ubt_trophies',[]).filter(t=>t.tag.slice(0,1)===type);
   const tags=[];hall.slice().reverse().forEach(t=>{if(!tags.includes(t.tag))tags.push(t.tag)});
