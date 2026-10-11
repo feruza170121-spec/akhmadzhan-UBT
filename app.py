@@ -1,105 +1,81 @@
 import json
 import os
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import streamlit as st
 import streamlit.components.v1 as components
 
 # ======================================================================
 # Ортақ дерекқор: барлық құрылғы мен қолданушы бір деректі көреді
-# (тесттер, сұрақтар, аккаунттар, сыныптар...). Деректер ubt_data.json файлында.
-# Осы порт (SYNC_PORT) браузерден қолжетімді болуы керек (бір Wi-Fi / сервер).
+# (аккаунттар, тесттер, сұрақтар, сыныптар, чаттар, рейтинг...).
+# Деректер ubt_data.json файлында сақталады (UBT_DATA_FILE арқылы жолын өзгертуге болады).
+# Қосымша порт керек емес: байланыс Streamlit-тің өзі арқылы өтеді.
 # ======================================================================
-SYNC_PORT = 8765
-DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ubt_data.json")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+DATA_FILE = os.environ.get("UBT_DATA_FILE") or os.path.join(_HERE, "ubt_data.json")
+FRONT_DIR = os.path.join(_HERE, "ubt_frontend")
 _LOCK = threading.Lock()
 _NO_SYNC = ("ubt_current", "ubt_dark")
 
 
-def _db_load():
+@st.cache_resource
+def _store():
+    data = {}
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            raw = json.load(f)
+        for k, v in raw.items():
+            data[k] = v["v"] if isinstance(v, dict) and "v" in v else v
     except Exception:
-        return {}
+        data = {}
+    return {"db": data}
 
 
-def _db_save(d):
+def _db_save(db):
     tmp = DATA_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(d, f, ensure_ascii=False)
+        json.dump(db, f, ensure_ascii=False)
     os.replace(tmp, DATA_FILE)
 
 
 def _key_ok(k):
-    return isinstance(k, str) and k.startswith("ubt_") and len(k) < 200 and k not in _NO_SYNC and not k.startswith("ubt_cd_")
+    return (isinstance(k, str) and k.startswith("ubt_") and len(k) < 200
+            and k not in _NO_SYNC and not k.startswith("ubt_cd_"))
 
 
-class _SyncHandler(BaseHTTPRequestHandler):
-    def _send(self, code, obj):
-        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Private-Network", "true")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_OPTIONS(self):
-        self._send(204, {})
-
-    def do_GET(self):
-        if not self.path.startswith("/all"):
-            return self._send(404, {})
-        since = 0.0
-        if "since=" in self.path:
-            try:
-                since = float(self.path.split("since=")[1].split("&")[0])
-            except Exception:
-                since = 0.0
-        with _LOCK:
-            db = _db_load()
-        self._send(200, {k: v for k, v in db.items() if v.get("t", 0) > since})
-
-    def do_POST(self):
-        try:
-            n = int(self.headers.get("Content-Length", "0"))
-            if n > 8_000_000:
-                return self._send(413, {"ok": False})
-            data = json.loads(self.rfile.read(n).decode("utf-8"))
-            items = data.get("items") if isinstance(data.get("items"), list) else [data]
-            import time
-            with _LOCK:
-                db = _db_load()
-                t = time.time()
-                for it in items:
-                    k, v = it.get("key"), it.get("value")
-                    if _key_ok(k) and isinstance(v, str):
-                        db[k] = {"v": v, "t": t}
-                _db_save(db)
-            self._send(200, {"ok": True, "t": t})
-        except Exception:
-            self._send(400, {"ok": False})
-
-    def log_message(self, *a):
-        pass
-
-
-@st.cache_resource
-def _start_sync_server():
-    try:
-        srv = ThreadingHTTPServer(("0.0.0.0", SYNC_PORT), _SyncHandler)
-    except OSError:
+def _apply_ops(res):
+    """Браузерден келген жазбаларды қолданады. Жаңа жазба болса True қайтарады."""
+    if not isinstance(res, dict):
         return False
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    return True
+    sid = res.get("sid")
+    ops = res.get("ops")
+    if not isinstance(sid, str) or not isinstance(ops, list):
+        return False
+    acks = st.session_state.setdefault("_ubt_ack", {})
+    last = acks.get(sid, 0)
+    changed = False
+    with _LOCK:
+        db = _store()["db"]
+        for op in sorted((o for o in ops if isinstance(o, dict)), key=lambda o: o.get("n", 0)):
+            n = op.get("n", 0)
+            if not isinstance(n, int) or n <= last:
+                continue
+            k, v = op.get("key"), op.get("value")
+            if _key_ok(k) and isinstance(v, str) and len(v) < 8_000_000:
+                if db.get(k) != v:
+                    db[k] = v
+                    changed = True
+            last = n
+        if changed:
+            _db_save(db)
+    new = last > acks.get(sid, 0)
+    acks[sid] = last
+    return new
 
 
-_start_sync_server()
+def _snapshot():
+    with _LOCK:
+        return dict(_store()["db"])
 
 st.set_page_config(page_title="ҰБТ+", page_icon="📘", layout="wide", initial_sidebar_state="collapsed")
 st.markdown("""<style>#MainMenu,footer,header{visibility:hidden}.block-container{padding:0!important;max-width:100%!important}iframe{border:none!important}</style>""", unsafe_allow_html=True)
@@ -313,7 +289,7 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" onload="mathScreen()"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" onload="window.mathScreen&&mathScreen()"></script>
 </head>
 <body>
 
@@ -802,6 +778,11 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
       <div id="admin-formulas" class="list"></div>
     </div>
     <div class="card" style="padding:20px">
+      <h3 style="margin-bottom:6px">💾 Дерекқордың резервтік көшірмесі</h3>
+      <p class="sub" style="margin-bottom:10px">Барлық аккаунт, тест, сынып деректері. Серверді ауыстырсаңыз немесе дерек жоғалса — осы файлмен қалпына келтіріңіз.</p>
+      <div class="row" style="justify-content:flex-start"><button class="btn btn-p btn-sm" onclick="exportAll()">⬇ Көшірмені жүктеу</button><label class="btn btn-s btn-sm" style="cursor:pointer">⬆ Қалпына келтіру<input type="file" accept=".json" style="display:none" onchange="importAll(this)"></label></div>
+    </div>
+    <div class="card" style="padding:20px">
       <h3 style="margin-bottom:12px">💬 Хабарламалар (әр логин бөлек)</h3>
       <div id="admin-chat" class="list"></div>
     </div>
@@ -809,45 +790,15 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
   </div>
 </div>
 
-<script>
-// ===== Ортақ дерекқор (сервермен синхрондау) =====
-const SYNC_PORT=8765;
-const SYNC_BASE=(function(){let h='';try{h=window.parent.location.hostname}catch(e){}if(!h)h=location.hostname||'localhost';return 'http://'+h+':'+SYNC_PORT})();
+<script type="text/plain" id="app-src">
+// ===== Ортақ дерекқор (Streamlit арқылы синхрондау) =====
 function noSync(k){return k==='ubt_current'||k==='ubt_dark'||k.indexOf('ubt_cd_')===0||k.indexOf('ubt_')!==0}
-let syncOK=false,syncSince=0;
-function syncPush(items){
-  if(!syncOK||!items.length)return;
-  try{fetch(SYNC_BASE+'/set',{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({items:items}),keepalive:items.length<20}).then(r=>r.json()).then(j=>{if(j&&j.t)syncSince=Math.max(syncSince,j.t)}).catch(()=>setSyncInd(false))}catch(e){}
-}
-(function initialSync(){
-  try{
-    const x=new XMLHttpRequest();x.open('GET',SYNC_BASE+'/all',false);x.send();
-    if(x.status===200){
-      const d=JSON.parse(x.responseText);syncOK=true;
-      for(const k in d){try{localStorage.setItem(k,d[k].v)}catch(e){}syncSince=Math.max(syncSince,d[k].t||0)}
-      const up=[];
-      for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(!noSync(k)&&!(k in d))up.push({key:k,value:localStorage.getItem(k)})}
-      if(up.length){syncOK=true;syncPush(up)}
-    }
-  }catch(e){}
-})();
+function syncPush(items){try{if(window.__bridge)window.__bridge.push(items)}catch(e){}}
 const LS={get(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}},set(k,v){try{const s=JSON.stringify(v);localStorage.setItem(k,s);if(!noSync(k))syncPush([{key:k,value:s}])}catch{}}};
 function setSyncInd(ok){
   const e=document.getElementById('sync-ind');if(!e)return;
   e.textContent=ok?'🟢 Ортақ база қосулы':'⚠ Ортақ база жоқ — деректер тек осы құрылғыда';
   e.style.background=ok?'#dcfce7':'#fee2e2';e.style.color=ok?'#14532d':'#7f1d1d';
-}
-function syncPoll(){
-  fetch(SYNC_BASE+'/all?since='+syncSince).then(r=>r.json()).then(d=>{
-    if(!syncOK){syncOK=true}
-    setSyncInd(true);let ch=0;
-    for(const k in d){
-      syncSince=Math.max(syncSince,d[k].t||0);
-      if(noSync(k))continue;
-      if(localStorage.getItem(k)!==d[k].v){try{localStorage.setItem(k,d[k].v);ch++}catch(e){}}
-    }
-    if(ch)syncRefresh();
-  }).catch(()=>setSyncInd(false));
 }
 function syncRefresh(){
   try{
@@ -859,6 +810,31 @@ function syncRefresh(){
     else if(id==='s-ranking')showRanking();
   }catch(e){}
 }
+function exportAll(){
+  if(!user||!user.isAdmin)return;
+  const o={};
+  for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(!noSync(k))o[k]=localStorage.getItem(k)}
+  const blob=new Blob([JSON.stringify(o)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='ubt_backup_'+new Date().toISOString().slice(0,10)+'.json';
+  document.body.appendChild(a);a.click();a.remove();
+}
+function importAll(inp){
+  if(!user||!user.isAdmin)return;
+  const f=inp.files&&inp.files[0];if(!f)return;
+  const r=new FileReader();
+  r.onload=()=>{
+    try{
+      const o=JSON.parse(r.result);const ks=Object.keys(o).filter(k=>!noSync(k)&&typeof o[k]==='string');
+      if(!ks.length){alert('Файл бос немесе қате');return}
+      if(!confirm('Резервтік көшірмені қалпына келтіру керек пе? '+ks.length+' жазба қайта жазылады.'))return;
+      ks.forEach(k=>{localStorage.setItem(k,o[k])});
+      syncPush(ks.map(k=>({key:k,value:o[k]})));
+      alert('✅ Қалпына келтірілді');showAdmin();
+    }catch(e){alert('Файл оқылмады')}
+  };
+  r.readAsText(f);inp.value='';
+}
+
 function getAdminPass(){return LS.get('ubt_admin_pass','admin123')}
 function setAdminPass(p){LS.set('ubt_admin_pass',p)}
 let user=null;
@@ -2990,7 +2966,7 @@ function profExtra(){
   doLogout=function(){homeQuote=null;_lo()};
 })();
 applyTheme();
-setSyncInd(syncOK);setInterval(syncPoll,4000);
+setSyncInd(!!(window.__bridge&&window.__bridge.connected()));
 
 // ================= Мұғалім рөлі =================
 function isTeacherUser(){
@@ -3456,8 +3432,76 @@ function startUbt140(){
 })();
 try{if(user&&document.getElementById('s-home').classList.contains('active'))renderHomeExtras()}catch(e){}
 </script>
+<script>
+// ===== Streamlit екі жақты компонент көпірі =====
+(function(){
+  var sid=Math.random().toString(36).slice(2,10),n=0,pend={},unacked=[],pollN=0,booted=false,connected=false,first=true,flushT=null,lastH=0;
+  function noSync(k){return k==='ubt_current'||k==='ubt_dark'||k.indexOf('ubt_cd_')===0||k.indexOf('ubt_')!==0}
+  function post(m){m.isStreamlitMessage=true;try{window.parent.postMessage(m,'*')}catch(e){}}
+  function send(){post({type:'streamlit:setComponentValue',dataType:'json',value:{sid:sid,ops:unacked,poll:++pollN}})}
+  function push(items){
+    items.forEach(function(it){
+      n++;unacked=unacked.filter(function(o){return o.key!==it.key});
+      unacked.push({n:n,key:it.key,value:it.value});pend[it.key]=n;
+    });
+    if(flushT)clearTimeout(flushT);
+    flushT=setTimeout(function(){flushT=null;send()},250);
+  }
+  function boot(){
+    if(booted)return;booted=true;
+    var s=document.createElement('script');s.textContent=document.getElementById('app-src').textContent;document.body.appendChild(s);
+  }
+  function height(){
+    var h=950;try{h=Math.max(700,window.parent.innerHeight-16)}catch(e){}
+    if(h!==lastH){lastH=h;post({type:'streamlit:setFrameHeight',height:h})}
+  }
+  window.addEventListener('message',function(ev){
+    var d=ev.data;if(!d||d.type!=='streamlit:render')return;
+    var args=d.args||{},db=args.db||{},ack=(args.ack||{})[sid]||0,changed=0;
+    unacked=unacked.filter(function(o){return o.n>ack});
+    Object.keys(pend).forEach(function(k){if(pend[k]<=ack)delete pend[k]});
+    Object.keys(db).forEach(function(k){
+      if(noSync(k)||pend[k]!==undefined)return;
+      try{if(localStorage.getItem(k)!==db[k]){localStorage.setItem(k,db[k]);changed++}}catch(e){}
+    });
+    if(first){
+      first=false;var up=[];
+      try{for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(!noSync(k)&&!(k in db))up.push({key:k,value:localStorage.getItem(k)})}}catch(e){}
+      if(up.length)push(up);
+    }
+    connected=true;height();
+    if(!booted)boot();
+    else{try{setSyncInd(true);if(changed)syncRefresh()}catch(e){}}
+  });
+  window.__bridge={push:push,connected:function(){return connected}};
+  post({type:'streamlit:componentReady',apiVersion:1});height();
+  setInterval(function(){if(connected&&document.visibilityState!=='hidden')send()},5000);
+  setTimeout(boot,2500);
+})();
+</script>
 </body>
 </html>
 """
 
-components.html(html_code, height=950, scrolling=True)
+
+# Frontend (HTML) файлын құрамыз және екі жақты компонент ретінде қосамыз
+def _write_frontend():
+    os.makedirs(FRONT_DIR, exist_ok=True)
+    path = os.path.join(FRONT_DIR, "index.html")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            old = f.read()
+    except Exception:
+        old = None
+    if old != html_code:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(html_code)
+
+
+_write_frontend()
+_ubt_comp = components.declare_component("ubt_plus", path=FRONT_DIR)
+
+_apply_ops(st.session_state.get("ubt_comp"))
+_res = _ubt_comp(db=_snapshot(), ack=dict(st.session_state.get("_ubt_ack", {})), key="ubt_comp", default=None)
+if _apply_ops(_res):
+    st.rerun()
