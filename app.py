@@ -879,7 +879,10 @@ st.markdown("""<style>
 </style>
 <style id="ubt-manage-css">
 [data-testid="manage-app-button"],[class*="_terminalButton_"],[class*="_viewerBadge_"],[class*="viewerBadge"],[class*="_profileContainer_"],.stAppDeployButton,[data-testid="stToolbar"],[data-testid="stDecoration"],[data-testid="stStatusWidget"]{display:none!important}
-.block-container,[data-testid="stMainBlockContainer"]{padding:0!important;max-width:100%!important}
+html,body,.stApp,[data-testid="stAppViewContainer"],[data-testid="stMain"],section.main{margin:0!important;padding:0!important}
+[data-testid="stHeader"],[data-testid="stAppHeader"]{display:none!important;height:0!important}
+.block-container,[data-testid="stMainBlockContainer"],[data-testid="stAppViewBlockContainer"]{padding:0!important;max-width:100%!important;margin:0!important}
+[data-testid="stElementContainer"]{margin:0!important}
 [data-testid="stVerticalBlock"]{gap:0!important}
 iframe{border:none!important;display:block!important;width:100%!important}
 </style>""", unsafe_allow_html=True)
@@ -899,11 +902,11 @@ html_code = r"""
 body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t);min-height:var(--vh);line-height:1.5}
 html,body{overflow-x:hidden}
 .screen{display:none;min-height:var(--vh)}.screen.active{display:block}
-.wrap{max-width:760px;margin:0 auto;padding:32px 16px 110px}
+.wrap{max-width:880px;margin:0 auto;padding:32px 16px 110px}
 .tmain{padding-bottom:110px!important}
 .topback{position:relative;z-index:60;will-change:transform;background:var(--bg);padding:8px 0;margin:-20px 0 10px;display:flex}
 .topback .btn{box-shadow:0 1px 4px rgba(0,0,0,.08)}
-.wrap.wide{max-width:920px}
+.wrap.wide{max-width:1200px}
 .hdr{text-align:center;margin-bottom:28px}
 .logo{display:inline-flex;align-items:center;justify-content:center;width:72px;height:72px;background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;font-weight:800;font-size:26px;border-radius:20px;margin-bottom:14px;box-shadow:0 8px 24px rgba(37,99,235,.35);letter-spacing:-0.5px}
 .hdr h1{font-size:26px;font-weight:700;margin-bottom:4px}
@@ -3014,6 +3017,23 @@ function kickedOut(){
 }
 window.__kicked=kickedOut;
 setInterval(updWatermark,5000);
+
+// ---- Қолданбаны бүкіл экранға жаю (iframe-ді терезеге бекіту)
+const PIN_CSS='position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;height:100dvh!important;max-width:none!important;margin:0!important;padding:0!important;border:0!important;z-index:999990!important;background:var(--bg,#f1f5f9)';
+function pinFrame(){
+  try{
+    const fe=window.frameElement;if(!fe)return;
+    if(fe.getAttribute('scrolling')!=='yes')fe.setAttribute('scrolling','yes');
+    if(fe.style.position!=='fixed'||fe.style.width!=='100vw'){
+      if(lock&&lock.oldStyle!==null&&lock.oldStyle!==undefined){/* тест кезінде lockExpand басқарады */}
+      fe.style.cssText=PIN_CSS;
+    }
+    const d=fe.ownerDocument;
+    if(d&&d.body&&d.body.style.overflow!=='hidden')d.body.style.overflow='hidden';
+    if(d&&d.documentElement&&d.documentElement.style.overflow!=='hidden')d.documentElement.style.overflow='hidden';
+  }catch(e){}
+}
+pinFrame();setInterval(pinFrame,1500);window.addEventListener('resize',pinFrame);
 
 // «Manage app» батырмасы: әдепкіде жасырын, тек админ панелінде ғана көрінеді
 const MANAGE_SEL='[data-testid="manage-app-button"],[class*="_terminalButton_"],[class*="_viewerBadge_"],[class*="viewerBadge"],[class*="_profileContainer_"],.stAppDeployButton,[data-testid="stToolbar"],[data-testid="stDecoration"],[data-testid="stStatusWidget"]';
