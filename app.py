@@ -1,28 +1,107 @@
+import json
+import os
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
 import streamlit as st
 import streamlit.components.v1 as components
 
-import base64, io, os
-from PIL import Image
+# ======================================================================
+# Ортақ дерекқор: барлық құрылғы мен қолданушы бір деректі көреді
+# (тесттер, сұрақтар, аккаунттар, сыныптар...). Деректер ubt_data.json файлында.
+# Осы порт (SYNC_PORT) браузерден қолжетімді болуы керек (бір Wi-Fi / сервер).
+# ======================================================================
+SYNC_PORT = 8765
+DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ubt_data.json")
+_LOCK = threading.Lock()
+_NO_SYNC = ("ubt_current", "ubt_dark")
 
-# ====== БРЕНД ОРНАТУЛАРЫ — тек осы жерді өзгертіңіз ======
-APP_NAME = "UstaZ"
-TAGLINE  = "ҰБТ-ға дайындық платформасы"
-LOGO_FILE = "logo.png"   # осы файл .py қасында тұрса, соны қолданады; болмаса төмендегі логотип қолданылады
-# =========================================================
 
-_DEFAULT_LOGO_B64 = "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"
+def _db_load():
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
-def _load_logo():
-    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), LOGO_FILE)
-    if os.path.exists(p):
-        with open(p, "rb") as f:
-            return f.read()
-    return base64.b64decode(_DEFAULT_LOGO_B64)
 
-_logo_bytes = _load_logo()
-LOGO_DATA_URI = "data:image/png;base64," + base64.b64encode(_logo_bytes).decode()
+def _db_save(d):
+    tmp = DATA_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(d, f, ensure_ascii=False)
+    os.replace(tmp, DATA_FILE)
 
-st.set_page_config(page_title=APP_NAME, page_icon=Image.open(io.BytesIO(_logo_bytes)), layout="wide", initial_sidebar_state="collapsed")
+
+def _key_ok(k):
+    return isinstance(k, str) and k.startswith("ubt_") and len(k) < 200 and k not in _NO_SYNC and not k.startswith("ubt_cd_")
+
+
+class _SyncHandler(BaseHTTPRequestHandler):
+    def _send(self, code, obj):
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_OPTIONS(self):
+        self._send(204, {})
+
+    def do_GET(self):
+        if not self.path.startswith("/all"):
+            return self._send(404, {})
+        since = 0.0
+        if "since=" in self.path:
+            try:
+                since = float(self.path.split("since=")[1].split("&")[0])
+            except Exception:
+                since = 0.0
+        with _LOCK:
+            db = _db_load()
+        self._send(200, {k: v for k, v in db.items() if v.get("t", 0) > since})
+
+    def do_POST(self):
+        try:
+            n = int(self.headers.get("Content-Length", "0"))
+            if n > 8_000_000:
+                return self._send(413, {"ok": False})
+            data = json.loads(self.rfile.read(n).decode("utf-8"))
+            items = data.get("items") if isinstance(data.get("items"), list) else [data]
+            import time
+            with _LOCK:
+                db = _db_load()
+                t = time.time()
+                for it in items:
+                    k, v = it.get("key"), it.get("value")
+                    if _key_ok(k) and isinstance(v, str):
+                        db[k] = {"v": v, "t": t}
+                _db_save(db)
+            self._send(200, {"ok": True, "t": t})
+        except Exception:
+            self._send(400, {"ok": False})
+
+    def log_message(self, *a):
+        pass
+
+
+@st.cache_resource
+def _start_sync_server():
+    try:
+        srv = ThreadingHTTPServer(("0.0.0.0", SYNC_PORT), _SyncHandler)
+    except OSError:
+        return False
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return True
+
+
+_start_sync_server()
+
+st.set_page_config(page_title="ҰБТ+", page_icon="📘", layout="wide", initial_sidebar_state="collapsed")
 st.markdown("""<style>#MainMenu,footer,header{visibility:hidden}.block-container{padding:0!important;max-width:100%!important}iframe{border:none!important}</style>""", unsafe_allow_html=True)
 
 html_code = r"""
@@ -31,7 +110,7 @@ html_code = r"""
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>%%NAME%%</title>
+<title>ҰБТ+</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{--p:#2563eb;--pd:#1d4ed8;--ok:#16a34a;--err:#dc2626;--warn:#f59e0b;--bg:#f1f5f9;--c:#fff;--t:#0f172a;--m:#64748b;--b:#e2e8f0}
@@ -77,7 +156,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 .empty{text-align:center;padding:40px 16px;color:var(--m)}.empty .ic{font-size:36px;margin-bottom:10px}
 .profile-bar{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:var(--c);border-bottom:1px solid var(--b);margin-bottom:20px}
 .profile-bar .name{font-weight:600;font-size:14px}
-.avatar{width:36px;height:36px;border-radius:28%;background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;letter-spacing:-.5px;box-shadow:0 6px 16px rgba(37,99,235,.35);flex-shrink:0}
+.avatar{width:36px;height:36px;border-radius:50%;background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px}
 .tlay{display:flex;min-height:100vh}
 .side{width:260px;background:var(--c);border-right:1px solid var(--b);display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
 .side-h{padding:12px;border-bottom:1px solid var(--b);display:flex;justify-content:space-between;align-items:center;font-weight:600;font-size:13px}
@@ -130,40 +209,6 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 }
 
 body.locked{user-select:none;-webkit-user-select:none}
-#tools-root input{-webkit-user-select:text;user-select:text}
-.tfab{position:fixed;right:12px;bottom:92px;z-index:99990;display:flex;flex-direction:column;gap:10px}
-.tfab button{width:50px;height:50px;border-radius:16px;border:none;cursor:pointer;font-size:22px;color:#fff;background:linear-gradient(135deg,#2563eb,#7c3aed);box-shadow:0 6px 18px rgba(37,99,235,.4);display:flex;align-items:center;justify-content:center}
-.tfab button:active{transform:scale(.94)}
-.tfab small{display:block;font-size:9px;font-weight:700;margin-top:-2px}
-#pt-ov{display:none;position:fixed;inset:0;z-index:99995;background:rgba(15,23,42,.65);padding:10px;overflow:auto}
-#pt-ov.show{display:block}
-.pt-box{background:var(--c);color:var(--t);border-radius:16px;padding:14px;max-width:1100px;margin:0 auto;box-shadow:0 20px 50px rgba(0,0,0,.4)}
-.pt-top{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px}
-.pt-top h3{font-size:16px;margin:0}
-.pt-x{border:none;background:var(--b);color:var(--t);width:34px;height:34px;border-radius:10px;font-size:18px;cursor:pointer}
-.pt-info{min-height:44px;padding:8px 12px;border-radius:12px;background:var(--bg);font-size:13px;margin-bottom:8px;line-height:1.5}
-.pt-scroll{overflow-x:auto;padding-bottom:6px}
-.pt-grid{display:grid;grid-template-columns:repeat(18,minmax(46px,1fr));grid-template-rows:repeat(7,auto) 10px auto auto;gap:3px;min-width:860px}
-.pt-c{border-radius:6px;padding:3px 2px;text-align:center;color:#0f172a;cursor:pointer;line-height:1.15;border:2px solid transparent;user-select:none}
-.pt-c:hover,.pt-c.sel{border-color:#0f172a;transform:scale(1.06);z-index:2;position:relative}
-.pt-c .n{font-size:9px;text-align:left;padding-left:2px;opacity:.75}
-.pt-c .s{font-size:16px;font-weight:800}
-.pt-c .m{font-size:8px;opacity:.8}
-.pt-ph{border-radius:6px;font-size:10px;display:flex;align-items:center;justify-content:center;color:#0f172a;opacity:.85}
-.pt-leg{display:flex;flex-wrap:wrap;gap:6px 12px;margin-top:10px;font-size:11px}
-.pt-leg span{display:inline-flex;align-items:center;gap:5px}
-.pt-leg i{width:12px;height:12px;border-radius:3px;display:inline-block}
-.c-alk{background:#fca5a5}.c-ae{background:#fdba74}.c-tm{background:#fde68a}.c-pt{background:#bef264}.c-mtl{background:#5eead4}.c-nm{background:#86efac}.c-hal{background:#7dd3fc}.c-ng{background:#c4b5fd}.c-lan{background:#f9a8d4}.c-act{background:#fda4af}
-#calc-box{display:none;position:fixed;right:72px;bottom:92px;z-index:99992;width:min(290px,calc(100vw - 90px));background:var(--c);color:var(--t);border:1px solid var(--b);border-radius:18px;padding:12px;box-shadow:0 16px 40px rgba(0,0,0,.35)}
-#calc-box.show{display:block}
-.calc-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-weight:700;font-size:14px}
-#calc-hist{min-height:16px;font-size:11px;color:var(--m);text-align:right;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-#calc-in{width:100%;box-sizing:border-box;font-size:22px;font-weight:700;text-align:right;padding:8px 10px;border:1px solid var(--b);border-radius:10px;background:var(--bg);color:var(--t);margin-bottom:8px;font-family:inherit}
-.calc-g{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
-.calc-g button{padding:10px 0;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;background:var(--bg);color:var(--t);font-family:inherit}
-.calc-g button:active{transform:scale(.95)}
-.calc-g .op{background:#dbeafe;color:#1d4ed8}.calc-g .fn{font-size:13px;color:var(--m)}.calc-g .eq{background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff}.calc-g .cl{background:#fee2e2;color:#dc2626}
-.calc-note{font-size:10px;color:var(--m);margin-top:6px;text-align:center}
 #lock-ov{display:none;position:fixed;inset:0;z-index:100000;background:rgba(15,23,42,.97);color:#fff;align-items:center;justify-content:center;text-align:center;padding:24px}
 #lock-ov.show{display:flex}
 #lock-ov .box{max-width:440px}
@@ -265,11 +310,6 @@ body.dark #admin-chat input,body.dark #admin-chat textarea{color:#111}
 .crow{display:flex;gap:8px;margin-top:8px}
 .crow input{flex:1;padding:10px 12px;border:1px solid var(--b);border-radius:10px;background:var(--bg);color:var(--t);font-family:inherit;font-size:14px}
 body.dark .cmsg.sys{background:#422006;color:#fcd34d}
-.ch-it{display:flex;align-items:center;gap:10px;background:var(--c);border:2px solid var(--b);border-radius:11px;padding:10px 12px;margin-bottom:8px;cursor:grab}
-.ch-it.ok{border-color:var(--ok)}.ch-it.bad{border-color:var(--err)}
-.ch-n{width:26px;height:26px;border-radius:50%;background:var(--bg);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex-shrink:0;color:var(--m)}
-.ch-t{flex:1;font-size:14px}.ch-y{color:var(--p);font-size:15px}.ch-b{display:flex;gap:4px}
-#rep-ov{display:none;position:fixed;inset:0;z-index:100001;background:rgba(15,23,42,.6);align-items:center;justify-content:center;padding:16px;overflow-y:auto}
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
@@ -279,26 +319,20 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
 
 <button id="theme-btn" class="btn btn-s" onclick="toggleTheme()" title="Қараңғы / жарық режим">🌙</button>
 <canvas id="confetti"></canvas>
+<div id="sync-ind" style="position:fixed;left:10px;bottom:10px;z-index:90;font-size:11px;padding:4px 10px;border-radius:12px;box-shadow:0 1px 6px rgba(0,0,0,.15)"></div>
 
 <div id="lock-ov"><div class="box"><div style="font-size:46px">🔒</div><h2 id="lock-title">Тест жалғасуда</h2><p id="lock-msg"></p><button class="btn btn-p" onclick="returnToTest()">Толық экранға оралу</button></div></div>
 
-<div id="rep-ov"><div class="card" style="max-width:460px;width:100%;margin:0">
-  <h3>⚠ Сұраққа шағымдану</h3>
-  <div class="sub" id="rep-q" style="margin:6px 0 12px;max-height:90px;overflow:auto"></div>
-  <div class="fg"><label>Қате түрі</label><select id="rep-type"><option>Дұрыс емес жауап белгіленген</option><option>Дұрыс жауап нұсқада жоқ</option><option>Бірнеше нұсқа дұрыс</option><option>Грамматикалық / емле қатесі</option><option>Омоним / екі мағыналы сөз</option><option>Басқа</option></select></div>
-  <div class="fg"><label>Түсініктеме (міндетті емес)</label><textarea id="rep-note" maxlength="400" placeholder="Не қате екенін қысқаша жазыңыз"></textarea></div>
-  <div class="row"><button class="btn btn-p" onclick="sendReport()">Жіберу</button><button class="btn btn-s" onclick="closeReport()">Болдырмау</button></div>
-</div></div>
-
 <div id="s-login" class="screen active">
   <div class="wrap">
-    <div class="hdr"><div class="logo" style="background:none;box-shadow:none"><img src="%%LOGO%%" alt="" style="width:100%;height:100%;border-radius:20px;display:block"></div><h1>%%NAME%%</h1><p class="sub">%%TAGLINE%%</p></div>
+    <div class="hdr"><div class="logo">Ұ+</div><h1>ҰБТ+</h1><p class="sub">ҰБТ-ға дайындық платформасы</p></div>
     <div class="card" id="login-box">
       <div class="fg"><label>Логин (атыңыз)</label><input id="login-name" placeholder="Атыңыз" oninput="checkAdminName()"></div>
       <div class="fg"><label>Пароль</label><input id="login-pass" type="password" placeholder="Пароль"></div>
       <div class="fg" id="admin-pass-wrap" style="display:none"><label class="sub">Админ ретінде кіру</label></div>
       <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doLogin()">Кіру</button>
       <button class="btn btn-s" style="width:100%;margin-bottom:10px" onclick="showRegister()">Тіркелу</button>
+      <button class="btn btn-s btn-sm" style="width:100%;margin-bottom:10px" onclick="showForgot()">Парольді ұмыттым</button>
       <button class="btn btn-s btn-sm" style="width:100%;margin-bottom:10px" onclick="showTeacherReg()">👨‍🏫 Мұғалімдерге арналған кабинет</button>
       <button class="btn btn-w btn-sm" style="width:100%" onclick="showContactAdmin()">💬 Админге жазу</button>
     </div>
@@ -335,7 +369,7 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
     <div class="card" id="contact-box" style="display:none;padding:0;overflow:hidden">
       <div style="background:#075e54;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:12px">
         <div style="width:40px;height:40px;border-radius:50%;background:#128c7e;display:flex;align-items:center;justify-content:center;font-weight:700">А</div>
-        <div style="flex:1"><div style="font-weight:600;font-size:15px">Админ</div><div id="chat-sub" style="font-size:12px;opacity:.85">%%NAME%% қолдау</div></div>
+        <div style="flex:1"><div style="font-weight:600;font-size:15px">Админ</div><div id="chat-sub" style="font-size:12px;opacity:.85">ҰБТ+ қолдау</div></div>
         <button class="btn btn-sm" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,.4)" onclick="closeChat()">✕</button>
       </div>
       <div id="chat-gate" style="padding:20px 16px;background:#f0f0f0">
@@ -358,7 +392,7 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
 <div id="s-user-view" class="screen">
   <div class="wrap">
     <div class="hdr">
-      <div class="avatar" id="uv-avatar" style="width:64px;height:64px;font-size:24px;margin:0 auto 10px">?</div>
+      <div class="avatar" id="uv-avatar" style="width:64px;height:64px;font-size:24px;margin:0 auto 10px;border:3px solid #93c5fd">?</div>
       <h2 id="uv-name">User</h2>
       <p class="sub" id="uv-info">—</p>
     </div>
@@ -383,7 +417,7 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
   <div class="profile-bar">
     <div style="display:flex;align-items:center;gap:12px;cursor:pointer" onclick="showMyProfile()">
       <div style="position:relative">
-        <div class="avatar" id="avatar" style="width:44px;height:44px;font-size:16px">?</div>
+        <div class="avatar" id="avatar" style="width:44px;height:44px;font-size:16px;border:3px solid #93c5fd">?</div>
         <span id="p-verified" style="display:none;position:absolute;bottom:-2px;right:-2px;background:#2563eb;color:#fff;width:18px;height:18px;border-radius:50%;font-size:11px;line-height:18px;text-align:center;border:2px solid #fff">✓</span>
       </div>
       <div>
@@ -411,15 +445,14 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
       <button class="btn btn-s btn-sm" onclick="showMistakes()">❌ Қателер</button>
       <button class="btn btn-s btn-sm" onclick="showHistory()">📋 Тарих</button>
       <button class="btn btn-s btn-sm" onclick="startQuickSubject()">⚡ Жылдам</button>
-      <button class="btn btn-s btn-sm" onclick="show140()">🎓 ҰБТ 140</button>
-      <button class="btn btn-s btn-sm" onclick="showChrono()">🕰 Хронология</button>
       <button class="btn btn-s btn-sm" onclick="showFileTest()">📂 Файлдан</button>
       <button class="btn btn-s btn-sm" onclick="showMyProfile()">📈 График</button>
       <button class="btn btn-s btn-sm" onclick="showFlash()">🃏 Флеш-карталар</button>
       <button class="btn btn-s btn-sm" onclick="showGloss()">📖 Глоссарий</button>
       <button class="btn btn-s btn-sm" onclick="showBookmarks()">🔖 Таңдаулылар</button>
       <button class="btn btn-s btn-sm" onclick="showPlanner()">🗓 Жоспар</button>
-      <button class="btn btn-s btn-sm" onclick="showTeacher()">👨‍🏫 Мұғалім</button>
+      <button class="btn btn-s btn-sm" onclick="showTeacher()">🏫 Сынып / Мұғалім</button>
+      <button class="btn btn-s btn-sm" onclick="showUbt140()">🎓 140 формат</button>
       <button class="btn btn-w btn-sm" onclick="openContactFromApp()">💬 Админге</button>
       <button class="btn btn-w btn-sm" id="admin-btn" style="display:none" onclick="showAdmin()">🛠 Админ</button>
     </div>
@@ -430,8 +463,8 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
   <div class="wrap">
     <div class="hdr">
       <div style="position:relative;width:80px;margin:0 auto 12px">
-        <div class="avatar" id="prof-avatar" style="width:80px;height:80px;font-size:32px">?</div>
-        <img src="%%LOGO%%" alt="" style="position:absolute;bottom:-4px;left:-6px;width:26px;height:26px;border-radius:8px;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.2)"><span id="prof-verified" style="display:none;position:absolute;bottom:0;right:0;background:#2563eb;color:#fff;width:24px;height:24px;border-radius:50%;font-size:14px;line-height:24px;text-align:center;border:2px solid #fff">✓</span>
+        <div class="avatar" id="prof-avatar" style="width:80px;height:80px;font-size:32px;border:4px solid #93c5fd">?</div>
+        <span id="prof-verified" style="display:none;position:absolute;bottom:0;right:0;background:#2563eb;color:#fff;width:24px;height:24px;border-radius:50%;font-size:14px;line-height:24px;text-align:center;border:2px solid #fff">✓</span>
       </div>
       <h2 id="prof-name">User</h2>
       <p class="sub" id="prof-title">Атақ жоқ</p>
@@ -459,9 +492,8 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
 
 <div id="s-public" class="screen">
   <div class="wrap">
-    <div class="hdr"><h2>🌐 Жария тесттер</h2><p class="sub">Барлық пайдаланушылардың тесттері — пән бойынша таңдаңыз</p></div>
-    <div class="fg"><select id="pub-subj" onchange="pubSubj=this.value;showPublicTests(true)"></select></div>
-    <div class="row" style="margin-bottom:12px"><button class="btn btn-s btn-sm" onclick="show140()">🎓 ҰБТ 140 форматы</button></div>
+    <div class="hdr"><h2>🌐 Жария тесттер</h2><p class="sub">Барлық пайдаланушылардың тесттері</p></div>
+    <div id="public-subj" class="row" style="justify-content:flex-start;margin-bottom:12px"></div>
     <div id="public-list" class="list"></div>
     <div class="row" style="margin-top:20px"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
@@ -480,7 +512,7 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
 
 <div id="s-create" class="screen">
   <div class="wrap">
-    <div class="hdr"><h2 id="c-hdr">➕ Тест құру</h2><p class="sub">Тестке ат беріп, пәнді таңдаңыз да, сұрақтарды өзіңіз қосыңыз</p></div>
+    <div class="hdr"><h2>➕ Тест құру</h2><p class="sub">Тестке ат беріп, пәнді таңдаңыз да, сұрақтарды өзіңіз қосыңыз</p></div>
     <div class="card">
       <div class="fg"><label>Пән *</label>
         <select id="c-subject">
@@ -503,20 +535,18 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
       </div>
       <div class="fg"><label>Тест атауы * <span class="sub">(мыс: «Функция», «Ньютон заңдары»)</span></label><input id="c-topic" placeholder="Атауын жазыңыз (файл атынан автоматты толады)"></div>
       <div class="fg"><label>Сипаттама (міндетті емес)</label><input id="c-desc" placeholder="Қысқаша сипаттама"></div>
-      <div class="fg" id="c-request-wrap"><label class="switch"><input type="checkbox" id="c-request"> 🌐 Жариялауға жіберу (админ мақұлдаған соң шығады)</label></div>
-      <div class="fg" id="c-140-wrap"><label class="switch"><input type="checkbox" id="c-140" onchange="if(this.checked){var r=document.getElementById('c-request');if(r)r.checked=true}"> 🎓 ҰБТ 140 форматы (барлығы тапсыратын толық тест; админге барып, мақұлданған соң шығады)</label></div>
-      <div id="c-staff" style="display:none">
-        <div class="fg"><label>🏫 Сынып (таңдасаңыз — тек сол сынып оқушылары тапсырады)</label><select id="c-class"></select></div>
-        <div class="grid2">
-          <div class="fg"><label>⏱ Таймер (минут, бос = автомат)</label><input id="c-time" type="number" min="0" max="600" placeholder="Мыс: 40"></div>
-          <div class="fg"><label>🔁 Лимит: неше рет тапсыра алады (бос = шексіз)</label><input id="c-limit" type="number" min="0" max="50" placeholder="Мыс: 2"></div>
-        </div>
-      </div>
+      <div class="fg"><label class="switch"><input type="checkbox" id="c-request"> 🌐 Жариялауға жіберу (админ мақұлдаған соң шығады)</label></div>
+    </div>
+    <div class="card" id="c-teacher-opts" style="display:none">
+      <h3 style="margin-bottom:10px">🏫 Мұғалім баптаулары</h3>
+      <div class="fg"><label>Кімге арналған тест?</label><select id="c-class"></select></div>
+      <div class="fg"><label>⏱ Таймер (минут) <span class="sub">(бос = автоматты)</span></label><input type="number" id="c-timer" min="1" max="300" placeholder="Мыс: 40"></div>
+      <div class="fg"><label>Лимит: бір оқушы неше рет тапсыра алады? <span class="sub">(бос = шексіз)</span></label><input type="number" id="c-limit" min="1" max="20" placeholder="Мыс: 1"></div>
     </div>
     <div id="c-manual-host"></div>
     <div class="row">
       <button class="btn btn-p" onclick="createFromFile()">💾 Тестті сақтау</button>
-      <button class="btn btn-s" onclick="cancelCreate()">Болдырмау</button>
+      <button class="btn btn-s" onclick="goHome()">Болдырмау</button>
     </div>
   </div>
 </div>
@@ -524,6 +554,7 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
 <div id="s-edit" class="screen">
   <div class="wrap">
     <div class="hdr"><h2 id="edit-title">Тестті өңдеу</h2><p class="sub">Жаңа сұрақтарды қолмен қосыңыз</p></div>
+    <div id="e-settings"></div>
     <div id="e-manual-host"></div>
     <div id="edit-qlist" class="list"></div>
     <div class="row" style="margin-top:16px"><button class="btn btn-s" onclick="showMyTests()">Артқа</button></div>
@@ -561,7 +592,7 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
         <div class="prog-t" id="viol" style="display:none;background:#fef2f2;color:var(--err)"></div>
       </div>
       <div class="qc">
-        <div class="qh"><span class="qnum" id="qnum">Сұрақ 1</span><span style="display:flex;gap:6px"><button class="flag" id="bm" onclick="togBm()" title="Таңдаулыға сақтау">☆</button><button class="flag" id="rep" onclick="openReport()" title="Қатені хабарлау / Шағымдану">⚠</button><button class="flag" id="flag" onclick="togFlag()">🚩</button></span></div>
+        <div class="qh"><span class="qnum" id="qnum">Сұрақ 1</span><span style="display:flex;gap:6px"><button class="flag" id="bm" onclick="togBm()" title="Таңдаулыға сақтау">☆</button><button class="flag" id="flag" onclick="togFlag()">🚩</button></span></div>
         <div class="qt" id="qtext"></div>
         <div class="opts" id="opts"></div>
       </div>
@@ -570,27 +601,6 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
         <button class="btn btn-p" id="next" onclick="nextQ()">Келесі →</button>
       </div>
     </main>
-  </div>
-  <div id="tools-root">
-    <div class="tfab">
-      <button onclick="togPT()" title="Менделеев кестесі">🧪<small>Менд.</small></button>
-      <button onclick="togCalc()" title="Калькулятор">🧮<small>Калк.</small></button>
-    </div>
-    <div id="calc-box">
-      <div class="calc-top"><span>🧮 Калькулятор</span><button class="pt-x" style="width:28px;height:28px;font-size:14px" onclick="togCalc(false)">✕</button></div>
-      <div id="calc-hist"></div>
-      <input id="calc-in" inputmode="none" autocomplete="off" placeholder="0" onkeydown="if(event.key==='Enter'){event.preventDefault();calcEq()}">
-      <div class="calc-g" id="calc-g"></div>
-      <div class="calc-note">sin, cos, tan — градуспен есептеледі</div>
-    </div>
-    <div id="pt-ov" onclick="if(event.target===this)togPT(false)">
-      <div class="pt-box">
-        <div class="pt-top"><h3>🧪 Д. И. Менделеевтің химиялық элементтер кестесі</h3><button class="pt-x" onclick="togPT(false)">✕</button></div>
-        <div class="pt-info" id="pt-info">Элементті басыңыз — ақпарат осы жерде шығады.</div>
-        <div class="pt-scroll"><div class="pt-grid" id="pt-grid"></div></div>
-        <div class="pt-leg" id="pt-leg"></div>
-      </div>
-    </div>
   </div>
 </div>
 
@@ -706,47 +716,6 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
   </div>
 </div>
 
-<div id="s-chrono" class="screen">
-  <div class="wrap">
-    <div class="hdr"><h2>🕰 Хронологиялық тренажер</h2><p class="sub">Оқиғаларды уақыт ретімен (ертеден кешке қарай) орналастырыңыз: сүйреңіз немесе ▲▼ басыңыз</p></div>
-    <div class="card" id="ch-setup">
-      <div class="fg"><label>Тақырып</label><select id="ch-cat"><option value="kz">Қазақстан тарихы</option><option value="world">Дүниежүзі тарихы</option><option value="mix">Аралас</option></select></div>
-      <div class="fg"><label>Оқиға саны</label><select id="ch-n"><option value="4">4</option><option value="5" selected>5</option></select></div>
-      <button class="btn btn-p" onclick="chStart()">▶ Бастау</button>
-    </div>
-    <div class="card" id="ch-play" style="display:none">
-      <div class="sub" id="ch-info" style="margin-bottom:10px"></div>
-      <div id="ch-list"></div>
-      <div class="row" style="margin-top:12px"><button class="btn btn-p" id="ch-check" onclick="chCheck()">✓ Тексеру</button><button class="btn btn-ok" id="ch-next" style="display:none" onclick="chStart()">Келесі →</button><button class="btn btn-s" onclick="showChrono()">Баптау</button></div>
-      <div id="ch-res" style="margin-top:12px"></div>
-    </div>
-    <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
-  </div>
-</div>
-
-<div id="s-tset" class="screen">
-  <div class="wrap">
-    <div class="hdr"><h2>⚙ Тест баптаулары</h2><p class="sub" id="ts-name"></p></div>
-    <div class="card">
-      <div class="fg"><label>🏫 Сынып (таңдасаңыз — тек сол сынып оқушылары тапсырады)</label><select id="ts-class"></select></div>
-      <div class="fg"><label>⏱ Таймер (минут). Бос немесе 0 = автомат</label><input id="ts-time" type="number" min="0" max="600"></div>
-      <div class="fg"><label>🔁 Лимит: бір оқушы неше рет тапсыра алады (0 = шексіз)</label><input id="ts-limit" type="number" min="0" max="50"></div>
-      <div class="fg"><label class="switch"><input type="checkbox" id="ts-140"> 🎓 ҰБТ 140 форматы</label></div>
-      <p class="sub" id="ts-note" style="margin-bottom:12px"></p>
-      <div class="row"><button class="btn btn-p" onclick="saveTestSettings()">💾 Сақтау</button><button class="btn btn-s" onclick="tsetBack()">Артқа</button></div>
-    </div>
-  </div>
-</div>
-
-<div id="s-u140" class="screen">
-  <div class="wrap">
-    <div class="hdr"><h2>🎓 ҰБТ 140 форматы</h2><p class="sub">Толық ҰБТ форматындағы тесттер. Жаңа тест админге барып, мақұлданған соң барлығына шығады</p></div>
-    <div id="u140-mine"></div>
-    <div id="u140-list" class="list"></div>
-    <div class="row" style="margin-top:20px"><button class="btn btn-p" onclick="showCreate140()">➕ 140 тест ұсыну</button><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
-  </div>
-</div>
-
 <div id="s-teacher" class="screen">
   <div class="wrap wide">
     <div class="hdr"><h2>👨‍🏫 Мұғалім / Куратор</h2><p class="sub">Сынып құрып, оқушылардың нәтижесін бақылаңыз</p></div>
@@ -755,11 +724,6 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
       <h3 style="margin-bottom:10px">➕ Жаңа сынып</h3>
       <div class="fg"><input id="tch-name" placeholder="Сынып атауы (мыс: 11 «А»)" maxlength="40"></div>
       <button class="btn btn-ok btn-sm" onclick="createClass()">Сынып құру</button>
-    </div>
-    <div class="card" id="tch-test-card" style="display:none">
-      <h3 style="margin-bottom:6px">📝 Сыныбыма тест құру</h3>
-      <p class="sub" style="margin-bottom:10px">Сыныпты таңдап, тек сол сынып оқушылары тапсыратын тест жасаңыз. Таймер мен лимитті өзіңіз қоясыз.</p>
-      <button class="btn btn-p btn-sm" onclick="startClassTestCreate()">📝 Тест құруды бастау</button>
     </div>
     <div class="card" id="tch-req-card">
       <h3 style="margin-bottom:6px">📨 Сынып ашуға өтініш</h3>
@@ -771,6 +735,7 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
     </div>
     <div id="tch-reqs"></div>
     <div id="tch-classes"></div>
+    <div id="tch-ctests"></div>
     <div id="tch-chat"></div>
     <div id="tch-detail"></div>
     <div class="card">
@@ -779,6 +744,19 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
       <div class="fg"><input id="tch-code" placeholder="Сынып коды" maxlength="8" style="text-transform:uppercase"></div>
       <button class="btn btn-p btn-sm" onclick="joinClass()">Қосылу</button>
       <div id="tch-joined" style="margin-top:12px"></div>
+    </div>
+    <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+  </div>
+</div>
+
+<div id="s-ubt140" class="screen">
+  <div class="wrap">
+    <div class="hdr"><h2>🎓 ҰБТ 140 формат</h2><p class="sub">140 сұрақ: тарих 20 · оқу сауаттылығы 10 · мат. сауаттылық 10 · 2 бейіндік пән × 40 · 240 минут</p></div>
+    <div class="card">
+      <div class="fg"><label>1-бейіндік пән</label><select id="u-p1" onchange="renderUbt140()"></select></div>
+      <div class="fg"><label>2-бейіндік пән</label><select id="u-p2" onchange="renderUbt140()"></select></div>
+      <div id="u-info"></div>
+      <button class="btn btn-p" onclick="startUbt140()">▶ Бастау</button>
     </div>
     <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
@@ -793,33 +771,8 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
       <div id="admin-pending" class="list"></div>
     </div>
     <div class="card" style="padding:20px">
-      <h3 style="margin-bottom:12px">⚠ Сұрақтарға шағымдар <span id="admin-reports-count" class="badge" style="background:#fef3c7;color:#92400e"></span></h3>
-      <div id="admin-reports" class="list"></div>
-    </div>
-    <div class="card" style="padding:20px">
-      <h3 style="margin-bottom:6px">🔐 Доступтар</h3>
-      <p class="sub" style="margin-bottom:12px">Қай мүмкіндікті кімге беру керегін өзіңіз басқарасыз: бәріне ортақ немесе жеке адамға бөлек. Қолданушыны бұғаттауға да болады.</p>
-      <h4 style="margin-bottom:8px">👥 Барлығына</h4>
-      <div id="perm-global"></div>
-      <h4 style="margin:16px 0 8px">👤 Жеке қолданушы</h4>
-      <div class="fg"><select id="perm-user" onchange="renderPermUser()"></select></div>
-      <div id="perm-user-box"></div>
-      <h4 style="margin:18px 0 8px;padding-top:14px;border-top:1px solid var(--b)">➕ Адам қосу (логин + пароль)</h4>
-      <div class="fg"><label>Логин</label><input id="np-name" maxlength="30" placeholder="Логин"></div>
-      <div class="fg"><label>Пароль (кемінде 4 таңба)</label><input id="np-pass" type="text" placeholder="Пароль"></div>
-      <div class="fg"><label>Рөлі</label><select id="np-role"><option value="student">Оқушы</option><option value="teacher">Мұғалім</option><option value="admin">Админ (көмекші)</option></select></div>
-      <button class="btn btn-ok btn-sm" onclick="adminAddPerson()">➕ Қосу</button>
-    </div>
-    <div class="card" style="padding:20px">
-      <h3 style="margin-bottom:6px">📶 Офлайн және синхрондау</h3>
-      <p class="sub" style="margin-bottom:10px">Интернет жоқ кезде нәтижелер құрылғыда сақталады. Желі қосылғанда төмендегі мекенжайға автоматты жіберіледі.</p>
-      <div id="admin-sync"></div>
-    </div>
-    <div class="card" style="padding:20px">
-      <h3 style="margin-bottom:6px">🏫 Барлық сыныптар</h3>
-      <p class="sub" style="margin-bottom:10px">Оқушыны шығару, сынып кодын өзгерту, сыныпқа тест құру — «Басқару» арқылы.</p>
-      <div id="admin-classes" class="list"></div>
-      <div class="row" style="margin-top:12px;justify-content:flex-start"><button class="btn btn-p btn-sm" onclick="showTeacher()">🏫 Сыныптарды басқару</button><button class="btn btn-ok btn-sm" onclick="showCreate140()">🎓 ҰБТ 140 тест қосу</button></div>
+      <h3 style="margin-bottom:12px">🏫 Барлық сыныптар</h3>
+      <div id="admin-classes"></div>
     </div>
     <div class="card" style="padding:20px">
       <h3 style="margin-bottom:12px">🏫 Сынып ашу өтініштері</h3>
@@ -857,7 +810,55 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
 </div>
 
 <script>
-const LS={get(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch{}}};
+// ===== Ортақ дерекқор (сервермен синхрондау) =====
+const SYNC_PORT=8765;
+const SYNC_BASE=(function(){let h='';try{h=window.parent.location.hostname}catch(e){}if(!h)h=location.hostname||'localhost';return 'http://'+h+':'+SYNC_PORT})();
+function noSync(k){return k==='ubt_current'||k==='ubt_dark'||k.indexOf('ubt_cd_')===0||k.indexOf('ubt_')!==0}
+let syncOK=false,syncSince=0;
+function syncPush(items){
+  if(!syncOK||!items.length)return;
+  try{fetch(SYNC_BASE+'/set',{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({items:items}),keepalive:items.length<20}).then(r=>r.json()).then(j=>{if(j&&j.t)syncSince=Math.max(syncSince,j.t)}).catch(()=>setSyncInd(false))}catch(e){}
+}
+(function initialSync(){
+  try{
+    const x=new XMLHttpRequest();x.open('GET',SYNC_BASE+'/all',false);x.send();
+    if(x.status===200){
+      const d=JSON.parse(x.responseText);syncOK=true;
+      for(const k in d){try{localStorage.setItem(k,d[k].v)}catch(e){}syncSince=Math.max(syncSince,d[k].t||0)}
+      const up=[];
+      for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(!noSync(k)&&!(k in d))up.push({key:k,value:localStorage.getItem(k)})}
+      if(up.length){syncOK=true;syncPush(up)}
+    }
+  }catch(e){}
+})();
+const LS={get(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}},set(k,v){try{const s=JSON.stringify(v);localStorage.setItem(k,s);if(!noSync(k))syncPush([{key:k,value:s}])}catch{}}};
+function setSyncInd(ok){
+  const e=document.getElementById('sync-ind');if(!e)return;
+  e.textContent=ok?'🟢 Ортақ база қосулы':'⚠ Ортақ база жоқ — деректер тек осы құрылғыда';
+  e.style.background=ok?'#dcfce7':'#fee2e2';e.style.color=ok?'#14532d':'#7f1d1d';
+}
+function syncPoll(){
+  fetch(SYNC_BASE+'/all?since='+syncSince).then(r=>r.json()).then(d=>{
+    if(!syncOK){syncOK=true}
+    setSyncInd(true);let ch=0;
+    for(const k in d){
+      syncSince=Math.max(syncSince,d[k].t||0);
+      if(noSync(k))continue;
+      if(localStorage.getItem(k)!==d[k].v){try{localStorage.setItem(k,d[k].v);ch++}catch(e){}}
+    }
+    if(ch)syncRefresh();
+  }).catch(()=>setSyncInd(false));
+}
+function syncRefresh(){
+  try{
+    const a=document.querySelector('.screen.active');if(!a)return;
+    const id=a.id;
+    if(id==='s-home')renderHomeExtras();
+    else if(id==='s-public')showPublicTests(pubSubj);
+    else if(id==='s-mytests')showMyTests();
+    else if(id==='s-ranking')showRanking();
+  }catch(e){}
+}
 function getAdminPass(){return LS.get('ubt_admin_pass','admin123')}
 function setAdminPass(p){LS.set('ubt_admin_pass',p)}
 let user=null;
@@ -896,7 +897,7 @@ function showContactAdmin(){
   else{
     document.getElementById('chat-room').style.display='none';
     document.getElementById('chat-gate').style.display='block';
-    document.getElementById('chat-sub').textContent='%%NAME%% қолдау';
+    document.getElementById('chat-sub').textContent='ҰБТ+ қолдау';
     document.getElementById('chat-login').value='';
   }
 }
@@ -929,28 +930,7 @@ function findUserByLogin(login){
 function genCode(){return String(Math.floor(1000+Math.random()*9000))}
 let pendingForgot=null;
 
-// ===== Парольді қауіпсіз хэштеу (SHA-256 + тұз) =====
-async function hashPass(pass, salt){
-  const enc=new TextEncoder();
-  const data=enc.encode((salt||'')+'|'+pass+'|ustaz2026');
-  const buf=await crypto.subtle.digest('SHA-256',data);
-  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
-}
-function makeSalt(){return Math.random().toString(36).slice(2)+Date.now().toString(36)}
-async function verifyPass(pass, stored){
-  if(!stored)return false;
-  if(stored.indexOf('$')===-1)return stored===pass; // legacy plain
-  const [salt,hash]=stored.split('$');
-  const h=await hashPass(pass,salt);
-  return h===hash;
-}
-async function storePass(pass){
-  const salt=makeSalt();
-  const h=await hashPass(pass,salt);
-  return salt+'$'+h;
-}
-
-async function doRegister(){
+function doRegister(){
   const name=document.getElementById('reg-name').value.trim();
   const pass=document.getElementById('reg-pass').value;
   const pass2=document.getElementById('reg-pass2').value;
@@ -960,8 +940,7 @@ async function doRegister(){
   if(findUserByLogin(name)){alert('Бұл ат тіркелген. Басқа ат таңдаңыз');return}
   const key=name.toLowerCase();
   const profiles=LS.get('ubt_profiles',{});
-  const hashed=await storePass(pass);
-  const u={name:name,password:hashed,
+  const u={name:name,password:pass,
     id:'u_'+key.replace(/[^\p{L}\p{N}]+/gu,'_')+'_'+Date.now().toString(36).slice(-4),isAdmin:false};
   profiles[key]=u;LS.set('ubt_profiles',profiles);
   setUserStats(u.id,{points:0,title:'',stars:0,verified:false});
@@ -969,7 +948,7 @@ async function doRegister(){
   showLoginBox();
   document.getElementById('login-name').value=u.name;
 }
-async function doLogin(){
+function doLogin(){
   const login=document.getElementById('login-name').value.trim();
   const pass=document.getElementById('login-pass').value;
   if(!login){alert('Логин жазыңыз');return}
@@ -981,24 +960,11 @@ async function doLogin(){
   }
   const u=findUserByLogin(login);
   if(!u){alert('Аккаунт табылмады. Тіркеліңіз.');return}
-  if(u.blocked){alert('⛔ Аккаунт админ тарапынан бұғатталған.');return}
-  if(u.password){
-    const ok=await verifyPass(pass,u.password);
-    if(!ok){alert('Қате пароль!');return}
-    // legacy plain → хэшке көшіру
-    if(u.password.indexOf('$')===-1){
-      const hashed=await storePass(pass);
-      const profiles=LS.get('ubt_profiles',{});
-      Object.keys(profiles).forEach(k=>{if(profiles[k].id===u.id)profiles[k].password=hashed});
-      LS.set('ubt_profiles',profiles);
-    }
-  }else{
-    const hashed=await storePass(pass);
-    const profiles=LS.get('ubt_profiles',{});
-    Object.keys(profiles).forEach(k=>{if(profiles[k].id===u.id)profiles[k].password=hashed});
-    LS.set('ubt_profiles',profiles);
-  }
-  user=u.role==='admin'?{...u,isAdmin:true}:u;LS.set('ubt_current',user);enterApp();
+  if(u.password&&u.password!==pass){alert('Қате пароль!');return}
+  // legacy users without password
+  if(!u.password){u.password=pass;const profiles=LS.get('ubt_profiles',{});
+    Object.keys(profiles).forEach(k=>{if(profiles[k].id===u.id)profiles[k].password=pass});LS.set('ubt_profiles',profiles)}
+  user=u;LS.set('ubt_current',user);enterApp();
 }
 function sendForgotCode(){
   const login=document.getElementById('forgot-login').value.trim();
@@ -1009,15 +975,14 @@ function sendForgotCode(){
   alert('🔑 Демо код:\n\n'+code+'\n\n(Нақты SMS кейін қосылады)');
   document.getElementById('forgot-step2').style.display='block';
 }
-async function doForgotReset(){
+function doForgotReset(){
   if(!pendingForgot)return;
   const code=document.getElementById('forgot-code').value.trim();
   const pass=document.getElementById('forgot-pass').value;
   if(code!==pendingForgot.code){alert('Код қате!');return}
   if(!pass||pass.length<4){alert('Пароль кемінде 4 таңба');return}
-  const hashed=await storePass(pass);
   const profiles=LS.get('ubt_profiles',{});
-  Object.keys(profiles).forEach(k=>{if(profiles[k].id===pendingForgot.userId)profiles[k].password=hashed});
+  Object.keys(profiles).forEach(k=>{if(profiles[k].id===pendingForgot.userId)profiles[k].password=pass});
   LS.set('ubt_profiles',profiles);
   pendingForgot=null;
   alert('✅ Пароль өзгертілді! Кіріңіз.');
@@ -1256,7 +1221,7 @@ function showAdmin(){
 
   document.getElementById('admin-pending').innerHTML=pending.length?pending.map(t=>`
     <div class="item"><div class="info"><h4>${esc(t.topic)}</h4>
-      <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · ${esc(t.authorName||'')}${t.fmt140?' · 🎓 140':''}${testMetaStr(t)}</p></div>
+      <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · ${esc(t.authorName||'')}</p></div>
       <div class="acts">
         <button class="btn btn-ok btn-sm" onclick="approveTest('${t.id}')">✓ Мақұлдау</button>
         <button class="btn btn-d btn-sm" onclick="rejectTest('${t.id}')">✕ Бас тарту</button>
@@ -1280,8 +1245,8 @@ function showAdmin(){
 
   document.getElementById('admin-tests').innerHTML=tests.length?tests.map(t=>`
     <div class="item"><div class="info"><h4>${esc(t.topic)}</h4>
-      <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · ${esc(t.authorName||'')} · ${t.status==='class'?'🏫 Сынып':t.isPublic||t.status==='approved'?'🌐 Жария':t.status==='pending'?'⏳ Күту':'🔒 Жеке'}${t.fmt140?' · 🎓 140':''}${testMetaStr(t)}</p></div>
-    <div class="acts"><button class="btn btn-s btn-sm" onclick="showTestSettings('${t.id}','admin')">⚙ Баптау</button><button class="btn btn-d btn-sm" onclick="adminDelTest('${t.id}')">Өшіру</button></div></div>`).join(''):'<p class="sub">Тест жоқ</p>';
+      <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · ${esc(t.authorName||'')} · ${t.isPublic||t.status==='approved'?'🌐 Жария':t.status==='pending'?'⏳ Күту':'🔒 Жеке'}</p></div>
+    <div class="acts"><button class="btn btn-d btn-sm" onclick="adminDelTest('${t.id}')">Өшіру</button></div></div>`).join(''):'<p class="sub">Тест жоқ</p>';
 
   document.getElementById('admin-formulas').innerHTML=formulas.length?formulas.map((f,i)=>`
     <div class="item"><div class="info"><h4>${esc(f.title)}</h4><p>${esc(f.subject)} · ${esc(f.authorName||'')} · ${esc(f.body)}</p></div>
@@ -1291,7 +1256,7 @@ function showAdmin(){
 
   showScr('s-admin');
 }
-function adminDelTest(id){if(!user||!user.isAdmin)return;if(!confirm('Тестті өшіру?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showAdmin()}
+function adminDelTest(id){if(!confirm('Тестті өшіру?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showAdmin()}
 function approveTest(id){
   const all=allTests();const t=all.find(x=>x.id===id);
   if(t){t.isPublic=true;t.status='approved';saveAllTests(all);showAdmin()}
@@ -1307,7 +1272,6 @@ function adminDelUser(id){
   if(!confirm((pr?pr.name:'')+' профилін өшіру?'))return;
   Object.keys(profiles).forEach(k=>{if(profiles[k].id===id)delete profiles[k]});
   LS.set('ubt_profiles',profiles);
-  saveClasses(getClasses().map(c=>({...c,students:c.students.filter(x=>x!==id)})));
   saveAllTests(allTests().filter(t=>t.authorId!==id));
   const stats=LS.get('ubt_user_stats',{});delete stats[id];LS.set('ubt_user_stats',stats);
   showAdmin();
@@ -1389,7 +1353,7 @@ const BANK={
 function allTests(){return LS.get('ubt_tests',[])}
 function saveAllTests(a){LS.set('ubt_tests',a)}
 function myTests(){return allTests().filter(t=>t.authorId===user.id)}
-function publicTests(){return allTests().filter(t=>(t.isPublic||t.status==='approved')&&t.questions.length>0)}
+function publicTests(){return allTests().filter(t=>(t.isPublic||t.status==='approved')&&!t.classId&&t.questions.length>0)}
 function showFormulas(){
   renderFormulas();showScr('s-formulas');
 }
@@ -1413,26 +1377,11 @@ function addFormula(){
   renderFormulas();alert('Формула сақталды!');
 }
 
-let createClassMode=false;
-function classesForStaff(){if(!user)return[];const a=getClasses();return user.isAdmin?a:a.filter(c=>c.teacherId===user.id)}
-function cancelCreate(){if(createClassMode)showTeacher();else goHome()}
-function showCreate(cid,classMode){
-  createClassMode=!!classMode;
-  if(createClassMode&&!classesForStaff().length){alert('Алдымен сынып болуы керек. Сынып ашу үшін «Мұғалім» бөлімінде өтініш жіберіңіз.');createClassMode=false;return}
+function showCreate(){
   document.getElementById('c-subject').value='';
   document.getElementById('c-topic').value='';
   document.getElementById('c-desc').value='';
   const req=document.getElementById('c-request');if(req)req.checked=false;
-  const staff=isTeacherUser();
-  document.getElementById('c-staff').style.display=staff?'block':'none';
-  const sel=document.getElementById('c-class');
-  sel.innerHTML='<option value="">'+(createClassMode?'— Сыныпты таңдаңыз —':'— Барлығына / сыныпсыз —')+'</option>'+classesForStaff().map(c=>`<option value="${esc(c.id)}">${esc(c.name)}${user.isAdmin&&c.teacherName?' · '+esc(c.teacherName):''}</option>`).join('');
-  sel.value=cid||'';
-  document.getElementById('c-time').value='';document.getElementById('c-limit').value='';
-  document.getElementById('c-140').checked=false;
-  document.getElementById('c-140-wrap').style.display=createClassMode?'none':'';
-  document.getElementById('c-request-wrap').style.display=createClassMode?'none':'';
-  document.getElementById('c-hdr').textContent=createClassMode?'📝 Сыныпқа тест құру':'➕ Тест құру';
   clearManual('c');showScr('s-create');
 }
 function createFromFile(){
@@ -1440,32 +1389,24 @@ function createFromFile(){
   const subject=subjEl.value;
   const subjectName=subjEl.options[subjEl.selectedIndex]?.text||'';
   const topic=document.getElementById('c-topic').value.trim();
-  let requestPub=(document.getElementById('c-request')?.checked||false)&&hasPerm('publish');
-  const staff=isTeacherUser();
-  const fmt140=!createClassMode&&!!(document.getElementById('c-140')&&document.getElementById('c-140').checked);
-  const classId=staff?(document.getElementById('c-class').value||''):'';
+  const requestPub=document.getElementById('c-request')?.checked||false;
   if(!subject){alert('Пәнді таңдаңыз!');return}
   if(!topic){alert('Тест атауын жазыңыз!');return}
-  if(createClassMode&&!classId){alert('Қай сыныпқа арналғанын таңдаңыз!');return}
   if(!draftQs.length){alert('Кемінде 1 сұрақ қосыңыз!');return}
-  const timeMin=staff?Math.max(0,Math.min(600,parseInt(document.getElementById('c-time').value)||0)):0;
-  const limit=staff?Math.max(0,Math.min(50,parseInt(document.getElementById('c-limit').value)||0)):0;
   const r={qs:draftQs.slice()};
-  const test={id:'t_'+Date.now(),subject,subjectName,topic,desc:document.getElementById('c-desc').value.trim(),isPublic:false,status:requestPub?'pending':'private',authorId:user.id,authorName:user.name,questions:r.qs,timeMin,limit,classId,fmt140,createdAt:new Date().toISOString()};
-  let msg;
-  if(classId){
-    test.isPublic=false;test.status='class';
-    const c=getClasses().find(x=>x.id===classId);
-    msg='✅ Сынып тесті сақталды: '+r.qs.length+' сұрақ. Тек «'+(c?c.name:'сынып')+'» оқушылары тапсыра алады.';
-  }else if(requestPub&&(user.isAdmin||(isTeacherUser()&&!fmt140))){
-    test.isPublic=true;test.status='approved';msg='✅ Тест сақталды және жарияланды: '+r.qs.length+' сұрақ';
-  }else if(requestPub){
-    msg='✅ Тест сақталды ('+r.qs.length+' сұрақ). Админге жіберілді — мақұлдаған соң жарияланады.';
-  }else msg='✅ Тест сақталды: '+r.qs.length+' сұрақ';
+  const test={id:'t_'+Date.now(),subject,subjectName,topic,desc:document.getElementById('c-desc').value.trim(),isPublic:false,status:requestPub?'pending':'private',authorId:user.id,authorName:user.name,questions:r.qs,createdAt:new Date().toISOString()};
+  if((user.isAdmin||isTeacherUser())&&requestPub){test.isPublic=true;test.status='approved'}
+  if(isTeacherUser()){
+    const cid=(document.getElementById('c-class')||{}).value||'';
+    const tm=parseInt((document.getElementById('c-timer')||{}).value,10),lm=parseInt((document.getElementById('c-limit')||{}).value,10);
+    if(tm>0)test.timerMin=Math.min(tm,300);
+    if(lm>0)test.limit=Math.min(lm,20);
+    if(cid){const c=getClasses().find(x=>x.id===cid);if(c&&canManageClass(c)){test.classId=cid;test.className=c.name;test.isPublic=false;test.status='private'}}
+  }
   const all=allTests();all.unshift(test);saveAllTests(all);
   clearManual('c');
-  alert(msg);
-  if(classId){createClassMode=false;showTeacher()}else showMyTests();
+  alert(requestPub&&!(user.isAdmin||isTeacherUser())?'✅ Тест сақталды ('+r.qs.length+' сұрақ). Админ мақұлдаған соң жарияланады.':'✅ Тест сақталды: '+r.qs.length+' сұрақ');
+  showMyTests();
 }
 
 function showMyTests(){
@@ -1476,52 +1417,31 @@ function showMyTests(){
     if(t.isPublic||t.status==='approved')badge='<span class="badge badge-pub">🌐 Жария</span>';
     else if(t.status==='pending')badge='<span class="badge" style="background:#fef3c7;color:#92400e">⏳ Күтуде</span>';
     else if(t.status==='rejected')badge='<span class="badge badge-err">Бас тартылған</span>';
-    if(t.status==='class'){const cc=getClasses().find(x=>x.id===t.classId);badge='<span class="badge badge-pub">🏫 '+esc(cc?cc.name:'Сынып')+'</span>'}
-    if(t.fmt140)badge+=' <span class="badge badge-pub">🎓 140</span>';
+    if(t.classId)badge='<span class="badge badge-pub">🏫 '+esc(t.className||'Сынып')+'</span>';
     return `<div class="item"><div class="info"><h4>${esc(t.topic)}</h4>
-    <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ${testMetaStr(t)} · ${badge}</p></div>
+    <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · ${badge}</p></div>
     <div class="acts">
       <button class="btn btn-p btn-sm" onclick="startUserTest('${t.id}')">Бастау</button>
       <button class="btn btn-s btn-sm" onclick="editTest('${t.id}')">+ Сұрақ қосу</button>
-      ${isTeacherUser()?`<button class="btn btn-s btn-sm" onclick="showTestSettings('${t.id}','my')">⚙ Баптау</button>`:''}
       <button class="btn btn-s btn-sm" onclick="exportTest('${t.id}')">⬇ Файл</button>
-      ${t.status!=='pending'&&t.status!=='approved'&&t.status!=='class'&&!t.isPublic?`<button class="btn btn-w btn-sm" onclick="requestPub('${t.id}')">Жариялауға</button>`:''}
+      ${t.status!=='pending'&&t.status!=='approved'&&!t.isPublic&&!t.classId?`<button class="btn btn-w btn-sm" onclick="requestPub('${t.id}')">Жариялауға</button>`:''}
       <button class="btn btn-d btn-sm" onclick="delTest('${t.id}')">✕</button>
     </div></div>`}).join('')}
   showScr('s-mytests');
 }
 function requestPub(id){
-  if(!hasPerm('publish')){denied();return}
   const all=allTests();const t=all.find(x=>x.id===id);
   if(!t)return;
-  if(user.isAdmin||(isTeacherUser()&&!t.fmt140)){t.isPublic=true;t.status='approved';saveAllTests(all);alert('Жарияланды!');showMyTests();return}
+  if(user.isAdmin||isTeacherUser()){t.isPublic=true;t.status='approved';saveAllTests(all);alert('Жарияланды!');showMyTests();return}
   t.status='pending';t.isPublic=false;saveAllTests(all);alert('Админге жіберілді. Мақұлдаған соң жарияланады.');showMyTests();
 }
-function delTest(id){
-  const t=allTests().find(x=>x.id===id);
-  if(!t)return;
-  // Қауіпсіздік: тек автор немесе админ өшіре алады. Жария/мақұлданған тесттерді қарапайым пайдаланушы өшіре алмайды.
-  if(!user)return;
-  if(!user.isAdmin && t.authorId!==user.id){alert('⛔ Тек автор немесе админ өшіре алады.');return}
-  if(!user.isAdmin && (t.isPublic||t.status==='approved'||t.fmt140)){alert('⛔ Жария немесе ҰБТ 140 тесттерін өшіруге болмайды. Админге жазыңыз.');return}
-  if(!confirm('Тестті өшіру керек пе? Сұрақтары бірге жойылады.'))return;
-  saveAllTests(allTests().filter(x=>x.id!==id));
-  showMyTests();
-}
+function delTest(id){if(!confirm('Тестті өшіру керек пе?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showMyTests()}
 
-let pubSubj='';
-function showPublicTests(keep){
-  if(keep!==true)pubSubj='';
-  const list=document.getElementById('public-list');
-  const all=publicTests();
-  const subs=[...new Set(all.map(t=>t.subjectName||'Басқа'))];
-  const sel=document.getElementById('pub-subj');
-  sel.innerHTML='<option value="">📚 Барлық пәндер ('+all.length+')</option>'+subs.map(s=>`<option value="${esc(s)}">${esc(s)} (${all.filter(t=>(t.subjectName||'Басқа')===s).length})</option>`).join('');
-  sel.value=pubSubj;
-  const tests=pubSubj?all.filter(t=>(t.subjectName||'Басқа')===pubSubj):all;
-  if(!tests.length){list.innerHTML='<div class="empty"><div class="ic">🌐</div><p>Әзірге жария тест жоқ.<br>Өзіңіз құрып, «Жариялауға жіберу» белгілеңіз.</p></div>'}
-  else{list.innerHTML=tests.map(t=>`<div class="item"><div class="info"><h4>${t.fmt140?'🎓 ':''}${esc(t.topic)}</h4>
-    <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ${testMetaStr(t)} · Автор: ${esc(t.authorName||'Аноним')}${t.desc?' · '+esc(t.desc):''}</p></div>
+function showPublicTests(){
+  const list=document.getElementById('public-list');const tests=publicTests();
+  if(!tests.length){list.innerHTML='<div class="empty"><div class="ic">🌐</div><p>Әзірге жария тест жоқ.<br>Өзіңіз құрып, «Интернетке шығару» белгілеңіз.</p></div>'}
+  else{list.innerHTML=tests.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic)}</h4>
+    <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · Автор: ${esc(t.authorName||'Аноним')}${t.desc?' · '+esc(t.desc):''}</p></div>
     <div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest('${t.id}')">Тапсыру</button></div></div>`).join('')}
   showScr('s-public');
 }
@@ -1536,49 +1456,16 @@ function renderEditList(t){
   document.getElementById('edit-qlist').innerHTML=t.questions.map((q,i)=>`<div class="item"><div class="info"><h4>${i+1}. ${esc(q.text)}</h4></div>
     <div class="acts"><button class="btn btn-d btn-sm" onclick="removeQFromTest('${t.id}',${i})">✕</button></div></div>`).join('');
 }
-function removeQFromTest(tid,idx){
-  const all=allTests();const t=all.find(x=>x.id===tid);if(!t)return;
-  // Сұрақ құрылғаннан кейін қарапайым пайдаланушы жария тесттен өшіре алмайды
-  if(!user)return;
-  if(!user.isAdmin && t.authorId!==user.id){alert('⛔ Тек автор немесе админ өшіре алады.');return}
-  if(!user.isAdmin && (t.isPublic||t.status==='approved'||t.fmt140)){alert('⛔ Жария тесттегі сұрақты өшіруге болмайды.');return}
-  if(!confirm('Сұрақты өшіру керек пе?'))return;
-  t.questions.splice(idx,1);saveAllTests(all);renderEditList(t);
-}
+function removeQFromTest(tid,idx){const all=allTests();const t=all.find(x=>x.id===tid);if(t){t.questions.splice(idx,1);saveAllTests(all);renderEditList(t)}}
 
-function baseState(){return{questions:[],currentIndex:0,answers:{},flags:{},qTimes:{},qStart:0,timerSeconds:0,timerInterval:null,subjectName:'',isMistakes:false,testId:null,lastWrong:null,lastScore:null}}
+function baseState(){return{questions:[],currentIndex:0,answers:{},flags:{},timerSeconds:0,timerInterval:null,subjectName:'',isMistakes:false,testId:null,lastWrong:null}}
 let st=baseState();
 
-function testMetaStr(t){let s='';if(t.timeMin>0)s+=' · ⏱ '+t.timeMin+' мин';if(t.limit>0)s+=' · 🔁 лимит '+t.limit;return s}
-function classOfTest(t){return t.classId?(getClasses().find(c=>c.id===t.classId)||null):null}
-function isTestStaff(t){if(!user)return false;if(user.isAdmin||t.authorId===user.id)return true;const c=classOfTest(t);return !!(c&&c.teacherId===user.id)}
-function attemptsAll(){return LS.get('ubt_attempts',{})}
-function attemptsOf(tid,uid){const a=attemptsAll();return (a[tid]&&a[tid][uid])||0}
-function addAttempt(tid,uid){const a=attemptsAll();(a[tid]=a[tid]||{})[uid]=(a[tid][uid]||0)+1;LS.set('ubt_attempts',a)}
-function testSeconds(t){if(t.timeMin>0)return t.timeMin*60;if(t.fmt140)return 240*60;return Math.max(t.questions.length*90,600)}
-function canTakeTest(t){
-  if(t.classId){
-    const c=classOfTest(t);
-    if(!c)return{ok:false,msg:'Бұл тесттің сыныбы табылмады (сынып өшірілген болуы мүмкін).'};
-    if(!isTestStaff(t)&&!c.students.includes(user.id))return{ok:false,msg:'Бұл тест тек «'+c.name+'» сыныбының оқушыларына арналған.'};
-  }else if(!(t.isPublic||t.status==='approved')&&t.authorId!==user.id&&!user.isAdmin){
-    return{ok:false,msg:'Бұл тест қолжетімсіз.'};
-  }
-  if(t.limit>0&&!isTestStaff(t)&&attemptsOf(t.id,user.id)>=t.limit)return{ok:false,msg:'Лимит таусылды: '+t.limit+' / '+t.limit+' әрекет қолданылған.'};
-  return{ok:true};
-}
 function startUserTest(id){
   const t=allTests().find(x=>x.id===id);if(!t||!t.questions.length){alert('Сұрақ жоқ!');return}
-  const chk=canTakeTest(t);if(!chk.ok){alert('⛔ '+chk.msg);return}
-  const staff=isTestStaff(t);
-  if(!staff&&(t.limit>0||t.timeMin>0)){
-    const used=attemptsOf(t.id,user.id);
-    if(!confirm('⏱ Таймер: '+Math.round(testSeconds(t)/60)+' мин'+(t.limit>0?'\n🔁 Әрекет: '+(used+1)+' / '+t.limit+' (бұл әрекет есептеледі)':'')+'\n\nБастаймыз ба?'))return;
-  }
-  if(!staff)addAttempt(t.id,user.id);
   const label=(t.subjectName?t.subjectName+' · ':'')+(t.topic||'Тест');
   st=baseState();st.questions=t.questions.map(q=>({...q,subjectName:label}));st.subjectName=label;st.testId=id;
-  st.timerSeconds=testSeconds(t);beginTest();
+  st.timerSeconds=Math.max(t.questions.length*90,600);beginTest();
 }
 function startQuickSubject(){
   document.getElementById('subj-grid').innerHTML=Object.entries(BANK).map(([k,v])=>
@@ -1592,16 +1479,8 @@ function startBank(key){
 function beginTest(){showScr('s-test');renderNav();renderQ();startTimer();updateProg();lockStart()}
 function renderNav(){document.getElementById('qnav').innerHTML=st.questions.map((_,i)=>`<button class="qn" onclick="goQ(${i})">${i+1}</button>`).join('');updNav()}
 function updNav(){document.querySelectorAll('.qn').forEach((b,i)=>{b.classList.remove('cur','ans','flg');if(i===st.currentIndex)b.classList.add('cur');if(st.answers[st.questions[i].id]!==undefined)b.classList.add('ans');if(st.flags[st.questions[i].id])b.classList.add('flg')})}
-function _saveQTime(){
-  if(!st.qStart||!st.questions[st.currentIndex])return;
-  const q=st.questions[st.currentIndex];
-  const spent=Math.round((Date.now()-st.qStart)/1000);
-  st.qTimes[q.id]=(st.qTimes[q.id]||0)+spent;
-  st.qStart=Date.now();
-}
 function renderQ(){
   const q=st.questions[st.currentIndex];if(!q)return;
-  if(!st.qStart)st.qStart=Date.now();
   document.getElementById('t-subj').textContent=q.subjectName||st.subjectName;
   document.getElementById('qnum').textContent='Сұрақ '+(st.currentIndex+1);
   document.getElementById('qtext').textContent=q.text;
@@ -1614,9 +1493,9 @@ function renderQ(){
 }
 function selOpt(i){st.answers[st.questions[st.currentIndex].id]=i;renderQ()}
 function togFlag(){const q=st.questions[st.currentIndex];st.flags[q.id]=!st.flags[q.id];renderQ()}
-function nextQ(){_saveQTime();if(st.currentIndex<st.questions.length-1){st.currentIndex++;renderQ()}else finishTest()}
-function prevQ(){_saveQTime();if(st.currentIndex>0){st.currentIndex--;renderQ()}}
-function goQ(i){_saveQTime();st.currentIndex=i;renderQ();document.getElementById('sidebar').classList.remove('open')}
+function nextQ(){if(st.currentIndex<st.questions.length-1){st.currentIndex++;renderQ()}else finishTest()}
+function prevQ(){if(st.currentIndex>0){st.currentIndex--;renderQ()}}
+function goQ(i){st.currentIndex=i;renderQ();document.getElementById('sidebar').classList.remove('open')}
 function updateProg(){const t=st.questions.length,c=st.currentIndex+1,a=Object.keys(st.answers).length;document.getElementById('prog-t').textContent=`Сұрақ ${c} / ${t}`;document.getElementById('prog-f').style.width=(a/t*100)+'%'}
 function togSide(){document.getElementById('sidebar').classList.toggle('open')}
 
@@ -1638,46 +1517,17 @@ function finishTest(force){
   const pct=max?score/max:0;
   if(pct>=1) gained+=50; else if(pct>=0.8) gained+=25; else if(pct>=0.5) gained+=10;
   if(!st.isMistakes) addPoints(gained);
-  st.lastWrong=wrong;st.lastScore={score,max,gained};try{logTestResult(score,max)}catch(e){}try{queueSync(score,max)}catch(e){}try{closeReport()}catch(e){}
+  st.lastWrong=wrong;st.lastScore={score,max,gained};
   document.getElementById('sc').textContent=score;document.getElementById('sm').textContent=max;
-  _saveQTime();
-  const timeRows=st.questions.map((q,i)=>{const s=st.qTimes[q.id]||0;return s?`<div class="res-row"><span>Сұрақ ${i+1}</span><span>${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}</span></div>`:''}).filter(Boolean).join('');
-  const weakTopics={};wrong.forEach(q=>{const k=q.subjectName||st.subjectName||'Басқа';weakTopics[k]=(weakTopics[k]||0)+1});
-  const weakHTML=Object.keys(weakTopics).length?`<div style="margin-top:10px"><b>📌 Әлсіз тақырыптар (қайталаңыз):</b><ul style="margin:6px 0 0 18px">${Object.entries(weakTopics).sort((a,b)=>b[1]-a[1]).map(([k,n])=>`<li>${esc(k)} — ${n} қате</li>`).join('')}</ul></div>`:'';
   document.getElementById('res-break').innerHTML=`<div class="res-row"><span>${esc(st.subjectName||'Тест')}</span><span style="font-weight:700;color:var(--p)">${score} / ${max}</span></div>
     ${!st.isMistakes?`<div class="res-row"><span>Алынған ұпай</span><span style="font-weight:700;color:var(--ok)">+${gained} ⭐</span></div>`:''}
-    ${lock.viol?`<div class="res-row"><span>Ереже бұзу ескертулері</span><span style="font-weight:700;color:var(--err)">${lock.viol} / ${MAX_VIOL}</span></div>`:''}
-    ${timeRows?`<h4 style="margin:12px 0 6px">⏱ Сұрақтарға жұмсалған уақыт</h4>${timeRows}`:''}
-    ${weakHTML}
-    <div class="row" style="margin-top:14px"><button class="btn btn-ok btn-sm" onclick="downloadCert()">📄 Сертификат / PDF</button></div>`;
+    ${lock.viol?`<div class="res-row"><span>Ереже бұзу ескертулері</span><span style="font-weight:700;color:var(--err)">${lock.viol} / ${MAX_VIOL}</span></div>`:''}`;
   showScr('s-res');
 }
-function downloadCert(){
-  const ls=st.lastScore||{score:0,max:0};
-  const pct=ls.max?Math.round(ls.score/ls.max*100):0;
-  const w=window.open('','_blank');
-  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>UstaZ сертификат</title>
-    <style>body{font-family:system-ui,sans-serif;padding:40px;max-width:640px;margin:0 auto;color:#0f172a}
-    .box{border:3px solid #2563eb;border-radius:16px;padding:32px;text-align:center}
-    h1{color:#2563eb;margin:0 0 8px}h2{margin:0 0 24px;font-weight:500}
-    .sc{font-size:48px;font-weight:800;color:#2563eb;margin:16px 0}
-    .meta{color:#64748b;font-size:14px;margin-top:24px}</style></head><body>
-    <div class="box"><h1>UstaZ</h1><h2>ҰБТ дайындық нәтижесі</h2>
-    <p><b>${esc(user?user.name:'Оқушы')}</b></p>
-    <div class="sc">${ls.score} / ${ls.max}</div>
-    <p>${pct}% · ${esc(st.subjectName||'Тест')}</p>
-    <p class="meta">${new Date().toLocaleString('kk-KZ')}<br>Бұл сертификат платформа ішіндегі нәтижені растайды.</p>
-    <button onclick="window.print()" style="margin-top:20px;padding:10px 20px;background:#2563eb;color:#fff;border:none;border-radius:8px;cursor:pointer">Басып шығару / PDF</button>
-    </div></body></html>`);
-  w.document.close();
-}
 function reviewAns(){
-  _saveQTime();
-  const L=['A','B','C','D','E'];
+  const L=['A','B','C','D'];
   document.getElementById('rev-list').innerHTML=st.questions.map((q,i)=>{const ua=st.answers[q.id],ok=ua===q.correct;
-    const sec=st.qTimes[q.id]||0;
-    const tstr=sec?` · ${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`:'';
-    return `<div class="rev ${ok?'ok':'bad'}"><div class="rh"><span>Сұрақ ${i+1}${tstr}</span><span>${ok?'✓ Дұрыс':'✗ Қате'}</span></div>
+    return `<div class="rev ${ok?'ok':'bad'}"><div class="rh"><span>Сұрақ ${i+1}</span><span>${ok?'✓ Дұрыс':'✗ Қате'}</span></div>
       <div class="rq">${esc(q.text)}</div>${ua!==undefined?`<div class="ra u">Сіз: <b>${L[ua]}) ${esc(q.options[ua])}</b></div>`:'<div class="ra u">Жауап жоқ</div>'}
       ${!ok?`<div class="ra c">Дұрыс: <b>${L[q.correct]}) ${esc(q.options[q.correct])}</b></div>`:''}</div>`}).join('');
   showScr('s-rev');
@@ -2143,7 +1993,7 @@ document.addEventListener('fullscreenchange',onFsChange);
 document.addEventListener('webkitfullscreenchange',onFsChange);
 document.addEventListener('visibilitychange',()=>{if(lock.on&&document.hidden)lockViolation()});
 window.addEventListener('blur',()=>{if(lock.on&&!lock.paused)setTimeout(()=>{if(lock.on&&!lock.paused&&!document.hasFocus())lockViolation()},250)});
-const blockEv=e=>{if(lock.on){const t=e.target&&e.target.nodeType===3?e.target.parentElement:e.target;if(t&&t.closest&&t.closest('#rep-ov,#tools-root'))return;e.preventDefault();return false}};
+const blockEv=e=>{if(lock.on){e.preventDefault();return false}};
 ['contextmenu','copy','cut','paste','dragstart','selectstart'].forEach(n=>document.addEventListener(n,blockEv));
 document.addEventListener('keydown',e=>{
   if(!lock.on)return;
@@ -2564,7 +2414,7 @@ function seedBuiltin(){
     if(!r.questions.length)return;
     const all=allTests();
     if(!all.some(t=>t.id==='seed_funksiya')){
-      all.push({id:'seed_funksiya',subject:'math',subjectName:'Математика',topic:'Функция',desc:'Дайын тест · '+r.questions.length+' сұрақ',isPublic:true,status:'approved',authorId:'system',authorName:'%%NAME%%',
+      all.push({id:'seed_funksiya',subject:'math',subjectName:'Математика',topic:'Функция',desc:'Дайын тест · '+r.questions.length+' сұрақ',isPublic:true,status:'approved',authorId:'system',authorName:'ҰБТ+',
         questions:r.questions.map((q,i)=>({id:'fn_'+i,text:q.text,options:q.options,correct:q.correct,points:1})),createdAt:new Date().toISOString()});
       saveAllTests(all);
     }
@@ -2980,7 +2830,6 @@ function createClass(){
 function delClass(id){
   if(!confirm('Сыныпты өшіру керек пе?'))return;
   saveClasses(getClasses().filter(c=>c.id!==id));
-  saveAllTests(allTests().filter(t=>t.classId!==id));
   document.getElementById('tch-detail').innerHTML='';renderTeacher();
 }
 function addStudent(cid){
@@ -2989,16 +2838,12 @@ function addStudent(cid){
   const u=findUserByLogin(login);
   if(!u){alert('Мұндай оқушы тіркелмеген. Алдымен оқушы «Тіркелу» арқылы аккаунт ашуы керек.');return}
   const a=getClasses(),c=a.find(x=>x.id===cid);if(!c)return;
-  if(!(user.isAdmin||c.teacherId===user.id))return;
   if(c.students.includes(u.id)){alert('Оқушы сыныпта бар');return}
   c.students.push(u.id);saveClasses(a);renderTeacher();
 }
 function removeStudent(cid,sid){
-  if(!user||!isTeacherUser())return;
+  if(!confirm('Оқушыны сыныптан шығару керек пе?'))return;
   const a=getClasses(),c=a.find(x=>x.id===cid);if(!c)return;
-  if(!(user.isAdmin||c.teacherId===user.id))return;
-  const pr=profileById(sid);
-  if(!confirm('«'+(pr?pr.name:'Оқушы')+'» оқушысын «'+c.name+'» сыныбынан шығару керек пе?'))return;
   c.students=c.students.filter(x=>x!==sid);saveClasses(a);
   document.getElementById('tch-detail').innerHTML='';renderTeacher();
 }
@@ -3019,24 +2864,23 @@ function leaveClass(cid){
 function classCardHTML(c){
   const rows=c.students.map(id=>{
     const p=profileById(id),s=studentStats(id);
-    return `<tr><td><b>${esc(p?p.name:'?')}</b></td><td>${s.n}</td><td>${s.n?s.avg+'%':'—'}</td><td>${s.mist}</td><td>⭐ ${s.points}</td><td style="white-space:nowrap"><button class="btn btn-s btn-sm" onclick="showStudent('${c.id}','${id}')">Қарау</button> <button class="btn btn-d btn-sm" onclick="removeStudent('${c.id}','${id}')">✕ Шығару</button></td></tr>`;
+    return `<tr><td><b>${esc(p?p.name:'?')}</b></td><td>${s.n}</td><td>${s.n?s.avg+'%':'—'}</td><td>${s.mist}</td><td>⭐ ${s.points}</td><td style="white-space:nowrap"><button class="btn btn-s btn-sm" onclick="showStudent('${c.id}','${id}')">Қарау</button> <button class="btn btn-d btn-sm" onclick="removeStudent('${c.id}','${id}')">✕</button></td></tr>`;
   }).join('');
   const withT=c.students.map(id=>studentStats(id)).filter(s=>s.n);
   const avg=withT.length?Math.round(withT.reduce((a,s)=>a+s.avg,0)/withT.length)+'%':'—';
   return `<div class="card">
     <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
-      <h3>${esc(c.name)} <span class="badge badge-pub">Код: ${esc(c.code)}</span>${user.isAdmin&&c.teacherId!==user.id?` <span class="sub" style="font-weight:400">· 👨‍🏫 ${esc(c.teacherName||'')}</span>`:''}</h3>
-      <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-ok btn-sm" onclick="showCreate('${c.id}',true)">📝 Сыныпқа тест құру</button><button class="btn btn-s btn-sm" onclick="changeClassCode('${c.id}')">🔑 Кодты өзгерту</button><button class="btn btn-s btn-sm" onclick="openTchChat('${threadOfClass(c)}')">💬 Админмен чат</button><button class="btn btn-d btn-sm" onclick="delClass('${c.id}')">Сыныпты өшіру</button></div>
+      <h3>${esc(c.name)} <span class="badge badge-pub">Код: ${esc(c.code)}</span> <span class="sub">· ${esc(c.teacherName||'')}</span></h3>
+      <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-s btn-sm" onclick="openTchChat('${threadOfClass(c)}')">💬 Админмен чат</button><button class="btn btn-d btn-sm" onclick="delClass('${c.id}')">Сыныпты өшіру</button></div>
     </div>
     <div class="sub" style="margin-bottom:10px">Оқушылар: <b>${c.students.length}</b> · сыныптың орташа балы: <b>${avg}</b></div>
     ${c.students.length?`<div class="tscroll"><table class="ttable"><tr><th>Оқушы</th><th>Тест</th><th>Орташа</th><th>Қате</th><th>Ұпай</th><th></th></tr>${rows}</table></div>`:'<div class="sub">Оқушы жоқ. Төмендегі өріс арқылы логин бойынша қосыңыз немесе кодты оқушыларға беріңіз.</div>'}
-    <h4 style="margin:14px 0 6px">📝 Сынып тесттері</h4>
-    ${classTests(c.id).length?classTests(c.id).map(t=>classTestRowHTML(c,t)).join(''):'<div class="sub">Тест жоқ. «Сыныпқа тест құру» батырмасын басыңыз.</div>'}
     <div style="display:flex;gap:8px;margin-top:12px"><input id="tch-add-${c.id}" placeholder="Оқушы логині" style="flex:1;padding:9px 12px;border:1px solid var(--b);border-radius:10px;background:var(--bg);color:var(--t);font-family:inherit"><button class="btn btn-ok btn-sm" onclick="addStudent('${c.id}')">➕ Қосу</button></div>
+    <div style="display:flex;gap:8px;margin-top:8px"><input id="tch-ncode-${c.id}" placeholder="Жаңа код (бос = кездейсоқ)" maxlength="8" style="flex:1;padding:9px 12px;border:1px solid var(--b);border-radius:10px;background:var(--bg);color:var(--t);font-family:inherit;text-transform:uppercase"><button class="btn btn-w btn-sm" onclick="changeClassCode('${c.id}')">🔄 Кодты өзгерту</button></div>
   </div>`;
 }
 function renderTeacher(){
-  const all=getClasses(),mine=user.isAdmin?all:all.filter(c=>c.teacherId===user.id),joined=all.filter(c=>c.students.includes(user.id));
+  const all=getClasses(),mine=all.filter(c=>c.teacherId===user.id),joined=all.filter(c=>c.students.includes(user.id));
   document.getElementById('tch-classes').innerHTML=mine.length?mine.map(classCardHTML).join(''):'<div class="empty"><div class="ic">🏫</div><p>Сынып жоқ. Жоғарыда жаңа сынып құрыңыз.</p></div>';
   document.getElementById('tch-joined').innerHTML=joined.length?joined.map(c=>`<div class="item" style="margin-bottom:6px"><div class="info"><h4>${esc(c.name)}</h4><p>Мұғалім: ${esc(c.teacherName||'')}</p></div><button class="btn btn-s btn-sm" onclick="leaveClass('${c.id}')">Шығу</button></div>`).join(''):'';
 }
@@ -3146,6 +2990,7 @@ function profExtra(){
   doLogout=function(){homeQuote=null;_lo()};
 })();
 applyTheme();
+setSyncInd(syncOK);setInterval(syncPoll,4000);
 
 // ================= Мұғалім рөлі =================
 function isTeacherUser(){
@@ -3367,628 +3212,252 @@ function renderAdminClassChat(){
     if(getChatMessages().length>n0)cdStamp(key);
   };
 })();
-try{if(user&&document.getElementById('s-home').classList.contains('active'))renderHomeExtras()}catch(e){}
-
-// ================= Сынып тесттері, код, лимит, таймер, ҰБТ 140 =================
-function classTests(cid){return allTests().filter(t=>t.classId===cid)}
-function classTestRowHTML(c,t){
-  const res=LS.get('ubt_results',[]).filter(r=>r.tid===t.id);
-  const who=new Set(res.map(r=>r.uid)).size;
-  return `<div class="item" style="margin-bottom:6px;flex-wrap:wrap"><div class="info"><h4>📝 ${esc(t.topic)}</h4><p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · ⏱ ${t.timeMin>0?t.timeMin+' мин':'автомат ('+Math.round(testSeconds(t)/60)+' мин)'} · 🔁 ${t.limit>0?t.limit+' рет':'шексіз'} · тапсырған: ${who}/${c.students.length}</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="showClassTestResults('${t.id}')">📊 Нәтиже</button><button class="btn btn-s btn-sm" onclick="startUserTest('${t.id}')">▶ Көру</button><button class="btn btn-s btn-sm" onclick="editTest('${t.id}')">+ Сұрақ</button><button class="btn btn-s btn-sm" onclick="showTestSettings('${t.id}','tch')">⚙ Баптау</button><button class="btn btn-d btn-sm" onclick="delClassTest('${t.id}')">✕</button></div></div>`;
+// ================= Сынып тесттері, лимит, таймер, пән бойынша, 140 формат =================
+function canManageClass(c){return !!(user&&c&&(user.isAdmin||c.teacherId===user.id))}
+function refreshClassViews(){
+  try{renderTeacher()}catch(e){}
+  try{if(document.getElementById('s-admin').classList.contains('active'))showAdmin()}catch(e){}
 }
-function startClassTestCreate(){
-  if(!isTeacherUser())return;
-  if(!classesForStaff().length){alert('Алдымен сынып болуы керек. Сынып ашу үшін төмендегі «Сынып ашуға өтініш» арқылы админге жазыңыз.');return}
-  showCreate('',true);
+function attemptsOf(tid,uid){return (LS.get('ubt_att_'+tid,{})[uid])||0}
+function bumpAttempt(tid,uid){const a=LS.get('ubt_att_'+tid,{});a[uid]=(a[uid]||0)+1;LS.set('ubt_att_'+tid,a)}
+
+// --- Сынып басқаруы (админ және сынып мұғалімі) ---
+function removeStudent(cid,sid){
+  const a=getClasses(),c=a.find(x=>x.id===cid);if(!c||!canManageClass(c))return;
+  if(!confirm('Оқушыны сыныптан шығару керек пе?'))return;
+  c.students=c.students.filter(x=>x!==sid);saveClasses(a);
+  const d=document.getElementById('tch-detail');if(d)d.innerHTML='';
+  refreshClassViews();
+}
+function addStudent(cid){
+  const a=getClasses(),c=a.find(x=>x.id===cid);if(!c||!canManageClass(c))return;
+  const inp=document.getElementById('tch-add-'+cid),login=(inp?inp.value:'').trim();if(!login)return;
+  const u=findUserByLogin(login);
+  if(!u){alert('Мұндай оқушы тіркелмеген. Алдымен оқушы «Тіркелу» арқылы аккаунт ашуы керек.');return}
+  if(c.students.includes(u.id)){alert('Оқушы сыныпта бар');return}
+  c.students.push(u.id);saveClasses(a);refreshClassViews();
+}
+function delClass(id){
+  const a=getClasses(),c=a.find(x=>x.id===id);if(!c||!canManageClass(c))return;
+  if(!confirm('Сыныпты өшіру керек пе? Сынып тесттері сақталады, бірақ оқушыларға қолжетімсіз болады.'))return;
+  saveClasses(a.filter(x=>x.id!==id));
+  const d=document.getElementById('tch-detail');if(d)d.innerHTML='';
+  refreshClassViews();
 }
 function changeClassCode(cid){
-  if(!user||!isTeacherUser())return;
-  const a=getClasses(),c=a.find(x=>x.id===cid);if(!c)return;
-  if(!(user.isAdmin||c.teacherId===user.id))return;
-  let v=prompt('Сыныптың жаңа коды (4–8 әріп немесе сан).\nБос қалдырсаңыз — кездейсоқ жаңа код жасалады.\nҚазіргі код: '+c.code,'');
-  if(v===null)return;
-  v=v.trim().toUpperCase();
-  if(!v){do{v=genClassCode()}while(a.some(x=>x.code===v))}
-  else{
-    if(!/^[\p{L}\p{N}]{4,8}$/u.test(v)){alert('Код 4–8 таңба болуы керек (тек әріп пен сан).');return}
-    if(a.some(x=>x.code===v&&x.id!==cid)){alert('Бұл код бос емес. Басқасын таңдаңыз.');return}
-  }
-  c.code=v;saveClasses(a);
-  try{postThread(threadOfClass(c),'system','','🔑 Сынып коды өзгертілді: '+v)}catch(e){}
-  renderTeacher();
-  try{if(document.getElementById('s-admin').classList.contains('active'))showAdmin()}catch(e){}
-  alert('✅ Жаңа код: '+v+'\n\nҚазіргі оқушылар сыныпта қалады. Жаңа оқушылар жаңа кодпен қосылады.');
+  const a=getClasses(),c=a.find(x=>x.id===cid);if(!c||!canManageClass(c))return;
+  const inp=document.getElementById('tch-ncode-'+cid);
+  let v=((inp&&inp.value)||'').trim().toUpperCase();
+  if(v){
+    if(!/^[A-Z0-9]{4,8}$/.test(v)){alert('Код 4–8 таңба: латын әріптері мен сандар');return}
+    if(a.some(x=>x.code===v&&x.id!==cid)){alert('Бұл код бос емес');return}
+  }else{do{v=genClassCode()}while(a.some(x=>x.code===v))}
+  c.code=v;saveClasses(a);refreshClassViews();
+  alert('✅ Жаңа сынып коды: '+v+'. Ескі код енді жұмыс істемейді.');
 }
-function delClassTest(tid){
-  const t=allTests().find(x=>x.id===tid);if(!t||!isTestStaff(t))return;
-  if(!confirm('«'+t.topic+'» тестін өшіру керек пе?'))return;
-  saveAllTests(allTests().filter(x=>x.id!==tid));
-  document.getElementById('tch-detail').innerHTML='';renderTeacher();
-}
-function logTestResult(score,max){
-  if(!st.testId||!user||user.isAdmin)return;
-  const t=allTests().find(x=>x.id===st.testId);if(!t||isTestStaff(t))return;
-  const a=LS.get('ubt_results',[]);
-  a.push({tid:t.id,uid:user.id,name:user.name,score,max,t:Date.now(),viol:lock.viol||0});
-  if(a.length>3000)a.splice(0,a.length-3000);
-  LS.set('ubt_results',a);
-}
-function showClassTestResults(tid){
-  const t=allTests().find(x=>x.id===tid);if(!t||!isTestStaff(t))return;
-  const c=classOfTest(t);
-  const res=LS.get('ubt_results',[]).filter(r=>r.tid===tid);
-  const ids=c?c.students.slice():[];
-  res.forEach(r=>{if(!ids.includes(r.uid))ids.push(r.uid)});
-  const rows=ids.map(id=>{
-    const p=profileById(id),rs=res.filter(r=>r.uid===id),used=attemptsOf(tid,id);
-    const best=rs.length?Math.max.apply(null,rs.map(r=>r.max?Math.round(r.score/r.max*100):0)):null;
-    const last=rs.length?rs[rs.length-1]:null;
-    const nm=p?p.name:(rs[0]?rs[0].name:'?');
-    const gone=c&&!c.students.includes(id);
-    return `<tr><td><b>${esc(nm)}</b>${gone?' <span class="sub">(шыққан)</span>':''}</td><td>${used}${t.limit>0?' / '+t.limit:''}</td><td>${best===null?'<span class="sub">Тапсырмаған</span>':best+'%'}</td><td>${last?last.score+' / '+last.max:'—'}</td><td>${last&&last.viol?'⚠ '+last.viol:'—'}</td><td>${t.limit>0&&used>0?`<button class="btn btn-s btn-sm" onclick="resetAttempts('${tid}','${id}')">↺ Әрекет</button>`:''}</td></tr>`;
+
+// --- Сынып тесттері тізімі ---
+function classTestsHTML(c,mode){
+  const ts=allTests().filter(t=>t.classId===c.id);
+  if(!ts.length)return `<div class="sub">${mode==='student'?'Бұл сыныпқа әзірге тест жоқ':'Бұл сыныпқа тест жоқ. «Тест құру» бетінде сыныпты таңдап қосыңыз.'}</div>`;
+  return ts.map(t=>{
+    const meta=`${t.questions.length} сұрақ · ⏱ ${t.timerMin?t.timerMin+' мин':'авто'} · лимит: ${t.limit?t.limit:'шексіз'}`;
+    if(mode==='student'){
+      const left=t.limit?Math.max(0,t.limit-attemptsOf(t.id,user.id)):null;
+      return `<div class="item" style="margin-top:6px"><div class="info"><h4>${esc(t.topic)}</h4><p>${meta}${t.limit?' · қалған әрекет: '+left:''}</p></div><button class="btn btn-p btn-sm" ${left===0?'disabled':''} onclick="startUserTest('${t.id}')">Тапсыру</button></div>`;
+    }
+    const n=new Set(LS.get('ubt_tres_'+t.id,[]).map(r=>r.uid)).size;
+    const own=user.isAdmin||t.authorId===user.id;
+    return `<div class="item" style="margin-top:6px"><div class="info"><h4>${esc(t.topic)}</h4><p>${meta} · тапсырған: ${n}/${c.students.length}</p></div><div class="acts"><button class="btn btn-s btn-sm" onclick="showTestResults('${t.id}')">📊 Нәтиже</button>${own?`<button class="btn btn-s btn-sm" onclick="editTest('${t.id}')">⚙ Баптау</button>`:''}</div></div>`;
   }).join('');
-  const el=document.getElementById('tch-detail');
-  el.innerHTML=`<div class="card" style="border-color:var(--p)"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h3>📊 ${esc(t.topic)}${c?' · '+esc(c.name):''}</h3><button class="btn btn-s btn-sm" onclick="document.getElementById('tch-detail').innerHTML=''">Жабу</button></div>
-    <div class="sub" style="margin-bottom:10px">⏱ ${Math.round(testSeconds(t)/60)} мин · 🔁 ${t.limit>0?'лимит '+t.limit+' рет':'шексіз'} · «↺ Әрекет» — оқушыға қосымша мүмкіндік беру</div>
-    ${rows?`<div class="tscroll"><table class="ttable"><tr><th>Оқушы</th><th>Әрекет</th><th>Үздік</th><th>Соңғы</th><th>Ереже</th><th></th></tr>${rows}</table></div>`:'<div class="sub">Оқушы жоқ</div>'}</div>`;
-  el.scrollIntoView({behavior:'smooth',block:'start'});
 }
-function resetAttempts(tid,uid){
-  const t=allTests().find(x=>x.id===tid);if(!t||!isTestStaff(t))return;
-  if(!confirm('Бұл оқушының әрекет санын нөлге түсіру керек пе?'))return;
-  const a=attemptsAll();if(a[tid])delete a[tid][uid];LS.set('ubt_attempts',a);
-  showClassTestResults(tid);
-}
-
-// ---- Тест баптаулары (таймер, лимит, сынып, 140) ----
-let tsetId=null,tsetFrom='my';
-function showTestSettings(id,from){
-  if(!user||!isTeacherUser())return;
-  const t=allTests().find(x=>x.id===id);if(!t||!isTestStaff(t))return;
-  tsetId=id;tsetFrom=from||'my';
-  document.getElementById('ts-name').textContent=t.topic+' · '+(t.subjectName||'');
-  const sel=document.getElementById('ts-class');
-  sel.innerHTML='<option value="">— Сыныпсыз —</option>'+classesForStaff().map(c=>`<option value="${esc(c.id)}">${esc(c.name)}${user.isAdmin&&c.teacherName?' · '+esc(c.teacherName):''}</option>`).join('');
-  sel.value=t.classId||'';
-  document.getElementById('ts-time').value=t.timeMin||'';
-  document.getElementById('ts-limit').value=t.limit||'';
-  document.getElementById('ts-140').checked=!!t.fmt140;
-  document.getElementById('ts-note').textContent='Сыныпты таңдасаңыз, тест жария тізімнен алынып, тек сол сынып оқушыларына ашылады. ҰБТ 140 белгісін мұғалім қойса, тест админге қайта мақұлдауға түседі.';
-  showScr('s-tset');
-}
-function saveTestSettings(){
-  if(!user||!isTeacherUser())return;
-  const all=allTests(),t=all.find(x=>x.id===tsetId);if(!t||!isTestStaff(t))return;
-  t.timeMin=Math.max(0,Math.min(600,parseInt(document.getElementById('ts-time').value)||0));
-  t.limit=Math.max(0,Math.min(50,parseInt(document.getElementById('ts-limit').value)||0));
-  const classId=document.getElementById('ts-class').value||'';
-  const want140=document.getElementById('ts-140').checked;
-  let note='✅ Сақталды';
-  if(classId){
-    t.classId=classId;t.isPublic=false;t.status='class';t.fmt140=false;
-    if(want140)note+='\n(Сыныптық тест ҰБТ 140 болмайды — белгі алынды)';
-  }else{
-    if(t.status==='class'){t.status='private'}
-    t.classId='';
-    if(want140&&!t.fmt140){
-      t.fmt140=true;
-      if(!user.isAdmin&&(t.isPublic||t.status==='approved')){t.isPublic=false;t.status='pending';note+='\nТест ҰБТ 140 ретінде админге мақұлдауға жіберілді'}
-    }else if(!want140)t.fmt140=false;
-  }
-  saveAllTests(all);alert(note);tsetBack();
-}
-function tsetBack(){
-  if(tsetFrom==='tch')showTeacher();
-  else if(tsetFrom==='admin')showAdmin();
-  else showMyTests();
-}
-
-// ---- ҰБТ 140 ----
-function show140(){
-  const tests=publicTests().filter(t=>t.fmt140);
-  const list=document.getElementById('u140-list');
-  list.innerHTML=tests.length?tests.map(t=>{
-    const left=(t.limit>0&&!isTestStaff(t))?Math.max(0,t.limit-attemptsOf(t.id,user.id)):null;
-    return `<div class="item"><div class="info"><h4>🎓 ${esc(t.topic)}</h4><p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · ⏱ ${Math.round(testSeconds(t)/60)} мин${left===null?'':' · 🔁 қалды: '+left+' / '+t.limit} · Автор: ${esc(t.authorName||'')}</p></div><div class="acts"><button class="btn btn-p btn-sm" ${left===0?'disabled':''} onclick="startUserTest('${t.id}')">${left===0?'Лимит бітті':'Тапсыру'}</button></div></div>`;
-  }).join(''):'<div class="empty"><div class="ic">🎓</div><p>Әзірге мақұлданған ҰБТ 140 тесті жоқ.<br>Төмендегі батырма арқылы тест ұсына аласыз.</p></div>';
-  const mine=allTests().filter(t=>t.fmt140&&t.authorId===user.id&&t.status!=='approved'&&!t.isPublic);
-  document.getElementById('u140-mine').innerHTML=mine.length?`<div class="card"><h3 style="margin-bottom:8px">📤 Менің жіберген 140 тесттерім</h3>${mine.map(t=>`<div class="res-row"><span>${esc(t.topic)}</span><span>${t.status==='pending'?'⏳ Админ қарауда':t.status==='rejected'?'✕ Қабылданбады':'🔒 Жеке'}</span></div>`).join('')}</div>`:'';
-  showScr('s-u140');
-}
-function showCreate140(){
-  showCreate();
-  document.getElementById('c-140').checked=true;
-  document.getElementById('c-request').checked=true;
-}
-
-// ---- Оқушыға сынып тесттері, админге сыныптар тізімі ----
-function myClassTests(){
-  const cs=getClasses().filter(c=>c.students.includes(user.id));
-  const ids=new Set(cs.map(c=>c.id));
-  return allTests().filter(t=>t.classId&&ids.has(t.classId)&&t.questions.length>0).map(t=>({t,c:cs.find(c=>c.id===t.classId)}));
-}
-function studentTestsHTML(){
-  if(!user||user.isAdmin)return '';
-  const a=myClassTests();if(!a.length)return '';
-  return '<h4 style="margin:12px 0 6px">📝 Сынып тесттері</h4>'+a.map(({t,c})=>{
-    const used=attemptsOf(t.id,user.id),left=t.limit>0?Math.max(0,t.limit-used):null;
-    return `<div class="item" style="margin-bottom:6px"><div class="info"><h4>${esc(t.topic)}</h4><p>${esc(c.name)} · ${t.questions.length} сұрақ · ⏱ ${Math.round(testSeconds(t)/60)} мин${left===null?'':' · 🔁 қалды: '+left+' / '+t.limit}</p></div><button class="btn btn-p btn-sm" ${left===0?'disabled':''} onclick="startUserTest('${t.id}')">${left===0?'Лимит бітті':'Тапсыру'}</button></div>`;
+function showTestResults(tid){
+  const t=allTests().find(x=>x.id===tid);if(!t)return;
+  const c=getClasses().find(x=>x.id===t.classId);if(!c||!canManageClass(c))return;
+  const res=LS.get('ubt_tres_'+tid,[]),by={};
+  res.forEach(r=>{(by[r.uid]=by[r.uid]||[]).push(r)});
+  const rows=c.students.map(id=>{
+    const p=profileById(id),l=by[id]||[];
+    const best=l.length?Math.max.apply(null,l.map(r=>r.max?Math.round(r.score/r.max*100):0)):null;
+    const last=l.length?l[l.length-1]:null;
+    return `<tr><td><b>${esc(p?p.name:'?')}</b></td><td>${attemptsOf(tid,id)}</td><td>${best===null?'—':best+'%'}</td><td>${last?last.score+'/'+last.max:'—'}</td></tr>`;
   }).join('');
+  document.getElementById('tch-detail').innerHTML=`<div class="card" style="border-color:var(--p)"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h3>📊 ${esc(t.topic)} · ${esc(c.name)}</h3><button class="btn btn-s btn-sm" onclick="document.getElementById('tch-detail').innerHTML=''">Жабу</button></div><div class="sub" style="margin-bottom:8px">⏱ ${t.timerMin?t.timerMin+' мин':'авто'} · лимит: ${t.limit?t.limit:'шексіз'}</div>${c.students.length?`<div class="tscroll"><table class="ttable"><tr><th>Оқушы</th><th>Әрекет</th><th>Үздік</th><th>Соңғы</th></tr>${rows}</table></div>`:'<div class="sub">Сыныпта оқушы жоқ</div>'}</div>`;
+  if(user.isAdmin)showScr('s-teacher');
+  document.getElementById('tch-detail').scrollIntoView({behavior:'smooth',block:'start'});
 }
 function renderAdminClasses(){
   const el=document.getElementById('admin-classes');if(!el)return;
-  const cs=getClasses();
-  el.innerHTML=cs.length?cs.map(c=>`<div class="item"><div class="info"><h4>${esc(c.name)} <span class="badge badge-pub">Код: ${esc(c.code)}</span></h4><p>👨‍🏫 ${esc(c.teacherName||'—')} · оқушы: ${c.students.length} · тест: ${classTests(c.id).length}</p></div><div class="acts"><button class="btn btn-s btn-sm" onclick="showTeacher()">Басқару</button></div></div>`).join(''):'<p class="sub">Сынып жоқ</p>';
+  const cls=getClasses();
+  el.innerHTML=cls.length?cls.map(c=>classCardHTML(c)+'<div style="margin:-4px 0 16px 8px">'+classTestsHTML(c,'manage')+'</div>').join(''):'<p class="sub">Сынып жоқ</p>';
 }
+
+// --- Тест құру / баптау: сынып, таймер, лимит ---
+function classOptionsHTML(sel){
+  const cls=getClasses().filter(canManageClass);
+  return '<option value="">🌐 Жалпы / жеке тест (сыныпсыз)</option>'+cls.map(c=>`<option value="${c.id}" ${sel===c.id?'selected':''}>🏫 ${esc(c.name)}${user.isAdmin?' · '+esc(c.teacherName||''):''}</option>`).join('');
+}
+function renderTestSettings(){
+  const el=document.getElementById('e-settings');if(!el)return;
+  const t=allTests().find(x=>x.id===editingId);
+  if(!t||!isTeacherUser()||!(user.isAdmin||t.authorId===user.id)){el.innerHTML='';return}
+  el.innerHTML=`<div class="card"><h3 style="margin-bottom:10px">⚙ Тест баптаулары</h3>
+    <div class="fg"><label>Кімге арналған?</label><select id="es-class">${classOptionsHTML(t.classId||'')}</select></div>
+    <div class="fg"><label>⏱ Таймер (минут) <span class="sub">(бос = автоматты)</span></label><input type="number" id="es-timer" min="1" max="300" value="${t.timerMin||''}"></div>
+    <div class="fg"><label>Лимит: бір оқушы неше рет тапсыра алады? <span class="sub">(бос = шексіз)</span></label><input type="number" id="es-limit" min="1" max="20" value="${t.limit||''}"></div>
+    <button class="btn btn-ok btn-sm" onclick="saveTestSettings()">💾 Сақтау</button></div>`;
+}
+function saveTestSettings(){
+  const all=allTests(),t=all.find(x=>x.id===editingId);if(!t)return;
+  if(!isTeacherUser()||!(user.isAdmin||t.authorId===user.id))return;
+  const tm=parseInt(document.getElementById('es-timer').value,10),lm=parseInt(document.getElementById('es-limit').value,10);
+  if(tm>0)t.timerMin=Math.min(tm,300);else delete t.timerMin;
+  if(lm>0)t.limit=Math.min(lm,20);else delete t.limit;
+  const cid=document.getElementById('es-class').value;
+  if(cid){const c=getClasses().find(x=>x.id===cid);if(c&&canManageClass(c)){t.classId=cid;t.className=c.name;t.isPublic=false;t.status='private'}}
+  else{delete t.classId;delete t.className}
+  saveAllTests(all);alert('✅ Баптаулар сақталды');
+}
+
+// --- Пән бойынша тапсыру ---
+let pubSubj='';
+function showPublicTests(subj){
+  pubSubj=(typeof subj==='string')?subj:'';
+  const all=publicTests(),subs=[];
+  all.forEach(t=>{if(t.subject&&!subs.some(s=>s[0]===t.subject))subs.push([t.subject,subjName(t.subject)])});
+  document.getElementById('public-subj').innerHTML=[['','Барлығы']].concat(subs).map(s=>`<button class="btn ${pubSubj===s[0]?'btn-p':'btn-s'} btn-sm" onclick="showPublicTests(${jsq(s[0])})">${esc(s[1])}</button>`).join('');
+  const tests=pubSubj?all.filter(t=>t.subject===pubSubj):all;
+  const list=document.getElementById('public-list');
+  let h='';
+  if(pubSubj){
+    const n=subjectPool(pubSubj).length,nm=(subs.find(s=>s[0]===pubSubj)||[0,pubSubj])[1];
+    h+=`<div class="card"><h3>🎲 ${esc(nm)}: аралас тест</h3><p class="sub" style="margin:4px 0 10px">Осы пәннің барлық жария тесттерінен кездейсоқ ${Math.min(20,n)} сұрақ (қолжетімді: ${n})</p><button class="btn btn-p btn-sm" onclick="startSubjectMix(${jsq(pubSubj)})">▶ Бастау</button></div>`;
+  }
+  if(!tests.length)h+='<div class="empty"><div class="ic">🌐</div><p>Әзірге жария тест жоқ.<br>Тест құрып, «Жариялауға жіберу» белгілеңіз — админ мақұлдаған соң осында шығады.</p></div>';
+  else h+=tests.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic)}</h4><p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ${t.timerMin?' · ⏱ '+t.timerMin+' мин':''}${t.limit?' · лимит: '+t.limit:''} · Автор: ${esc(t.authorName||'Аноним')}${t.desc?' · '+esc(t.desc):''}</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest('${t.id}')">Тапсыру</button></div></div>`).join('');
+  list.innerHTML=h;
+  showScr('s-public');
+}
+function subjectPool(key){
+  const seen={},out=[];
+  function add(q){
+    if(!q||!q.options||q.options.length<2)return;
+    const k=String(q.text).trim();if(seen[k])return;seen[k]=1;
+    out.push({text:q.text,options:q.options.slice(),correct:q.correct,points:1,id:key+'_'+hash(k).toString(36)});
+  }
+  publicTests().filter(t=>t.subject===key).forEach(t=>t.questions.forEach(add));
+  if(BANK[key])BANK[key].qs.forEach(add);
+  return out;
+}
+function shuffled(a){a=a.slice();for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));const t=a[i];a[i]=a[j];a[j]=t}return a}
+function subjName(key){const o=document.querySelector('#c-subject option[value="'+key+'"]');return o?o.textContent:key}
+function startSubjectMix(key){
+  const pool=shuffled(subjectPool(key));
+  if(pool.length<1){alert('Бұл пәннен сұрақ жоқ');return}
+  const qs=pool.slice(0,20),nm=subjName(key);
+  st=baseState();st.questions=qs.map(q=>({...q,subjectName:nm}));st.subjectName=nm+' · аралас';
+  st.timerSeconds=Math.max(qs.length*90,600);beginTest();
+}
+
+// --- ҰБТ 140 формат ---
+const UBT_PROFILE=['math','physics','chemistry','biology','geography','informatics','english','kazakh','worldhistory','law'];
+function ubtSections(p1,p2){return[{key:'history',n:20},{key:'reading',n:10},{key:'mathlit',n:10},{key:p1,n:40},{key:p2,n:40}]}
+function showUbt140(){
+  const opts=UBT_PROFILE.map(k=>`<option value="${k}">${esc(subjName(k))}</option>`).join('');
+  const a=document.getElementById('u-p1'),b=document.getElementById('u-p2');
+  if(!a.options.length){a.innerHTML=opts;b.innerHTML=opts;a.value='math';b.value='physics'}
+  renderUbt140();showScr('s-ubt140');
+}
+function renderUbt140(){
+  const p1=document.getElementById('u-p1').value,p2=document.getElementById('u-p2').value;
+  const rows=ubtSections(p1,p2).map(s=>{const have=subjectPool(s.key).length,ok=have>=s.n;
+    return `<tr><td>${esc(subjName(s.key))}</td><td>${s.n}</td><td style="color:${ok?'var(--ok)':'var(--warn)'};font-weight:700">${have}${ok?'':' ⚠'}</td></tr>`}).join('');
+  document.getElementById('u-info').innerHTML=`<div class="tscroll"><table class="ttable"><tr><th>Пән</th><th>Керек</th><th>Базада</th></tr>${rows}</table></div><p class="sub" style="margin:8px 0 12px">⚠ — сұрақ жеткіліксіз: бар сұрақтармен ғана құрылады. Сұрақ базасы админ мақұлдаған жария тесттерден жиналады.</p>`;
+}
+function startUbt140(){
+  const p1=document.getElementById('u-p1').value,p2=document.getElementById('u-p2').value;
+  if(p1===p2){alert('Екі түрлі бейіндік пән таңдаңыз');return}
+  let qs=[];
+  ubtSections(p1,p2).forEach(s=>{const nm=subjName(s.key);shuffled(subjectPool(s.key)).slice(0,s.n).forEach(q=>qs.push({...q,subjectName:nm}))});
+  if(!qs.length){alert('Сұрақ базасы бос');return}
+  if(qs.length<140&&!confirm('Базада сұрақ жеткіліксіз: '+qs.length+' / 140. Жалғастыру керек пе?'))return;
+  st=baseState();st.questions=qs;st.subjectName='ҰБТ 140 формат';st.is140=true;
+  st.timerSeconds=Math.max(Math.round(qs.length/140*240*60),600);beginTest();
+}
+
+// --- Ілмектер ---
 (function(){
+  const _sc=showCreate;
+  showCreate=function(){
+    _sc();
+    try{
+      const T=isTeacherUser(),box=document.getElementById('c-teacher-opts');
+      if(box)box.style.display=T?'':'none';
+      if(T){document.getElementById('c-class').innerHTML=classOptionsHTML('');document.getElementById('c-timer').value='';document.getElementById('c-limit').value=''}
+    }catch(e){}
+  };
+  const _et=editTest;
+  editTest=function(id){_et(id);try{renderTestSettings()}catch(e){}};
+  const _sut=startUserTest;
+  startUserTest=function(id){
+    const t=allTests().find(x=>x.id===id);
+    let owner=false;
+    if(t&&user){
+      const c=t.classId?getClasses().find(x=>x.id===t.classId):null;
+      owner=!!(user.isAdmin||t.authorId===user.id||(c&&c.teacherId===user.id));
+      if(t.classId&&!owner&&!(c&&c.students.includes(user.id))){alert('Бұл тест тек сынып оқушыларына арналған');return}
+      if(t.limit>0&&!owner&&attemptsOf(id,user.id)>=t.limit){alert('Лимит таусылды: бұл тестті '+t.limit+' рет қана тапсыруға болады');return}
+    }
+    _sut(id);
+    try{
+      if(t&&user&&document.getElementById('s-test').classList.contains('active')&&st.testId===id){
+        if(t.timerMin>0){st.timerSeconds=t.timerMin*60;updTimer()}
+        if(!owner)bumpAttempt(id,user.id);
+      }
+    }catch(e){}
+  };
   const _rt=renderTeacher;
   renderTeacher=function(){
     _rt();
-    try{
-      const T=isTeacherUser();
-      const tc=document.getElementById('tch-test-card');if(tc)tc.style.display=T?'':'none';
-      const j=document.getElementById('tch-joined');if(j&&user&&!user.isAdmin)j.insertAdjacentHTML('beforeend',studentTestsHTML());
-    }catch(e){}
+    if(!user)return;
+    const T=isTeacherUser(),A=!!user.isAdmin,all=getClasses();
+    const ct=document.getElementById('tch-ctests');
+    if(ct){
+      const mine=all.filter(c=>c.teacherId===user.id);
+      ct.style.display=(T&&!A)?'':'none';
+      ct.innerHTML=(T&&!A&&mine.length)?`<div class="card"><h3 style="margin-bottom:8px">📝 Сынып тесттері</h3>`+mine.map(c=>`<div style="margin-bottom:10px"><b>${esc(c.name)}</b>${classTestsHTML(c,'manage')}</div>`).join('')+`<p class="sub" style="margin-top:8px">Жаңа тест: «Басты бет → Тест құру» бетінде сыныпты таңдаңыз.</p></div>`:'';
+    }
+    const jl=document.getElementById('tch-joined'),joined=all.filter(c=>c.students.includes(user.id));
+    if(jl)jl.innerHTML=joined.map(c=>`<div class="card" style="margin:10px 0 0;padding:12px"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div><b>🏫 ${esc(c.name)}</b><div class="sub">Мұғалім: ${esc(c.teacherName||'')}</div></div><button class="btn btn-s btn-sm" onclick="leaveClass('${c.id}')">Шығу</button></div><div style="margin-top:8px">${classTestsHTML(c,'student')}</div></div>`).join('');
   };
-  const _rh=renderHomeExtras;
-  renderHomeExtras=function(){
-    _rh();
-    try{
-      const el=document.getElementById('home-extras'),h=studentTestsHTML();
-      if(el&&h)el.insertAdjacentHTML('beforeend','<div class="card">'+h+'</div>');
-    }catch(e){}
+  const _ss=showStudent;
+  showStudent=function(cid,sid){
+    const c=getClasses().find(x=>x.id===cid);if(!c||!canManageClass(c))return;
+    _ss(cid,sid);if(user.isAdmin)showScr('s-teacher');
   };
   const _sa=showAdmin;
   showAdmin=function(){_sa();try{renderAdminClasses()}catch(e){}};
-})();
-
-// ================= Доступтар, шағымдар, хронология, офлайн =================
-const PERMS=[['create','➕ Тест құру'],['publish','🌐 Жариялауға жіберу'],['file','📂 Файлдан тест'],['chrono','🕰 Хронология тренажері'],['report','⚠ Сұраққа шағымдану']];
-function hasPerm(key){
-  if(!user)return false;if(user.isAdmin)return true;
-  const p=findUserByLogin(user.name);
-  const ov=p&&p.perms?p.perms[key]:undefined;
-  if(ov===true)return true;if(ov===false)return false;
-  return LS.get('ubt_perm_global',{})[key]!==false;
-}
-function denied(){alert('⛔ Бұл мүмкіндік сізге ашық емес. Админге жазыңыз.')}
-function setGlobalPerm(k,v){if(!user||!user.isAdmin)return;const g=LS.get('ubt_perm_global',{});g[k]=!!v;LS.set('ubt_perm_global',g)}
-function setUserPerm(id,k,v){
-  if(!user||!user.isAdmin)return;
-  mutateProfile(id,p=>{p.perms=p.perms||{};if(v==='')delete p.perms[k];else p.perms[k]=(v==='1')});
-}
-function adminToggleBlock(id){
-  if(!user||!user.isAdmin)return;
-  mutateProfile(id,p=>{p.blocked=!p.blocked});renderPerms();
-}
-function adminSetRole(id,role){
-  if(!user||!user.isAdmin)return;
-  mutateProfile(id,p=>{
-    delete p.role;delete p.teacherApproved;delete p.teacherInfo;
-    if(role==='teacher'){p.role='teacher';p.teacherApproved=true}
-    if(role==='admin'){p.role='admin'}
-  });
-  if(role==='teacher'){const s=getUserStats(id);if(!s.title){s.title='👨‍🏫 Мұғалім';setUserStats(id,s)}}
-  renderPerms();renderAdminUsers();
-}
-function adminAddPerson(){
-  if(!user||!user.isAdmin)return;
-  const name=document.getElementById('np-name').value.trim();
-  const pass=document.getElementById('np-pass').value;
-  const role=document.getElementById('np-role').value;
-  if(!name||name.length<2){alert('Логинді жазыңыз (кемінде 2 таңба)');return}
-  if(!pass||pass.length<4){alert('Пароль кемінде 4 таңба');return}
-  const k=name.toLowerCase();
-  if(findUserByLogin(name)||k==='админ'||k==='admin'){alert('Бұл логин бос емес');return}
-  const profiles=LS.get('ubt_profiles',{});
-  const u={name:name,password:pass,id:'u_'+k.replace(/[^\p{L}\p{N}]+/gu,'_')+'_'+Date.now().toString(36).slice(-4),isAdmin:false};
-  if(role==='teacher'){u.role='teacher';u.teacherApproved=true}
-  if(role==='admin')u.role='admin';
-  profiles[k]=u;LS.set('ubt_profiles',profiles);
-  setUserStats(u.id,{points:0,title:role==='teacher'?'👨‍🏫 Мұғалім':'',stars:0,verified:false});
-  document.getElementById('np-name').value='';document.getElementById('np-pass').value='';
-  alert('✅ Қосылды: '+name+'\nЛогин: '+name+'\nПароль: '+pass);
-  renderAdminUsers();renderPerms();
-}
-function renderPerms(){
-  const g=LS.get('ubt_perm_global',{});
-  document.getElementById('perm-global').innerHTML=PERMS.map(([k,n])=>`<label class="switch" style="margin-bottom:8px"><input type="checkbox" ${g[k]!==false?'checked':''} onchange="setGlobalPerm('${k}',this.checked)"> ${n}</label>`).join('');
-  const us=Object.values(LS.get('ubt_profiles',{})).sort((a,b)=>String(a.name).localeCompare(String(b.name)));
-  const sel=document.getElementById('perm-user'),cur=sel.value;
-  sel.innerHTML='<option value="">— Қолданушыны таңдаңыз —</option>'+us.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}${p.role==='admin'?' (админ)':(p.role==='teacher'&&p.teacherApproved)?' (мұғалім)':''}${p.blocked?' 🚫':''}</option>`).join('');
-  sel.value=cur;renderPermUser();
-}
-function renderPermUser(){
-  const id=document.getElementById('perm-user').value,box=document.getElementById('perm-user-box');
-  const p=Object.values(LS.get('ubt_profiles',{})).find(x=>x.id===id);
-  if(!p){box.innerHTML='';return}
-  const selSt='padding:7px;border:1px solid var(--b);border-radius:8px;background:var(--bg);color:var(--t)';
-  const role=p.role==='admin'?'admin':(p.role==='teacher'&&p.teacherApproved)?'teacher':'student';
-  box.innerHTML=PERMS.map(([k,n])=>{const v=p.perms?p.perms[k]:undefined;
-    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:13px">${n}</span><select style="${selSt}" onchange="setUserPerm(${jsq(id)},'${k}',this.value)"><option value="" ${v==null?'selected':''}>Жалпы ережемен</option><option value="1" ${v===true?'selected':''}>✓ Рұқсат</option><option value="0" ${v===false?'selected':''}>✕ Тыйым</option></select></div>`}).join('')
-   +`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin:12px 0 8px"><span style="font-size:13px">👤 Рөлі</span><select style="${selSt}" onchange="adminSetRole(${jsq(id)},this.value)"><option value="student" ${role==='student'?'selected':''}>Оқушы</option><option value="teacher" ${role==='teacher'?'selected':''}>Мұғалім</option><option value="admin" ${role==='admin'?'selected':''}>Админ (көмекші)</option></select></div>
-    <button class="btn btn-sm ${p.blocked?'btn-ok':'btn-d'}" onclick="adminToggleBlock(${jsq(id)})">${p.blocked?'🔓 Бұғатты алу':'🚫 Кіруді бұғаттау'}</button>`;
-}
-
-// ---- Шағымдану ----
-let repCtx=null;
-function openReport(q0,tid,tname){
-  if(!user)return;
-  if(!hasPerm('report')){denied();return}
-  let q=q0,testId=tid,testName=tname;
-  if(!q){q=st.questions[st.currentIndex];testId=st.testId;testName=st.subjectName}
-  if(!q)return;
-  repCtx={q:{id:q.id,text:q.text,options:q.options,correct:q.correct},testId:testId||null,testName:testName||''};
-  document.getElementById('rep-q').textContent=q.text;
-  document.getElementById('rep-note').value='';
-  lock.paused=true;
-  document.getElementById('rep-ov').style.display='flex';
-}
-function closeReport(){
-  const ov=document.getElementById('rep-ov');if(ov)ov.style.display='none';
-  repCtx=null;setTimeout(()=>{lock.paused=false},900);
-}
-function sendReport(){
-  if(!repCtx||!user)return;
-  const a=LS.get('ubt_reports',[]);
-  const type=document.getElementById('rep-type').value,note=document.getElementById('rep-note').value.trim();
-  const dup=a.find(r=>r.uid===user.id&&r.qid===repCtx.q.id&&r.testId===repCtx.testId&&r.status==='new');
-  if(dup){dup.type=type;dup.note=note;dup.t=Date.now()}
-  else a.push({id:'rp_'+Date.now().toString(36)+Math.random().toString(36).slice(2,5),qid:repCtx.q.id,qtext:repCtx.q.text,options:repCtx.q.options,correct:repCtx.q.correct,testId:repCtx.testId,testName:repCtx.testName,uid:user.id,name:user.name,type,note,t:Date.now(),status:'new'});
-  if(a.length>500)a.splice(0,a.length-500);
-  LS.set('ubt_reports',a);
-  closeReport();
-  guardPause(()=>alert('✅ Рақмет! Шағым админге жіберілді.'));
-}
-function reportTest(r){const t=r.testId?allTests().find(x=>x.id===r.testId):null;return(t&&t.questions.some(q=>q.id===r.qid))?t:null}
-function reportClose(rid,status){
-  const a=LS.get('ubt_reports',[]),r=a.find(x=>x.id===rid);if(!r)return;
-  a.forEach(x=>{if(x.status==='new'&&(x.id===rid||(status==='resolved'&&r.testId&&x.testId===r.testId&&x.qid===r.qid)))x.status=status});
-  LS.set('ubt_reports',a);renderReports();
-}
-function reportSet(rid,status){if(!user||!user.isAdmin)return;reportClose(rid,status)}
-function reportFixAns(rid){
-  if(!user||!user.isAdmin)return;
-  const r=LS.get('ubt_reports',[]).find(x=>x.id===rid);if(!r)return;
-  const all=allTests(),t=r.testId?all.find(x=>x.id===r.testId):null;
-  const q=t?t.questions.find(x=>x.id===r.qid):null;if(!q){alert('Сұрақ табылмады');return}
-  const v=prompt('Дұрыс жауап әрпін жазыңыз (A–'+['A','B','C','D','E'][q.options.length-1]+'):\n'+q.text);
-  if(v===null)return;
-  const i=['A','B','C','D','E'].indexOf(String(v).trim().toUpperCase());
-  if(i<0||i>=q.options.length){alert('Қате әріп');return}
-  q.correct=i;saveAllTests(all);reportClose(rid,'resolved');
-}
-function reportDelQ(rid){
-  if(!user||!user.isAdmin)return;
-  const r=LS.get('ubt_reports',[]).find(x=>x.id===rid);if(!r)return;
-  const all=allTests(),t=r.testId?all.find(x=>x.id===r.testId):null;if(!t)return;
-  if(!confirm('Сұрақты тесттен өшіру керек пе?'))return;
-  t.questions=t.questions.filter(q=>q.id!==r.qid);saveAllTests(all);reportClose(rid,'resolved');
-}
-function renderReports(){
-  const el=document.getElementById('admin-reports');if(!el)return;
-  const all=LS.get('ubt_reports',[]);
-  const nw=all.filter(r=>r.status==='new').sort((a,b)=>b.t-a.t);
-  const done=all.filter(r=>r.status!=='new').sort((a,b)=>b.t-a.t).slice(0,10);
-  const cnt=document.getElementById('admin-reports-count');if(cnt)cnt.textContent=nw.length?nw.length+' жаңа':'';
-  const L=['A','B','C','D','E'];
-  const row=(r,open)=>{
-    const hasT=!!reportTest(r);
-    return `<div class="item" style="flex-wrap:wrap"><div class="info" style="min-width:240px"><h4 style="white-space:normal">${esc(r.qtext)}</h4><p>${(r.options||[]).map((o,i)=>(i===r.correct?'✅ ':'')+L[i]+') '+esc(o)).join(' · ')}</p><p>⚠ <b>${esc(r.type)}</b>${r.note?' — '+esc(r.note):''}</p><p>👤 ${esc(r.name)} · ${esc(r.testName||'—')} · ${fmtT(r.t)}${open?'':' · '+(r.status==='resolved'?'✓ шешілді':'✕ қабылданбады')}</p></div>${open?`<div class="acts"><button class="btn btn-ok btn-sm" onclick="reportSet('${r.id}','resolved')">✓ Шешілді</button>${hasT?`<button class="btn btn-w btn-sm" onclick="reportFixAns('${r.id}')">✎ Жауапты түзету</button><button class="btn btn-d btn-sm" onclick="reportDelQ('${r.id}')">🗑 Сұрақты өшіру</button>`:''}<button class="btn btn-s btn-sm" onclick="reportSet('${r.id}','rejected')">✕ Қабылдамау</button></div>`:''}</div>`;
-  };
-  el.innerHTML=(nw.length?nw.map(r=>row(r,true)).join(''):'<p class="sub">Жаңа шағым жоқ</p>')+(done.length?'<h4 style="margin:12px 0 6px">Соңғы өңделгендер</h4>'+done.map(r=>row(r,false)).join(''):'');
-  mathIn(el);
-}
-
-// ---- Хронологиялық тренажер ----
-const CHRONO=[
-{c:'kz',y:751,t:'Талас шайқасы'},
-{c:'kz',y:1219,t:'Шыңғыс хан әскерінің Орта Азияға жорығының басталуы'},
-{c:'kz',y:1465,t:'Қазақ хандығының құрылуы'},
-{c:'kz',y:1511,t:'Қасым ханның билікке келуі'},
-{c:'kz',y:1723,t:'«Ақтабан шұбырынды, Алқакөл сұлама» (Ұлы жоңғар шапқыншылығы)'},
-{c:'kz',y:1729,t:'Аңырақай шайқасы'},
-{c:'kz',y:1822,t:'«Сібір қазақтары туралы жарғы» қабылданды'},
-{c:'kz',y:1837,t:'Кенесары Қасымұлы бастаған көтерілістің басталуы'},
-{c:'kz',y:1868,t:'Орынбор және Батыс Сібір қазақтарын басқару туралы Уақытша ереже'},
-{c:'kz',y:1916,t:'Ұлт-азаттық көтеріліс (Торғай, Жетісу)'},
-{c:'kz',y:1917,t:'Алаш партиясының құрылуы'},
-{c:'kz',y:1920,t:'Қазақ АКСР-інің құрылуы'},
-{c:'kz',y:1929,t:'Алматының Қазақстан астанасы болуы'},
-{c:'kz',y:1936,t:'Қазақ КСР-і одақтас республика мәртебесін алды'},
-{c:'kz',y:1949,t:'Семей полигонындағы алғашқы ядролық сынақ'},
-{c:'kz',y:1954,t:'Тың және тыңайған жерлерді игеру басталды'},
-{c:'kz',y:1986,t:'Желтоқсан оқиғасы'},
-{c:'kz',y:1991,t:'Қазақстан Республикасының Тәуелсіздігі жарияланды'},
-{c:'kz',y:1993,t:'Ұлттық валюта — теңгенің енгізілуі'},
-{c:'kz',y:1995,t:'Қазақстанның жаңа Конституциясы қабылданды'},
-{c:'kz',y:1997,t:'Астананың Ақмолаға көшірілуі'},
-{c:'world',y:476,t:'Батыс Рим империясының құлауы'},
-{c:'world',y:800,t:'Карл Ұлының император болып тәждендірілуі'},
-{c:'world',y:1066,t:'Гастингс шайқасы (Англияны норман жаулап алуы)'},
-{c:'world',y:1096,t:'Бірінші крест жорығының басталуы'},
-{c:'world',y:1206,t:'Шыңғыс хан Ұлы хан болып жарияланды'},
-{c:'world',y:1453,t:'Константинополь құлады'},
-{c:'world',y:1492,t:'Колумбтың Америкаға жетуі'},
-{c:'world',y:1517,t:'Реформацияның басталуы (М. Лютер)'},
-{c:'world',y:1648,t:'Вестфаль бейбітшілігі'},
-{c:'world',y:1776,t:'АҚШ-тың Тәуелсіздік декларациясы'},
-{c:'world',y:1789,t:'Ұлы француз революциясының басталуы'},
-{c:'world',y:1815,t:'Ватерлоо шайқасы'},
-{c:'world',y:1861,t:'Ресейде крепостнойлық құқықтың жойылуы'},
-{c:'world',y:1914,t:'Бірінші дүниежүзілік соғыстың басталуы'},
-{c:'world',y:1939,t:'Екінші дүниежүзілік соғыстың басталуы'},
-{c:'world',y:1945,t:'Екінші дүниежүзілік соғыстың аяқталуы, БҰҰ құрылды'},
-{c:'world',y:1961,t:'Ю. Гагариннің ғарышқа ұшуы'},
-{c:'world',y:1989,t:'Берлин қабырғасының құлауы'},
-{c:'world',y:1991,t:'КСРО-ның тарауы'}
-];
-let ch={items:[],done:false,drag:null};
-function chShuffle(a){a=a.slice();for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
-function chStats(){return LS.get('ubt_chrono_'+user.id,{rounds:0,perfect:0})}
-function showChrono(){
-  if(!hasPerm('chrono')){denied();return}
-  document.getElementById('ch-setup').style.display='';
-  document.getElementById('ch-play').style.display='none';
-  showScr('s-chrono');
-}
-function chStart(){
-  const cat=document.getElementById('ch-cat').value,n=parseInt(document.getElementById('ch-n').value)||5;
-  const seen=new Set(),pick=[];
-  chShuffle(CHRONO.filter(e=>cat==='mix'||e.c===cat)).forEach(e=>{if(pick.length<n&&!seen.has(e.y)){seen.add(e.y);pick.push({t:e.t,y:e.y})}});
-  const sorted=pick.slice().sort((a,b)=>a.y-b.y);
-  let order=chShuffle(pick),k=0;
-  while(k++<10&&order.every((e,i)=>e===sorted[i]))order=chShuffle(pick);
-  ch.items=order;ch.done=false;ch.drag=null;
-  document.getElementById('ch-setup').style.display='none';
-  document.getElementById('ch-play').style.display='';
-  document.getElementById('ch-check').style.display='';
-  document.getElementById('ch-next').style.display='none';
-  document.getElementById('ch-res').innerHTML='';
-  const s=chStats();
-  document.getElementById('ch-info').textContent='Ертеден кешке қарай реттеңіз · Ойналған: '+s.rounds+' · Мінсіз: '+s.perfect;
-  chRender();
-}
-function chRender(){
-  const n=ch.items.length;
-  document.getElementById('ch-list').innerHTML=ch.items.map((e,i)=>`<div class="ch-it ${ch.done?(e.ok?'ok':'bad'):''}" draggable="${ch.done?'false':'true'}" ondragstart="chDrag(event,${i})" ondragover="event.preventDefault()" ondrop="chDrop(event,${i})"><span class="ch-n">${i+1}</span><span class="ch-t">${esc(e.t)}</span>${ch.done?`<b class="ch-y">${e.y}</b>`:`<span class="ch-b"><button class="btn btn-s btn-sm" onclick="chMove(${i},-1)" ${i===0?'disabled':''}>▲</button><button class="btn btn-s btn-sm" onclick="chMove(${i},1)" ${i===n-1?'disabled':''}>▼</button></span>`}</div>`).join('');
-}
-function chMove(i,d){
-  if(ch.done)return;const j=i+d;if(j<0||j>=ch.items.length)return;
-  const x=ch.items[i];ch.items[i]=ch.items[j];ch.items[j]=x;chRender();
-}
-function chDrag(ev,i){ch.drag=i;try{ev.dataTransfer.setData('text/plain',String(i))}catch(e){}}
-function chDrop(ev,i){
-  ev.preventDefault();const f=ch.drag;ch.drag=null;
-  if(ch.done||f==null||f===i)return;
-  const m=ch.items.splice(f,1)[0];ch.items.splice(i,0,m);chRender();
-}
-function chCheck(){
-  if(ch.done)return;
-  const sorted=ch.items.slice().sort((a,b)=>a.y-b.y);
-  let ok=0;ch.items.forEach((e,i)=>{e.ok=(sorted[i]===e);if(e.ok)ok++});
-  ch.done=true;chRender();
-  const n=ch.items.length,perfect=ok===n;
-  let pts=ok*4+(perfect?10:0);
-  if(user&&!user.isAdmin){
-    addPoints(pts);
-    const s=chStats();s.rounds++;if(perfect)s.perfect++;LS.set('ubt_chrono_'+user.id,s);
-  }
-  if(perfect)try{confetti()}catch(e){}
-  document.getElementById('ch-res').innerHTML=`<div class="res-row"><span>Дұрыс орнында</span><b style="color:var(--p)">${ok} / ${n}</b></div>
-    ${user&&!user.isAdmin?`<div class="res-row"><span>Алынған ұпай</span><b style="color:var(--ok)">+${pts} ⭐</b></div>`:''}
-    ${perfect?'<p style="margin-top:8px">🎉 Мінсіз реттілік!</p>':'<p class="sub" style="margin-top:8px"><b>Дұрыс реттілік:</b><br>'+sorted.map(e=>e.y+' — '+esc(e.t)).join('<br>')+'</p>'}`;
-  document.getElementById('ch-check').style.display='none';
-  document.getElementById('ch-next').style.display='';
-}
-
-// ---- Офлайн / синхрондау / PWA ----
-let _bip=null;
-function syncCount(){return LS.get('ubt_sync_queue',[]).length}
-function queueSync(score,max){
-  if(!user||user.isAdmin)return;
-  const q=LS.get('ubt_sync_queue',[]);
-  q.push({uid:user.id,name:user.name,topic:st.subjectName||'',testId:st.testId||null,score,max,t:Date.now(),viol:lock.viol||0});
-  if(q.length>500)q.splice(0,q.length-500);
-  LS.set('ubt_sync_queue',q);syncQueue();
-}
-async function syncQueue(){
-  try{
-    const url=LS.get('ubt_sync_url',''),q=LS.get('ubt_sync_queue',[]);
-    if(!url||!q.length||!navigator.onLine)return;
-    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({results:q})});
-    if(r.ok){
-      const cur=LS.get('ubt_sync_queue',[]);
-      LS.set('ubt_sync_queue',cur.filter(x=>!q.some(y=>y.t===x.t&&y.uid===x.uid)));
-    }
-  }catch(e){}
-  try{refreshNet()}catch(e){}
-}
-function refreshNet(){try{if(user&&document.getElementById('s-home').classList.contains('active'))renderHomeExtras()}catch(e){}}
-function saveSyncUrl(){
-  if(!user||!user.isAdmin)return;
-  const v=document.getElementById('sync-url').value.trim();
-  if(v&&!/^https?:\/\//i.test(v)){alert('Мекенжай http:// немесе https:// деп басталуы керек');return}
-  LS.set('ubt_sync_url',v);renderSyncBox();syncQueue();
-}
-function renderSyncBox(){
-  const el=document.getElementById('admin-sync');if(!el)return;
-  el.innerHTML=`<div class="fg"><label>Сервер мекенжайы (POST, JSON)</label><input id="sync-url" value="${esc(LS.get('ubt_sync_url',''))}" placeholder="https://сіздің-сервер.kz/api/results"></div><button class="btn btn-p btn-sm" onclick="saveSyncUrl()">💾 Сақтау</button> <span class="sub" style="margin-left:8px">Кезекте: ${syncCount()} нәтиже</span>`;
-}
-function installPwa(){if(!_bip)return;_bip.prompt();_bip=null;refreshNet()}
-window.addEventListener('online',()=>{syncQueue();refreshNet()});
-window.addEventListener('offline',refreshNet);
-window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();_bip=e;refreshNet()});
-setInterval(syncQueue,60000);
-(function(){
-  if(window.frameElement)return; // Streamlit iframe ішінде PWA тіркелмейді
-  try{
-    [['manifest','manifest.json'],['apple-touch-icon','icon-192.png']].forEach(a=>{const l=document.createElement('link');l.rel=a[0];l.href=a[1];document.head.appendChild(l)});
-    const m=document.createElement('meta');m.name='theme-color';m.content='#2563eb';document.head.appendChild(m);
-    if('serviceWorker' in navigator&&/^https?:$/.test(location.protocol))window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
-  }catch(e){}
-})();
-
-(function(){
-  const _sc=showCreate;
-  showCreate=function(){if(!hasPerm('create')){denied();return}return _sc.apply(this,arguments)};
-  const _sf=showFileTest;
-  showFileTest=function(){if(!hasPerm('file')){denied();return}_sf()};
-  const _rh=renderHomeExtras;
-  renderHomeExtras=function(){
-    _rh();
+  const _af=afterFinish;
+  afterFinish=function(){
+    _af();
     try{
-      const el=document.getElementById('home-extras');if(!el||!user)return;
-      let c='';
-      if(!navigator.onLine)c+='<div class="chip warn">📴 Офлайн: нәтижелер құрылғыда сақталады</div>';
-      const n=syncCount();if(n&&LS.get('ubt_sync_url',''))c+=`<div class="chip">⏳ Серверге жіберілмеген: ${n}</div>`;
-      if(_bip)c+='<div class="chip" style="cursor:pointer" onclick="installPwa()">📲 Қосымша ретінде орнату</div>';
-      if(c)el.insertAdjacentHTML('afterbegin','<div class="chips">'+c+'</div>');
-    }catch(e){}
-  };
-  const _sa=showAdmin;
-  showAdmin=function(){_sa();try{renderPerms();renderReports();renderSyncBox()}catch(e){}};
-  const _ra=reviewAns;
-  reviewAns=function(){
-    _ra();
-    try{
-      document.querySelectorAll('#rev-list .rev').forEach((el,i)=>{
-        const q=st.questions[i],h=el.querySelector('.rh');if(!q||!h)return;
-        const b=document.createElement('button');b.className='flag';b.textContent='⚠';b.title='Қатені хабарлау';
-        b.onclick=()=>openReport(q,st.testId,st.subjectName);h.appendChild(b);
-      });
+      if(!user||user.isAdmin||st.isMistakes||!st.lastScore)return;
+      if(st.testId){
+        const t=allTests().find(x=>x.id===st.testId);
+        if(t&&t.classId){const r=LS.get('ubt_tres_'+t.id,[]);r.push({uid:user.id,name:user.name,score:st.lastScore.score,max:st.lastScore.max,t:Date.now()});LS.set('ubt_tres_'+t.id,r)}
+      }
+      if(st.is140){
+        const by={},order=[];
+        st.questions.forEach(q=>{const k=q.subjectName;if(!by[k]){by[k]={s:0,n:0};order.push(k)}by[k].n++;if(st.answers[q.id]===q.correct)by[k].s++});
+        document.getElementById('res-break').insertAdjacentHTML('beforeend',order.map(k=>`<div class="res-row"><span>${esc(k)}</span><b>${by[k].s} / ${by[k].n}</b></div>`).join(''));
+      }
     }catch(e){}
   };
 })();
-</script>
-<script>
-// ===== Менделеев кестесі + калькулятор (тест кезінде) =====
-const PT_RAW="H|Сутек|1.008;He|Гелий|4.003;Li|Литий|6.94;Be|Бериллий|9.012;B|Бор|10.81;C|Көміртек|12.011;N|Азот|14.007;O|Оттек|15.999;F|Фтор|18.998;Ne|Неон|20.180;Na|Натрий|22.990;Mg|Магний|24.305;Al|Алюминий|26.982;Si|Кремний|28.085;P|Фосфор|30.974;S|Күкірт|32.06;Cl|Хлор|35.45;Ar|Аргон|39.948;K|Калий|39.098;Ca|Кальций|40.078;Sc|Скандий|44.956;Ti|Титан|47.867;V|Ванадий|50.942;Cr|Хром|51.996;Mn|Марганец|54.938;Fe|Темір|55.845;Co|Кобальт|58.933;Ni|Никель|58.693;Cu|Мыс|63.546;Zn|Мырыш|65.38;Ga|Галлий|69.723;Ge|Германий|72.630;As|Мышьяк|74.922;Se|Селен|78.971;Br|Бром|79.904;Kr|Криптон|83.798;Rb|Рубидий|85.468;Sr|Стронций|87.62;Y|Иттрий|88.906;Zr|Цирконий|91.224;Nb|Ниобий|92.906;Mo|Молибден|95.95;Tc|Технеций|98;Ru|Рутений|101.07;Rh|Родий|102.906;Pd|Палладий|106.42;Ag|Күміс|107.868;Cd|Кадмий|112.414;In|Индий|114.818;Sn|Қалайы|118.710;Sb|Сурьма|121.760;Te|Теллур|127.60;I|Йод|126.904;Xe|Ксенон|131.293;Cs|Цезий|132.905;Ba|Барий|137.327;La|Лантан|138.905;Ce|Церий|140.116;Pr|Празеодим|140.908;Nd|Неодим|144.242;Pm|Прометий|145;Sm|Самарий|150.36;Eu|Европий|151.964;Gd|Гадолиний|157.25;Tb|Тербий|158.925;Dy|Диспрозий|162.500;Ho|Гольмий|164.930;Er|Эрбий|167.259;Tm|Тулий|168.934;Yb|Иттербий|173.045;Lu|Лютеций|174.967;Hf|Гафний|178.486;Ta|Тантал|180.948;W|Вольфрам|183.84;Re|Рений|186.207;Os|Осмий|190.23;Ir|Иридий|192.217;Pt|Платина|195.084;Au|Алтын|196.967;Hg|Сынап|200.592;Tl|Таллий|204.38;Pb|Қорғасын|207.2;Bi|Висмут|208.980;Po|Полоний|209;At|Астат|210;Rn|Радон|222;Fr|Франций|223;Ra|Радий|226;Ac|Актиний|227;Th|Торий|232.038;Pa|Протактиний|231.036;U|Уран|238.029;Np|Нептуний|237;Pu|Плутоний|244;Am|Америций|243;Cm|Кюрий|247;Bk|Берклий|247;Cf|Калифорний|251;Es|Эйнштейний|252;Fm|Фермий|257;Md|Менделевий|258;No|Нобелий|259;Lr|Лоуренсий|266;Rf|Резерфордий|267;Db|Дубний|268;Sg|Сиборгий|269;Bh|Борий|270;Hs|Хассий|277;Mt|Мейтнерий|278;Ds|Дармштадтий|281;Rg|Рентгений|282;Cn|Коперниций|285;Nh|Нихоний|286;Fl|Флеровий|289;Mc|Московий|290;Lv|Ливерморий|293;Ts|Теннессин|294;Og|Оганесон|294";
-const PT_EL=PT_RAW.split(';').map((r,i)=>{const a=r.split('|');return{z:i+1,s:a[0],n:a[1],m:a[2]}});
-const PT_CAT={alk:'Сілтілік металл',ae:'Сілтілік-жер металл',tm:'Өтпелі металл',pt:'Өтпелі емес металл',mtl:'Металлоид',nm:'Бейметалл',hal:'Галоген',ng:'Асыл газ',lan:'Лантаноид',act:'Актиноид'};
-function ptCat(z){
-  if([3,11,19,37,55,87].includes(z))return'alk';
-  if([4,12,20,38,56,88].includes(z))return'ae';
-  if([9,17,35,53,85,117].includes(z))return'hal';
-  if([2,10,18,36,54,86,118].includes(z))return'ng';
-  if([5,14,32,33,51,52,84].includes(z))return'mtl';
-  if([1,6,7,8,15,16,34].includes(z))return'nm';
-  if(z>=57&&z<=71)return'lan';
-  if(z>=89&&z<=103)return'act';
-  if([13,31,49,50,81,82,83,113,114,115,116].includes(z))return'pt';
-  return'tm';
-}
-function ptPos(z){
-  if(z===1)return[1,1];if(z===2)return[1,18];
-  if(z<=4)return[2,z-2];if(z<=10)return[2,z+8];
-  if(z<=12)return[3,z-10];if(z<=18)return[3,z];
-  if(z<=36)return[4,z-18];if(z<=54)return[5,z-36];
-  if(z<=56)return[6,z-54];if(z<=71)return[9,z-54];if(z<=86)return[6,z-68];
-  if(z<=88)return[7,z-86];if(z<=103)return[10,z-86];return[7,z-100];
-}
-let ptBuilt=false;
-function buildPT(){
-  if(ptBuilt)return;ptBuilt=true;
-  const g=document.getElementById('pt-grid');let h='';
-  PT_EL.forEach(e=>{
-    const p=ptPos(e.z),c=ptCat(e.z);
-    h+=`<div class="pt-c c-${c}" style="grid-row:${p[0]};grid-column:${p[1]}" data-z="${e.z}" onclick="ptShow(${e.z})"><div class="n">${e.z}</div><div class="s">${e.s}</div><div class="m">${e.m}</div></div>`;
-  });
-  h+=`<div class="pt-ph c-lan" style="grid-row:6;grid-column:3">57–71</div><div class="pt-ph c-act" style="grid-row:7;grid-column:3">89–103</div>`;
-  g.innerHTML=h;
-  document.getElementById('pt-leg').innerHTML=Object.keys(PT_CAT).map(k=>`<span><i class="c-${k}"></i>${PT_CAT[k]}</span>`).join('');
-}
-function ptShow(z){
-  const e=PT_EL[z-1],p=ptPos(z),c=ptCat(z);
-  document.querySelectorAll('.pt-c.sel').forEach(x=>x.classList.remove('sel'));
-  const el=document.querySelector('.pt-c[data-z="'+z+'"]');if(el)el.classList.add('sel');
-  const period=p[0]===9?6:(p[0]===10?7:p[0]);
-  const grp=(c==='lan'||c==='act')?'—':p[1];
-  document.getElementById('pt-info').innerHTML=`<b style="font-size:15px">${e.s} — ${e.n}</b> &nbsp;·&nbsp; реттік нөмірі: <b>${e.z}</b> &nbsp;·&nbsp; атомдық массасы: <b>${e.m}</b><br>${period}-период &nbsp;·&nbsp; топ: ${grp} &nbsp;·&nbsp; ${PT_CAT[c]}`;
-}
-function togPT(v){
-  const o=document.getElementById('pt-ov');
-  const on=(typeof v==='boolean')?v:!o.classList.contains('show');
-  if(on){buildPT();togCalc(false)}
-  o.classList.toggle('show',on);
-}
-// ---- Калькулятор ----
-const CALC_KEYS=[['C','cl'],['⌫','cl'],['(',''],[')',''],['sin(','fn'],['cos(','fn'],['tan(','fn'],['÷','op'],['lg(','fn'],['ln(','fn'],['√(','fn'],['×','op'],['7',''],['8',''],['9',''],['−','op'],['4',''],['5',''],['6',''],['+','op'],['1',''],['2',''],['3',''],['^','op'],['0',''],['.',''],['π',''],['=','eq']];
-let calcBuilt=false;
-function buildCalc(){
-  if(calcBuilt)return;calcBuilt=true;
-  const g=document.getElementById('calc-g');
-  CALC_KEYS.forEach(k=>{
-    const b=document.createElement('button');b.textContent=k[0].replace('(','').length?k[0].replace('(',''):k[0];
-    if(k[0]==='sin('||k[0]==='cos('||k[0]==='tan('||k[0]==='lg('||k[0]==='ln('||k[0]==='√(')b.textContent=k[0].slice(0,-1);
-    if(k[1])b.className=k[1];
-    b.onclick=()=>calcKey(k[0]);g.appendChild(b);
-  });
-}
-function calcKey(k){
-  const i=document.getElementById('calc-in');
-  if(k==='C'){i.value='';document.getElementById('calc-hist').textContent='';return}
-  if(k==='⌫'){i.value=i.value.slice(0,-1);return}
-  if(k==='='){calcEq();return}
-  i.value+=k;
-}
-function calcEval(src){
-  const t=String(src).replace(/×/g,'*').replace(/÷/g,'/').replace(/−/g,'-').replace(/,/g,'.').match(/\d+\.?\d*|\.\d+|[a-zA-Zπ√]+|[-+*\/^()%]/g)||[];
-  if(t.join('').length<String(src).replace(/\s/g,'').length-0&&false)throw 0;
-  let p=0;
-  const peek=()=>t[p],next=()=>t[p++];
-  const FN={'sin':x=>Math.sin(x*Math.PI/180),'cos':x=>Math.cos(x*Math.PI/180),'tan':x=>Math.tan(x*Math.PI/180),'lg':Math.log10,'ln':Math.log,'√':Math.sqrt,'sqrt':Math.sqrt};
-  function expr(){let v=term();while(peek()==='+'||peek()==='-'){const o=next(),r=term();v=o==='+'?v+r:v-r}return v}
-  function term(){
-    let v=power();
-    for(;;){
-      const q=peek();
-      if(q==='*'||q==='/'){next();const r=power();v=q==='*'?v*r:v/r}
-      else if(q&&(q==='('||q==='π'||FN[q])){v=v*power()}
-      else break;
-    }
-    return v;
-  }
-  function power(){const b=unary();if(peek()==='^'){next();return Math.pow(b,power())}return b}
-  function unary(){if(peek()==='-'){next();return-unary()}if(peek()==='+'){next();return unary()}return post()}
-  function post(){let v=prim();while(peek()==='%'){next();v=v/100}return v}
-  function prim(){
-    const q=next();
-    if(q===undefined)throw 0;
-    if(/^(\d|\.)/.test(q))return parseFloat(q);
-    if(q==='π')return Math.PI;
-    if(q==='('){const v=expr();if(next()!==')')throw 0;return v}
-    if(FN[q]){const a=unary2();return FN[q](a)}
-    throw 0;
-  }
-  function unary2(){if(peek()==='('){next();const v=expr();if(next()!==')')throw 0;return v}return power()}
-  const r=expr();
-  if(p<t.length)throw 0;
-  if(!isFinite(r))throw 0;
-  return r;
-}
-function calcEq(){
-  const i=document.getElementById('calc-in'),h=document.getElementById('calc-hist');
-  if(!i.value.trim())return;
-  try{
-    const r=parseFloat(calcEval(i.value).toPrecision(12));
-    h.textContent=i.value+' =';i.value=String(r);
-  }catch(e){h.textContent='Қате өрнек';}
-}
-function togCalc(v){
-  const b=document.getElementById('calc-box');
-  const on=(typeof v==='boolean')?v:!b.classList.contains('show');
-  if(on){buildCalc();togPT(false)}
-  b.classList.toggle('show',on);
-  if(on)setTimeout(()=>{try{document.getElementById('calc-in').focus({preventScroll:true})}catch(e){}},50);
-}
-function closeTools(){togPT(false);togCalc(false);const i=document.getElementById('calc-in');if(i)i.value='';const h=document.getElementById('calc-hist');if(h)h.textContent=''}
-document.addEventListener('keydown',e=>{if(e.key==='Escape')closeTools()});
-(function(){const b=beginTest;beginTest=function(){try{closeTools()}catch(e){}return b.apply(this,arguments)}})();
+try{if(user&&document.getElementById('s-home').classList.contains('active'))renderHomeExtras()}catch(e){}
 </script>
 </body>
 </html>
 """
 
-html_code = (html_code.replace("%%NAME%%", APP_NAME).replace("%%TAGLINE%%", TAGLINE).replace("%%LOGO%%", LOGO_DATA_URI))
 components.html(html_code, height=950, scrolling=True)
