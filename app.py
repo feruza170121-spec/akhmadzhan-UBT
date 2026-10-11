@@ -1,6 +1,9 @@
 import json
 import os
 import threading
+import time
+import urllib.error
+import urllib.request
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -14,8 +17,77 @@ import streamlit.components.v1 as components
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.environ.get("UBT_DATA_FILE") or os.path.join(_HERE, "ubt_data.json")
 FRONT_DIR = os.path.join(_HERE, "ubt_frontend")
-_LOCK = threading.Lock()
 _NO_SYNC = ("ubt_current", "ubt_dark")
+
+# ======================================================================
+# ТҰРАҚТЫ САҚТАУ (деректер ешқашан өшпеуі үшін)
+# Streamlit Cloud-та файлдар қайта іске қосылғанда өшеді. Сондықтан барлық
+# өзгеріс сыртқы Supabase дерекқорына да жазылады (кесте: ubt_kv).
+# Кілттер Streamlit "Secrets" бөлімінде тұрады:
+#   SUPABASE_URL = "https://xxxx.supabase.co"
+#   SUPABASE_KEY = "service_role кілті"
+# Кілт жоқ болса — бұрынғыдай тек ubt_data.json файлы қолданылады.
+# ======================================================================
+_TABLE = "ubt_kv"
+
+
+def _sb_conf():
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+    try:
+        url = url or st.secrets.get("SUPABASE_URL")
+        key = key or st.secrets.get("SUPABASE_KEY")
+    except Exception:
+        pass
+    if url and key:
+        return str(url).strip().rstrip("/"), str(key).strip()
+    return None
+
+
+def _sb_call(conf, method, path, body=None, prefer=None, timeout=30):
+    url, key = conf
+    headers = {"apikey": key, "Content-Type": "application/json"}
+    if key.startswith("eyJ"):
+        headers["Authorization"] = "Bearer " + key
+    if prefer:
+        headers["Prefer"] = prefer
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(url + "/rest/v1/" + path, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", "replace")[:200]
+        except Exception:
+            pass
+        raise RuntimeError("HTTP %s %s" % (e.code, detail))
+    return json.loads(raw.decode("utf-8")) if raw else None
+
+
+def _sb_load_all(conf):
+    out, off, step = {}, 0, 25
+    while True:
+        rows = _sb_call(conf, "GET", "%s?select=key,value&order=key.asc&limit=%d&offset=%d" % (_TABLE, step, off))
+        for r in rows or []:
+            if isinstance(r, dict) and isinstance(r.get("key"), str) and isinstance(r.get("value"), str):
+                out[r["key"]] = r["value"]
+        if not rows or len(rows) < step:
+            return out
+        off += step
+
+
+def _sb_upsert(conf, items):
+    batch, size = [], 0
+    for k, v in items:
+        if batch and size + len(v) > 3_000_000:
+            _sb_call(conf, "POST", "%s?on_conflict=key" % _TABLE, batch, prefer="resolution=merge-duplicates,return=minimal")
+            batch, size = [], 0
+        batch.append({"key": k, "value": v})
+        size += len(v)
+    if batch:
+        _sb_call(conf, "POST", "%s?on_conflict=key" % _TABLE, batch, prefer="resolution=merge-duplicates,return=minimal")
 
 
 @st.cache_resource
@@ -28,7 +100,79 @@ def _store():
             data[k] = v["v"] if isinstance(v, dict) and "v" in v else v
     except Exception:
         data = {}
-    return {"db": data}
+    state = {"db": data, "sb": _sb_conf(), "ok": False, "err": "", "dirty": set(),
+             "lock": threading.RLock(), "flush_lock": threading.Lock(), "retry_t": 0.0}
+    _remote_sync(state)
+    return state
+
+
+def _remote_sync(state):
+    """Supabase-тен барлық деректі алады (ол басым). Тек жергілікті бар кілттерді Supabase-ке жібереді."""
+    conf = state.get("sb")
+    state["retry_t"] = time.time()
+    if not conf:
+        return
+    try:
+        remote = _sb_load_all(conf)
+    except Exception as e:
+        state["err"] = repr(e)[:200]
+        return
+    with state["lock"]:
+        db = state["db"]
+        for k, v in remote.items():
+            if k not in state["dirty"]:
+                db[k] = v
+        for k in list(db.keys()):
+            if k not in remote:
+                state["dirty"].add(k)
+        state["ok"] = True
+        state["err"] = ""
+    _flush_async(state)
+
+
+def _flush(state):
+    conf = state.get("sb")
+    if not conf:
+        return
+    with state["flush_lock"]:
+        with state["lock"]:
+            items = [(k, state["db"][k]) for k in list(state["dirty"]) if k in state["db"]]
+            for k in list(state["dirty"]):
+                if k not in state["db"]:
+                    state["dirty"].discard(k)
+        if not items:
+            return
+        try:
+            _sb_upsert(conf, items)
+        except Exception as e:
+            state["err"] = repr(e)[:200]
+            return
+        with state["lock"]:
+            for k, v in items:
+                if state["db"].get(k) == v:
+                    state["dirty"].discard(k)
+            state["err"] = ""
+
+
+def _flush_async(state):
+    threading.Thread(target=_flush, args=(state,), daemon=True).start()
+
+
+def _ensure_remote(state):
+    """Байланыс үзілсе қайта қосады, жіберілмей қалған өзгерістерді қайта жібереді."""
+    if not state.get("sb"):
+        return
+    if not state["ok"]:
+        if time.time() - state["retry_t"] > 20:
+            _remote_sync(state)
+    elif state["dirty"]:
+        _flush_async(state)
+
+
+def _store_mode(state):
+    if not state.get("sb"):
+        return "local"
+    return "remote" if state["ok"] and not state["dirty"] else ("pending" if state["ok"] else "error")
 
 
 def _db_save(db):
@@ -45,6 +189,8 @@ def _key_ok(k):
 
 def _apply_ops(res):
     """Браузерден келген жазбаларды қолданады. Жаңа жазба болса True қайтарады."""
+    state = _store()
+    _ensure_remote(state)
     if not isinstance(res, dict):
         return False
     sid = res.get("sid")
@@ -54,8 +200,8 @@ def _apply_ops(res):
     acks = st.session_state.setdefault("_ubt_ack", {})
     last = acks.get(sid, 0)
     changed = False
-    with _LOCK:
-        db = _store()["db"]
+    with state["lock"]:
+        db = state["db"]
         for op in sorted((o for o in ops if isinstance(o, dict)), key=lambda o: o.get("n", 0)):
             n = op.get("n", 0)
             if not isinstance(n, int) or n <= last:
@@ -64,18 +210,26 @@ def _apply_ops(res):
             if _key_ok(k) and isinstance(v, str) and len(v) < 8_000_000:
                 if db.get(k) != v:
                     db[k] = v
+                    state["dirty"].add(k)
                     changed = True
             last = n
         if changed:
-            _db_save(db)
+            try:
+                _db_save(db)
+            except Exception:
+                pass
+    if changed:
+        _flush_async(state)
     new = last > acks.get(sid, 0)
     acks[sid] = last
     return new
 
 
 def _snapshot():
-    with _LOCK:
-        return dict(_store()["db"])
+    state = _store()
+    with state["lock"]:
+        return dict(state["db"])
+
 
 st.set_page_config(page_title="ҰБТ+", page_icon="📘", layout="wide", initial_sidebar_state="collapsed")
 st.markdown("""<style>
@@ -806,7 +960,10 @@ function syncPush(items){try{if(window.__bridge)window.__bridge.push(items)}catc
 const LS={get(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}},set(k,v){try{const s=JSON.stringify(v);localStorage.setItem(k,s);if(!noSync(k))syncPush([{key:k,value:s}])}catch{}}};
 function setSyncInd(ok){
   const e=document.getElementById('sync-ind');if(!e)return;
-  e.textContent=ok?'🟢 Ортақ база қосулы':'⚠ Ортақ база жоқ — деректер тек осы құрылғыда';
+  const sm=window.__store||'';
+  if(ok&&sm==='local'){e.textContent='🟡 Ортақ база қосулы · ⚠ уақытша (сыртқы база жоқ)';e.style.background='#fef3c7';e.style.color='#92400e';return}
+  if(ok&&sm==='error'){e.textContent='🟠 Ортақ база қосулы · сыртқы база қолжетімсіз';e.style.background='#ffedd5';e.style.color='#9a3412';return}
+  e.textContent=ok?'🟢 Ортақ база қосулы'+(sm==='remote'||sm==='pending'?' · 🗄 тұрақты':''):'⚠ Ортақ база жоқ — деректер тек осы құрылғыда';
   e.style.background=ok?'#dcfce7':'#fee2e2';e.style.color=ok?'#14532d':'#7f1d1d';
 }
 function syncRefresh(){
@@ -3556,6 +3713,7 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
   window.addEventListener('message',function(ev){
     var d=ev.data;if(!d||d.type!=='streamlit:render')return;
     var args=d.args||{},db=args.db||{},ack=(args.ack||{})[sid]||0,changed=0;
+    window.__store=args.store||'';
     unacked=unacked.filter(function(o){return o.n>ack});
     Object.keys(pend).forEach(function(k){if(pend[k]<=ack)delete pend[k]});
     Object.keys(db).forEach(function(k){
@@ -3600,6 +3758,6 @@ _write_frontend()
 _ubt_comp = components.declare_component("ubt_plus", path=FRONT_DIR)
 
 _apply_ops(st.session_state.get("ubt_comp"))
-_res = _ubt_comp(db=_snapshot(), ack=dict(st.session_state.get("_ubt_ack", {})), key="ubt_comp", default=None)
+_res = _ubt_comp(db=_snapshot(), ack=dict(st.session_state.get("_ubt_ack", {})), store=_store_mode(_store()), key="ubt_comp", default=None)
 if _apply_ops(_res):
     st.rerun()
