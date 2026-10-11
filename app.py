@@ -1030,6 +1030,7 @@ body.in-test #theme-btn{display:none}
 #confetti{position:fixed;left:0;top:0;width:100%;height:var(--vh);pointer-events:none;z-index:99990}
 .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .chip{background:var(--c);border:1px solid var(--b);border-radius:24px;padding:6px 14px;font-size:13px}
+.btn.btn-chip{border-radius:18px!important}
 .chip.warn{background:#fef3c7;color:#92400e;border-color:#fcd34d}
 .quote{background:linear-gradient(135deg,#eff6ff,#f5f3ff);border-left:4px solid var(--p);border-radius:22px;padding:12px 14px;font-size:14px;font-style:italic;margin:10px 0;color:#1e293b;cursor:pointer}
 .qotd-op{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:2px solid var(--b);border-radius:22px;cursor:pointer;margin-bottom:7px;font-size:13px}
@@ -1288,20 +1289,20 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <div class="mode" onclick="showRanking()"><div class="ic">🏆</div><h3>Рейтинг</h3><p>Ортақ көшбасшылар</p></div>
     </div>
     <div class="row">
-      <button class="btn btn-s btn-sm" onclick="showFormulas()">📐 Формула</button>
-      <button class="btn btn-s btn-sm" onclick="showMistakes()">❌ Қателер</button>
-      <button class="btn btn-s btn-sm" onclick="showHistory()">📋 Тарих</button>
-      <button class="btn btn-s btn-sm" onclick="startQuickSubject()">⚡ Жылдам</button>
-      <button class="btn btn-s btn-sm" onclick="showFileTest()">📂 Файлдан</button>
-      <button class="btn btn-s btn-sm" onclick="showMyProfile()">📈 График</button>
-      <button class="btn btn-s btn-sm" onclick="showFlash()">🃏 Флеш-карталар</button>
-      <button class="btn btn-s btn-sm" onclick="showGloss()">📖 Глоссарий</button>
-      <button class="btn btn-s btn-sm" onclick="showBookmarks()">🔖 Таңдаулылар</button>
-      <button class="btn btn-s btn-sm" onclick="showPlanner()">🗓 Жоспар</button>
-      <button class="btn btn-s btn-sm" onclick="showTeacher()">🏫 Сынып / Мұғалім</button>
-      <button class="btn btn-s btn-sm" onclick="showUbt140()">🎓 140 формат</button>
-      <button class="btn btn-w btn-sm" onclick="openContactFromApp()">💬 Админге</button>
-      <button class="btn btn-w btn-sm" id="admin-btn" style="display:none" onclick="showAdmin()">🛠 Админ</button>
+      <button class="btn btn-s btn-sm btn-chip" onclick="showFormulas()">📐 Формула</button>
+      <button class="btn btn-s btn-sm btn-chip" onclick="showMistakes()">❌ Қателер</button>
+      <button class="btn btn-s btn-sm btn-chip" onclick="showHistory()">📋 Тарих</button>
+      <button class="btn btn-s btn-sm btn-chip" onclick="startQuickSubject()">⚡ Жылдам</button>
+      <button class="btn btn-s btn-sm btn-chip" onclick="showFileTest()">📂 Файлдан</button>
+      <button class="btn btn-s btn-sm btn-chip" onclick="showMyProfile()">📈 График</button>
+      <button class="btn btn-s btn-sm btn-chip" onclick="showFlash()">🃏 Флеш-карталар</button>
+      <button class="btn btn-s btn-sm btn-chip" onclick="showGloss()">📖 Глоссарий</button>
+      <button class="btn btn-s btn-sm btn-chip" onclick="showBookmarks()">🔖 Таңдаулылар</button>
+      <button class="btn btn-s btn-sm btn-chip" onclick="showPlanner()">🗓 Жоспар</button>
+      <button class="btn btn-s btn-sm btn-chip" onclick="showTeacher()">🏫 Сынып / Мұғалім</button>
+      <button class="btn btn-s btn-sm btn-chip" onclick="showUbt140()">🎓 140 формат</button>
+      <button class="btn btn-w btn-sm btn-chip" onclick="openContactFromApp()">💬 Админге</button>
+      <button class="btn btn-w btn-sm btn-chip" id="admin-btn" style="display:none" onclick="showAdmin()">🛠 Админ</button>
     </div>
   </div>
 </div>
