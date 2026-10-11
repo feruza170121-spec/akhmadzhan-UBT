@@ -1001,6 +1001,9 @@ body:not(.is-admin){user-select:none;-webkit-user-select:none;-webkit-touch-call
 body:not(.is-admin) input,body:not(.is-admin) textarea{user-select:text;-webkit-user-select:text}
 img,svg{-webkit-user-drag:none}
 body.shield #app-shield-target,body.shield .screen{filter:blur(28px) brightness(.4);pointer-events:none}
+.name-warn{background:#fef2f2;border:2px solid #dc2626;color:#7f1d1d;border-radius:14px;padding:14px 16px;font-size:16px;line-height:1.5;margin-bottom:16px}
+.name-warn .nw-t{font-size:19px;font-weight:800;margin-bottom:4px;display:block}
+body.dark .name-warn{background:#450a0a;color:#fecaca;border-color:#ef4444}
 #wm{position:fixed;inset:0;z-index:99998;pointer-events:none;background-repeat:repeat;display:none}
 #shield-msg{display:none;position:fixed;inset:0;z-index:100001;align-items:center;justify-content:center;text-align:center;color:#fff;font-weight:700;font-size:18px;padding:24px;background:rgba(15,23,42,.55)}
 body.shield #shield-msg{display:flex}
@@ -1178,7 +1181,8 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
     </div>
     <div class="card" id="register-box" style="display:none">
       <h3 style="margin-bottom:12px">Тіркелу</h3>
-      <div class="fg"><label>Атыңыз (логин) *</label><input id="reg-name" placeholder="Атыңыз" maxlength="30"></div>
+      <div class="name-warn"><span class="nw-t">⚠️ Назар аударыңыз!</span>Атыңызды <b>толық және дұрыс</b> жазыңыз (мыс: «Айгүл Серікова»). Жалған, қысқартылған немесе бөтен ат жазсаңыз, <b>админ аккаунтыңызды өшіріп тастауы мүмкін.</b></div>
+      <div class="fg"><label>Аты-жөніңіз (толық, нақты) *</label><input id="reg-name" placeholder="Мыс: Айгүл Серікова" maxlength="30"></div>
       <div class="fg"><label>Пароль *</label><input id="reg-pass" type="password" placeholder="Кемінде 6 таңба"></div>
       <div class="fg"><label>Парольді қайталаңыз *</label><input id="reg-pass2" type="password" placeholder="Қайталаңыз"></div>
       <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doRegister()">Тіркелу</button>
@@ -1188,6 +1192,8 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
     <div class="card" id="teacher-reg-box" style="display:none">
       <h3 style="margin-bottom:6px">👨‍🏫 Мұғалім болуға өтініш</h3>
       <p class="sub" style="margin-bottom:12px">Өтініш админге түседі. Админ мақұлдағанға дейін мұғалім болу және сынып ашу мүмкін емес.</p>
+      <div class="name-warn"><span class="nw-t">⚠️ Назар аударыңыз!</span>Атыңызды <b>толық және дұрыс</b> жазыңыз (мыс: «Айгүл Серікова»). Жалған, қысқартылған немесе бөтен ат жазсаңыз, <b>админ аккаунтыңызды өшіріп тастауы мүмкін.</b></div>
+
       <div class="fg"><label>Аты-жөніңіз (логин) *</label><input id="tr-name" placeholder="Мыс: Айгүл Серікқызы" maxlength="30"></div>
       <div class="fg"><label>Мектеп / пән</label><input id="tr-info" placeholder="Мыс: №12 мектеп, математика" maxlength="80"></div>
       <div class="fg"><label>Пароль *</label><input id="tr-pass" type="password" placeholder="Кемінде 6 таңба"></div>
@@ -1217,6 +1223,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
         <button class="btn btn-ok" style="width:100%" onclick="enterChat()">Чатты ашу</button>
       </div>
       <div id="chat-room" style="display:none">
+        <div id="chat-me" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:#fff;border-bottom:1px solid #ddd"></div>
         <div id="chat-messages" style="height:280px;overflow-y:auto;padding:12px;background:#e5ddd5;display:flex;flex-direction:column;gap:8px"></div>
         <div style="padding:10px 12px;background:#f0f0f0;border-top:1px solid #ddd">
           <div style="display:flex;gap:8px">
@@ -1770,7 +1777,7 @@ function showContactAdmin(){
     document.getElementById('chat-room').style.display='none';
     document.getElementById('chat-gate').style.display='block';
     document.getElementById('chat-sub').textContent='ҰБТ+ қолдау';
-    document.getElementById('chat-login').value='';
+    document.getElementById('chat-login').value=(document.getElementById('login-name').value||'').trim();
   }
 }
 function openContactFromApp(){
@@ -1793,7 +1800,7 @@ function openChatRoom(){
   document.getElementById('chat-gate').style.display='none';
   document.getElementById('chat-room').style.display='block';
   document.getElementById('chat-sub').textContent='👤 '+chatLogin;
-  renderChatMessages();
+  updChatBar();renderChatMessages();
 }
 function closeChat(){
   chatLogin=null;showLoginBox();
@@ -1813,8 +1820,10 @@ function doRegister(){return guarded(async()=>{
   const pass=document.getElementById('reg-pass').value;
   const pass2=document.getElementById('reg-pass2').value;
   if(!name||name.length<2){alert('Атыңызды жазыңыз');return}
+  if(!/\p{L}{2}/u.test(name)){alert('Атыңызды әріппен толық жазыңыз');return}
   if(!pass||pass.length<6){alert('Пароль кемінде 6 таңба');return}
   if(pass!==pass2){alert('Парольдер сәйкес емес');return}
+  if(!confirm('Атыңыз: «'+name+'»\n\nАтыңыз толық және дұрыс па? Жалған ат жазсаңыз, админ аккаунтты өшіріп тастауы мүмкін.'))return;
   const r=await authCall('register',{name:name,pass:pass});
   if(!r.ok){alert(r.msg||'Қате');return}
   ['reg-name','reg-pass','reg-pass2'].forEach(i=>{const e=document.getElementById(i);if(e)e.value=''});
@@ -1849,6 +1858,14 @@ function sendChatMsg(){
   renderChatMessages();
 }
 // Пайдаланушы тек өз логинінің чатын көреді; өшіру батырмасы жоқ
+function updChatBar(){
+  const el=document.getElementById('chat-me');if(!el||!chatLogin)return;
+  const me=(user&&!user.isAdmin&&user.name&&user.name.toLowerCase()===chatLogin.toLowerCase())?user:null;
+  const p=me||findUserByLogin(chatLogin);
+  el.innerHTML=avHTML(p?p.id:'',chatLogin,36)+'<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:14px;word-break:break-word">'+esc(chatLogin)+'</div><div class="sub" style="font-size:11px">Чаттағы атыңыз</div></div>'
+    +(me?'<label class="btn btn-s btn-sm" style="cursor:pointer">📷 Фото<input type="file" accept="image/*" style="display:none" onchange="uploadAvatar(this)"></label>':'');
+}
+function chatAvFor(name){const p=findUserByLogin(name||'');return avHTML(p?p.id:'',name||'?',28)}
 function renderChatMessages(){
   const el=document.getElementById('chat-messages');
   if(!el||!chatLogin)return;
@@ -1860,12 +1877,13 @@ function renderChatMessages(){
   }
   el.innerHTML=list.map(m=>{
     const isUser=m.role==='user';
-    return `<div style="display:flex;justify-content:${isUser?'flex-end':'flex-start'}">
+    const admAv='<div class="avatar" style="width:28px;height:28px;font-size:12px;background:#128c7e">А</div>';
+    return `<div style="display:flex;gap:6px;align-items:flex-end;justify-content:${isUser?'flex-end':'flex-start'}">${isUser?'':admAv}
       <div style="max-width:75%;padding:8px 12px;border-radius:12px;font-size:13px;line-height:1.4;background:${isUser?'#dcf8c6':'#fff'};box-shadow:0 1px 1px rgba(0,0,0,.08);word-break:break-word">
-        ${!isUser?'<div style="font-size:11px;color:#075e54;font-weight:600;margin-bottom:2px">Админ</div>':''}
+        <div style="font-size:11px;color:#075e54;font-weight:600;margin-bottom:2px">${isUser?esc(m.from||chatLogin):'Админ'}</div>
         <div>${esc(m.text)}</div>
         <div style="font-size:10px;color:#667;text-align:right;margin-top:4px">${esc(m.time||'')}</div>
-      </div>
+      </div>${isUser?chatAvFor(m.from||chatLogin):''}
     </div>`;
   }).join('');
   el.scrollTop=el.scrollHeight;
@@ -1891,14 +1909,14 @@ function renderAdminChat(){
     const inId='ar_'+i;
     return `<details class="card" style="padding:12px 14px;margin-bottom:0" ${adminOpenThread===t.key?'open':''} ontoggle="adminToggleThread(${jsq(t.key)},this.open)">
       <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <b>👤 ${esc(name)}</b>
+        ${chatAvFor(name)}<b>${esc(name)}</b>
         ${unread?`<span class="badge" style="background:#fee2e2;color:var(--err)">${unread} жаңа</span>`:''}
         <span class="sub">${t.list.length} хабарлама</span>
       </summary>
       <div style="display:flex;flex-direction:column;gap:8px;margin:12px 0;max-height:320px;overflow-y:auto;padding:10px;background:#e5ddd5;border-radius:10px">
         ${t.list.map(m=>{
           const isUser=m.role!=='admin';
-          return `<div style="display:flex;justify-content:${isUser?'flex-start':'flex-end'}">
+          return `<div style="display:flex;gap:6px;align-items:flex-end;justify-content:${isUser?'flex-start':'flex-end'}">${isUser?chatAvFor(m.from||name):''}
             <div style="max-width:80%;padding:8px 12px;border-radius:12px;font-size:13px;background:${isUser?'#fff':'#dcf8c6'};word-break:break-word">
               <div style="font-size:11px;color:#075e54;font-weight:600;margin-bottom:2px">${isUser?esc(m.from||name):'Админ'}</div>
               <div>${esc(m.text)}</div>
@@ -2045,7 +2063,7 @@ function uploadAvatar(inp){
       const x=c.getContext('2d'),m=Math.min(img.width,img.height);
       x.drawImage(img,(img.width-m)/2,(img.height-m)/2,m,m,0,0,S,S);
       LS.set('ubt_avatar_'+user.id,c.toDataURL('image/jpeg',0.82));
-      refreshProfileBar();showMyProfile();
+      refreshProfileBar();afterAvatarChange();
     };
     img.onerror=()=>alert('Сурет оқылмады. Басқа файл таңдаңыз');
     img.src=r.result;
@@ -2056,7 +2074,12 @@ function removeAvatar(){
   if(!user||!getAvatar(user.id))return;
   if(!confirm('Фотоны өшіру керек пе?'))return;
   LS.set('ubt_avatar_'+user.id,null);
-  refreshProfileBar();showMyProfile();
+  refreshProfileBar();afterAvatarChange();
+}
+function afterAvatarChange(){
+  const cb=document.getElementById('contact-box');
+  if(cb&&cb.style.display==='block'&&document.getElementById('s-login').classList.contains('active')){try{updChatBar();renderChatMessages()}catch(e){}}
+  else showMyProfile();
 }
 
 // ================= Рейтинг: топ-10 =================
