@@ -84,7 +84,7 @@ html,body,.stApp,[data-testid="stAppViewContainer"],[data-testid="stMain"],secti
 .block-container,[data-testid="stMainBlockContainer"]{padding:0!important;max-width:100%!important}
 [data-testid="stVerticalBlock"]{gap:0!important}
 [data-testid="stBottom"],[data-testid="stBottomBlockContainer"]{display:none!important}
-iframe{border:none!important;display:block!important;width:100%!important;height:100vh!important;height:100dvh!important}
+iframe{border:none!important;display:block!important;position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;height:100dvh!important;z-index:5!important}
 </style>""", unsafe_allow_html=True)
 
 html_code = r"""
@@ -3447,17 +3447,21 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
 // ===== «Артқа» батырмасын беттің үстіне қою =====
 (function(){
   document.querySelectorAll('.screen').forEach(function(scr){
-    if(scr.id==='s-login'||scr.id==='s-home'||scr.id==='s-test')return;
+    if(['s-login','s-home','s-test','s-res'].indexOf(scr.id)>=0)return;
     var btn=null;
-    scr.querySelectorAll('button').forEach(function(b){if(b.textContent.trim()==='Артқа')btn=b});
-    if(!btn)return;
+    scr.querySelectorAll('button').forEach(function(b){var t=b.textContent.trim();if(t==='Артқа'||t==='Болдырмау')btn=b});
     var host=scr.querySelector('.wrap')||scr;
     var bar=document.createElement('div');bar.className='topback';
-    var row=btn.parentElement;
-    btn.textContent='← Артқа';
-    bar.appendChild(btn);
+    if(btn){
+      var row=btn.parentElement;
+      btn.textContent='← Артқа';
+      bar.appendChild(btn);
+      if(row&&row.classList.contains('row')&&!row.children.length)row.remove();
+    }else{
+      var nb=document.createElement('button');nb.className='btn btn-s';nb.textContent='← Артқа';
+      nb.setAttribute('onclick','goHome()');bar.appendChild(nb);
+    }
     host.insertBefore(bar,host.firstChild);
-    if(row&&row.classList.contains('row')&&!row.children.length)row.remove();
   });
 })();
 </script>
