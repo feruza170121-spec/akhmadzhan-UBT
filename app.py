@@ -872,6 +872,9 @@ def _snapshot(tok="", claim=""):
 st.set_page_config(page_title="ҰБТ+", page_icon="📘", layout="wide", initial_sidebar_state="collapsed")
 st.markdown("""<style>
 #MainMenu,footer,header{visibility:hidden}
+</style>
+<style id="ubt-manage-css">
+[data-testid="manage-app-button"],[class*="_terminalButton_"],[class*="_viewerBadge_"],[class*="viewerBadge"],[class*="_profileContainer_"],.stAppDeployButton,[data-testid="stToolbar"],[data-testid="stDecoration"],[data-testid="stStatusWidget"]{display:none!important}
 .block-container,[data-testid="stMainBlockContainer"]{padding:0!important;max-width:100%!important}
 [data-testid="stVerticalBlock"]{gap:0!important}
 iframe{border:none!important;display:block!important;width:100%!important}
@@ -987,6 +990,13 @@ html,body{overflow-x:hidden}
 }
 
 body.locked{user-select:none;-webkit-user-select:none}
+body:not(.is-admin){user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+body:not(.is-admin) input,body:not(.is-admin) textarea{user-select:text;-webkit-user-select:text}
+img,svg{-webkit-user-drag:none}
+body.shield #app-shield-target,body.shield .screen{filter:blur(28px) brightness(.4);pointer-events:none}
+#shield-msg{display:none;position:fixed;inset:0;z-index:100001;align-items:center;justify-content:center;text-align:center;color:#fff;font-weight:700;font-size:18px;padding:24px;background:rgba(15,23,42,.55)}
+body.shield #shield-msg{display:flex}
+@media print{body *{display:none!important}body:before{content:"Басып шығаруға тыйым салынған";display:block;font-size:24px;padding:40px}}
 #lock-ov{display:none;position:fixed;inset:0;z-index:100000;background:rgba(15,23,42,.97);color:#fff;align-items:center;justify-content:center;text-align:center;padding:24px}
 #lock-ov.show{display:flex}
 #lock-ov .box{max-width:440px}
@@ -1142,6 +1152,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
 <canvas id="confetti"></canvas>
 <div id="sync-ind" style="position:fixed;left:10px;bottom:10px;z-index:90;font-size:11px;padding:4px 10px;border-radius:12px;box-shadow:0 1px 6px rgba(0,0,0,.15)"></div>
 
+<div id="shield-msg">🔒 Мазмұн қорғалған</div>
 <div id="lock-ov"><div class="box"><div style="font-size:46px">🔒</div><h2 id="lock-title">Тест жалғасуда</h2><p id="lock-msg"></p><button class="btn btn-p" onclick="returnToTest()">Толық экранға оралу</button></div></div>
 
 <div id="s-login" class="screen active">
@@ -2239,7 +2250,7 @@ function adminDelFormula(i){
   const f=LS.get('ubt_formulas',[]);f.splice(i,1);LS.set('ubt_formulas',f);showAdmin();
 }
 
-function showScr(id){document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));document.getElementById(id).classList.add('active')}
+function showScr(id){document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));document.getElementById(id).classList.add('active');try{chromeSync()}catch(e){}}
 function goHome(){if(lock.on)return;stopTimer();st=baseState();showScr('s-home')}
 
 const BANK={
@@ -2905,6 +2916,70 @@ function onBeforeUnload(e){if(lock.on){e.preventDefault();e.returnValue='Тес�
 window.addEventListener('beforeunload',onBeforeUnload);
 try{window.parent.addEventListener('beforeunload',onBeforeUnload)}catch(e){}
 window.addEventListener('popstate',()=>{if(lock.on){try{history.pushState({lock:1},'',location.href)}catch(e){}}});
+
+// ================= Скриншот / көшіру / «Manage app» қорғанысы =================
+const isAdminNow=()=>!!(user&&user.isAdmin);
+function syncAdminClass(){document.body.classList.toggle('is-admin',isAdminNow())}
+function inField(t){return !!(t&&t.closest&&t.closest('input,textarea,[contenteditable="true"]'))}
+['contextmenu','copy','cut','dragstart'].forEach(n=>document.addEventListener(n,e=>{
+  if(isAdminNow())return;
+  if(n!=='contextmenu'&&inField(e.target)&&n!=='copy'&&n!=='cut')return;
+  e.preventDefault();return false;
+},true));
+document.addEventListener('selectstart',e=>{if(isAdminNow()||inField(e.target))return;e.preventDefault()},true);
+let shieldTimer=null;
+function shieldOn(ms){
+  if(isAdminNow())return;
+  document.body.classList.add('shield');
+  clearTimeout(shieldTimer);
+  if(ms)shieldTimer=setTimeout(shieldOff,ms);
+}
+function shieldOff(){clearTimeout(shieldTimer);document.body.classList.remove('shield')}
+function clearClip(){try{navigator.clipboard.writeText(' ')}catch(e){}}
+document.addEventListener('keydown',e=>{
+  if(isAdminNow())return;
+  const k=String(e.key||''),kl=k.toLowerCase(),c=e.ctrlKey||e.metaKey;
+  const printScr=k==='PrintScreen'||e.code==='PrintScreen';
+  const snip=(e.metaKey&&e.shiftKey&&kl==='s')||(e.metaKey&&e.shiftKey&&/^[345]$/.test(k))||(e.metaKey&&e.altKey&&kl==='s');
+  if(printScr||snip){shieldOn(4000);clearClip();e.preventDefault();return false}
+  const inF=inField(e.target);
+  const bad=k==='F12'||(c&&['s','p','u'].includes(kl))||(c&&e.shiftKey&&['i','j','c','s'].includes(kl))||(c&&['c','x'].includes(kl)&&!inF)||(c&&kl==='a'&&!inF);
+  if(bad){e.preventDefault();e.stopPropagation();return false}
+},true);
+document.addEventListener('keyup',e=>{
+  if(isAdminNow())return;
+  if(e.key==='PrintScreen'||e.code==='PrintScreen'){clearClip();shieldOn(4000)}
+},true);
+// Терезе фокусын жоғалтса (скриншот құралы, басқа бет) – мазмұн бұлыңғырланады
+let hadFocus=false;
+window.addEventListener('focus',()=>{hadFocus=true;shieldOff()});
+document.addEventListener('pointerdown',()=>{hadFocus=true;shieldOff()},true);
+document.addEventListener('touchstart',()=>{hadFocus=true;shieldOff()},{passive:true,capture:true});
+window.addEventListener('blur',()=>{if(hadFocus&&!isAdminNow()&&!(document.activeElement&&/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)))shieldOn(0)});
+document.addEventListener('visibilitychange',()=>{if(document.hidden)shieldOn(0);else shieldOff()});
+window.addEventListener('beforeprint',()=>shieldOn(0));
+window.addEventListener('afterprint',shieldOff);
+
+// «Manage app» батырмасы: әдепкіде жасырын, тек админ панелінде ғана көрінеді
+const MANAGE_SEL='[data-testid="manage-app-button"],[class*="_terminalButton_"],[class*="_viewerBadge_"],[class*="viewerBadge"],[class*="_profileContainer_"],.stAppDeployButton,[data-testid="stToolbar"],[data-testid="stDecoration"],[data-testid="stStatusWidget"]';
+function chromeSync(){
+  syncAdminClass();
+  const act=document.querySelector('.screen.active');
+  const show=isAdminNow()&&act&&act.id==='s-admin';
+  const docs=[];
+  try{docs.push(window.parent.document)}catch(e){}
+  try{if(window.top!==window.parent)docs.push(window.top.document)}catch(e){}
+  docs.forEach(d=>{
+    try{
+      let st=d.getElementById('ubt-manage-css');
+      if(!st){st=d.createElement('style');st.id='ubt-manage-css';(d.head||d.documentElement).appendChild(st)}
+      const want=show?'':MANAGE_SEL+'{display:none!important}';
+      if(st.textContent!==want)st.textContent=want;
+    }catch(e){}
+  });
+}
+setInterval(chromeSync,1500);
+document.addEventListener('DOMContentLoaded',chromeSync);
 
 // ================= Әр пайдаланушының жеке графигі =================
 function getProg(id){
