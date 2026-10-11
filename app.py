@@ -52,8 +52,9 @@ _ADMIN_NAMES = ("админ", "admin")
 _USER_TTL = 14 * 86400
 _ADMIN_TTL = 12 * 3600
 _USER_PREFIXES = ("ubt_mistakes_", "ubt_hist_", "ubt_prog_", "ubt_bm_", "ubt_plan_done_",
-                  "ubt_plan_", "ubt_qotd_", "ubt_streak_", "ubt_avatar_")
+                  "ubt_plan_", "ubt_qotd_", "ubt_streak_", "ubt_avatar_", "ubt_viol_")
 _PRIVATE_PREFIXES = ("ubt_mistakes_", "ubt_plan_done_", "ubt_plan_", "ubt_bm_")
+_SINGLE_DEVICE = True   # True: бір аккаунт бір уақытта тек бір құрылғыда (жаңа кіру ескісін шығарады)
 _MAX_FAILS = 5
 _FAIL_WINDOW = 600
 
@@ -352,6 +353,9 @@ def _new_session(state, uid, name, admin):
     now = time.time()
     if len(state["sessions"]) > 5000:
         for t in [t for t, s in state["sessions"].items() if s["exp"] < now]:
+            state["sessions"].pop(t, None)
+    if _SINGLE_DEVICE and not admin:
+        for t in [t for t, x in state["sessions"].items() if x.get("uid") == uid and not x.get("admin")]:
             state["sessions"].pop(t, None)
     tok = secrets.token_urlsafe(32)
     state["sessions"][tok] = {"uid": uid, "name": name, "admin": bool(admin),
@@ -994,6 +998,7 @@ body:not(.is-admin){user-select:none;-webkit-user-select:none;-webkit-touch-call
 body:not(.is-admin) input,body:not(.is-admin) textarea{user-select:text;-webkit-user-select:text}
 img,svg{-webkit-user-drag:none}
 body.shield #app-shield-target,body.shield .screen{filter:blur(28px) brightness(.4);pointer-events:none}
+#wm{position:fixed;inset:0;z-index:99998;pointer-events:none;background-repeat:repeat;display:none}
 #shield-msg{display:none;position:fixed;inset:0;z-index:100001;align-items:center;justify-content:center;text-align:center;color:#fff;font-weight:700;font-size:18px;padding:24px;background:rgba(15,23,42,.55)}
 body.shield #shield-msg{display:flex}
 @media print{body *{display:none!important}body:before{content:"Басып шығаруға тыйым салынған";display:block;font-size:24px;padding:40px}}
@@ -1152,6 +1157,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
 <canvas id="confetti"></canvas>
 <div id="sync-ind" style="position:fixed;left:10px;bottom:10px;z-index:90;font-size:11px;padding:4px 10px;border-radius:12px;box-shadow:0 1px 6px rgba(0,0,0,.15)"></div>
 
+<div id="wm"></div>
 <div id="shield-msg">🔒 Мазмұн қорғалған</div>
 <div id="lock-ov"><div class="box"><div style="font-size:46px">🔒</div><h2 id="lock-title">Тест жалғасуда</h2><p id="lock-msg"></p><button class="btn btn-p" onclick="returnToTest()">Толық экранға оралу</button></div></div>
 
@@ -2229,6 +2235,8 @@ function adminViewUser(id){
   document.getElementById('uv-hist').innerHTML=hist.length?hist.map(h=>`
     <div class="item"><div class="info"><h4>${esc(h.topic||'Тест')}</h4><p>${h.date}</p></div>
     <div style="font-weight:700;color:var(--p)">${h.score}/${h.max}</div></div>`).join(''):'<p class="sub">Тест тапсырмаған</p>';
+  const vl=LS.get('ubt_viol_'+id,[]);
+  document.getElementById('uv-hist').innerHTML+=`<h4 style="margin:14px 0 6px">⚠ Бұзушылықтар (${vl.length})</h4>`+(vl.length?vl.slice(0,40).map(v=>`<div class="item"><div class="info"><h4 style="font-size:13px">${esc(v.k)}</h4><p>${esc(v.t)}${v.test?' · '+esc(v.test):''}</p></div></div>`).join(''):'<p class="sub">Бұзушылық жоқ</p>');
   const mist=LS.get('ubt_mistakes_'+id,[]);
   document.getElementById('uv-mist').innerHTML=mist.length?mist.map(q=>`
     <div class="item"><div class="info"><h4>${esc((q.text||'').substring(0,80))}</h4><p>${esc(q.subjectName||'')}</p></div></div>`).join(''):'<p class="sub">Қате жоқ</p>';
@@ -2375,7 +2383,7 @@ function startUserTest(id){
   const t=allTests().find(x=>x.id===id);if(!t||!t.questions.length){alert('Сұрақ жоқ!');return}
   const label=(t.subjectName?t.subjectName+' · ':'')+(t.topic||'Тест');
   st=baseState();st.questions=t.questions.map(q=>({...q,subjectName:label}));st.subjectName=label;st.testId=id;
-  st.timerSeconds=Math.max(t.questions.length*90,600);beginTest();
+  st.timerSeconds=Math.max(t.questions.length*90,600);shuf(st.questions);beginTest();
 }
 function startQuickSubject(){
   document.getElementById('subj-grid').innerHTML=Object.entries(BANK).map(([k,v])=>
@@ -2384,9 +2392,9 @@ function startQuickSubject(){
 }
 function startBank(key){
   const b=BANK[key];st=baseState();st.questions=b.qs.map(q=>({...q,subjectName:b.name,points:1}));st.subjectName=b.name;
-  st.timerSeconds=Math.max(b.qs.length*90,600);beginTest();
+  st.timerSeconds=Math.max(b.qs.length*90,600);shuf(st.questions);beginTest();
 }
-function beginTest(){showScr('s-test');renderNav();renderQ();startTimer();updateProg();lockStart()}
+function beginTest(){st.questions=st.questions.map(shuffleOpts);showScr('s-test');renderNav();renderQ();startTimer();updateProg();lockStart()}
 function renderNav(){document.getElementById('qnav').innerHTML=st.questions.map((_,i)=>`<button class="qn" onclick="goQ(${i})">${i+1}</button>`).join('');updNav()}
 function updNav(){document.querySelectorAll('.qn').forEach((b,i)=>{b.classList.remove('cur','ans','flg');if(i===st.currentIndex)b.classList.add('cur');if(st.answers[st.questions[i].id]!==undefined)b.classList.add('ans');if(st.flags[st.questions[i].id])b.classList.add('flg')})}
 function renderQ(){
@@ -2887,7 +2895,7 @@ function returnToTest(){
 function lockViolation(){
   if(!lock.on||lock.paused)return;
   const now=Date.now();if(now-lock.last<1200)return;lock.last=now;
-  lock.viol++;updViol();
+  lock.viol++;updViol();logViol('Тесттен/толық экраннан шығу');
   if(lock.viol>=MAX_VIOL){
     hideOv();
     guardPause(()=>alert('Тесттен '+MAX_VIOL+' рет шықтыңыз. Тест автоматты түрде аяқталды.'));
@@ -2923,6 +2931,7 @@ function syncAdminClass(){document.body.classList.toggle('is-admin',isAdminNow()
 function inField(t){return !!(t&&t.closest&&t.closest('input,textarea,[contenteditable="true"]'))}
 ['contextmenu','copy','cut','dragstart'].forEach(n=>document.addEventListener(n,e=>{
   if(isAdminNow())return;
+  if(n==='copy'||n==='cut')logViol('Көшіру әрекеті');
   if(n!=='contextmenu'&&inField(e.target)&&n!=='copy'&&n!=='cut')return;
   e.preventDefault();return false;
 },true));
@@ -2941,7 +2950,7 @@ document.addEventListener('keydown',e=>{
   const k=String(e.key||''),kl=k.toLowerCase(),c=e.ctrlKey||e.metaKey;
   const printScr=k==='PrintScreen'||e.code==='PrintScreen';
   const snip=(e.metaKey&&e.shiftKey&&kl==='s')||(e.metaKey&&e.shiftKey&&/^[345]$/.test(k))||(e.metaKey&&e.altKey&&kl==='s');
-  if(printScr||snip){shieldOn(4000);clearClip();e.preventDefault();return false}
+  if(printScr||snip){logViol('Скриншот әрекеті');shieldOn(4000);clearClip();e.preventDefault();return false}
   const inF=inField(e.target);
   const bad=k==='F12'||(c&&['s','p','u'].includes(kl))||(c&&e.shiftKey&&['i','j','c','s'].includes(kl))||(c&&['c','x'].includes(kl)&&!inF)||(c&&kl==='a'&&!inF);
   if(bad){e.preventDefault();e.stopPropagation();return false}
@@ -2960,10 +2969,56 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden)shieldOn(0)
 window.addEventListener('beforeprint',()=>shieldOn(0));
 window.addEventListener('afterprint',shieldOff);
 
+// ---- Су белгісі (ватермарк)
+let wmKey='';
+function updWatermark(){
+  const el=document.getElementById('wm');if(!el)return;
+  if(!user||user.isAdmin){el.style.display='none';wmKey='';return}
+  const d=new Date(),pad=n=>String(n).padStart(2,'0');
+  const txt=(user.name||'')+' · '+pad(d.getDate())+'.'+pad(d.getMonth()+1)+'.'+d.getFullYear()+' '+pad(d.getHours())+':'+pad(d.getMinutes());
+  if(txt===wmKey)return;wmKey=txt;
+  const x=String(txt).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const svg='<svg xmlns="http://www.w3.org/2000/svg" width="300" height="170"><text x="150" y="90" text-anchor="middle" transform="rotate(-25 150 85)" font-family="Arial,sans-serif" font-size="15" font-weight="700" fill="rgba(110,110,130,0.20)">'+x+'</text></svg>';
+  el.style.backgroundImage='url("data:image/svg+xml;utf-8,'+encodeURIComponent(svg)+'")';
+  el.style.display='block';
+}
+// ---- Бұзушылықтарды тіркеу (админ профильде көреді)
+let lastViolLog={};
+function logViol(kind){
+  try{
+    if(!user||user.isAdmin)return;
+    const now=Date.now();if(lastViolLog[kind]&&now-lastViolLog[kind]<3000)return;lastViolLog[kind]=now;
+    const k='ubt_viol_'+user.id;const a=LS.get(k,[]);
+    a.unshift({t:new Date().toLocaleString('kk-KZ'),k:kind,test:(lock&&lock.on&&st)?(st.subjectName||''):''});
+    LS.set(k,a.slice(0,100));
+  }catch(e){}
+}
+// ---- Сұрақ пен жауап ретін араластыру
+const KEEP_ORDER_RE=/жоғарыда|барлығы|барлық жауап|бәрі дұрыс|ешқайсысы|А\s*және|A\s*және|все\s+вышеперечисл|none of|all of the/i;
+function shuf(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
+function shuffleOpts(q){
+  if(!q||!Array.isArray(q.options)||q.options.length<2||q.options.some(o=>KEEP_ORDER_RE.test(String(o))))return q;
+  const idx=shuf(q.options.map((_,i)=>i));
+  return {...q,options:idx.map(i=>q.options[i]),correct:idx.indexOf(q.correct)};
+}
+// ---- Басқа құрылғыдан кіргенде / сессия біткенде шығару
+function kickedOut(){
+  if(!user)return;
+  const adm=!!user.isAdmin;
+  window.__token='';LS.set('ubt_current',null);user=null;chatLogin=null;
+  try{lockEnd()}catch(e){}
+  try{window.__bridge.clearLocal()}catch(e){}
+  try{showLoginBox()}catch(e){}
+  showScr('s-login');chromeSync();updWatermark();
+  setTimeout(()=>alert(adm?'Сессия аяқталды. Қайта кіріңіз.':'Аккаунтқа басқа құрылғыдан кірілді немесе сессия аяқталды. Қайта кіріңіз.'),50);
+}
+window.__kicked=kickedOut;
+setInterval(updWatermark,5000);
+
 // «Manage app» батырмасы: әдепкіде жасырын, тек админ панелінде ғана көрінеді
 const MANAGE_SEL='[data-testid="manage-app-button"],[class*="_terminalButton_"],[class*="_viewerBadge_"],[class*="viewerBadge"],[class*="_profileContainer_"],.stAppDeployButton,[data-testid="stToolbar"],[data-testid="stDecoration"],[data-testid="stStatusWidget"]';
 function chromeSync(){
-  syncAdminClass();
+  syncAdminClass();updWatermark();
   const act=document.querySelector('.screen.active');
   const show=isAdminNow()&&act&&act.id==='s-admin';
   const docs=[];
@@ -4584,6 +4639,7 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
       if(up.length)push(up);
     }
     connected=true;height();
+    if(args.dead&&window.__token){try{if(window.__kicked)window.__kicked()}catch(e){}}
     if(renderWaiters.length&&(args.tk||'')===(window.__token||'')){var rw=renderWaiters;renderWaiters=[];rw.forEach(function(f){try{f()}catch(e){}})}
     if(!booted)boot();
     else{try{setSyncInd(true);if(changed)syncRefresh()}catch(e){}}
@@ -4624,7 +4680,7 @@ _st = _store()
 with _st["lock"]:
     _tk = _tok if _session(_st, _tok) else ""
 _res = _ubt_comp(db=_snapshot(_tok, str(_cur.get("chat") or "")), ack=dict(st.session_state.get("_ubt_ack", {})),
-                 authres=dict(st.session_state.get("_ubt_authres", {})), tk=_tk,
+                 authres=dict(st.session_state.get("_ubt_authres", {})), tk=_tk, dead=bool(_tok and not _tk),
                  store=_store_mode(_st), err=str(_st.get("err") or "")[:160], key="ubt_comp", default=None)
 if _apply_ops(_res):
     st.rerun()
