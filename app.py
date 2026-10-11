@@ -908,35 +908,35 @@ html,body{overflow-x:hidden}
 .topback .btn{box-shadow:0 1px 4px rgba(0,0,0,.08)}
 .wrap.wide{max-width:1200px}
 .hdr{text-align:center;margin-bottom:28px}
-.logo{display:inline-flex;align-items:center;justify-content:center;width:72px;height:72px;background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;font-weight:800;font-size:26px;border-radius:20px;margin-bottom:14px;box-shadow:0 8px 24px rgba(37,99,235,.35);letter-spacing:-0.5px}
+.logo{display:inline-flex;align-items:center;justify-content:center;width:72px;height:72px;background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;font-weight:800;font-size:26px;border-radius:24px;margin-bottom:14px;box-shadow:0 8px 24px rgba(37,99,235,.35);letter-spacing:-0.5px}
 .hdr h1{font-size:26px;font-weight:700;margin-bottom:4px}
 .hdr h2{font-size:22px;margin-bottom:4px}
 .sub{color:var(--m);font-size:14px}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:11px 20px;border-radius:10px;font-size:14px;font-weight:600;border:none;cursor:pointer;font-family:inherit;transition:.15s}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:11px 20px;border-radius:20px;font-size:14px;font-weight:600;border:none;cursor:pointer;font-family:inherit;transition:.15s}
 .btn-p{background:var(--p);color:#fff}.btn-p:hover{background:var(--pd)}.btn-p:disabled{opacity:.45;cursor:not-allowed}
 .btn-s{background:var(--c);color:var(--t);border:1px solid var(--b)}.btn-s:hover{background:var(--bg)}
 .btn-d{background:var(--err);color:#fff}.btn-ok{background:var(--ok);color:#fff}.btn-w{background:var(--warn);color:#1c1917}
 .btn-sm{padding:7px 12px;font-size:12px}
 .row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
-.card{background:var(--c);border:1px solid var(--b);border-radius:14px;padding:18px;margin-bottom:12px}
+.card{background:var(--c);border:1px solid var(--b);border-radius:22px;padding:18px;margin-bottom:12px}
 .card h3{font-size:16px;margin-bottom:6px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.mode{background:var(--c);border:2px solid var(--b);border-radius:14px;padding:22px 14px;text-align:center;cursor:pointer;transition:.2s}
+.mode{background:var(--c);border:2px solid var(--b);border-radius:22px;padding:22px 14px;text-align:center;cursor:pointer;transition:.2s}
 .mode:hover{border-color:var(--p);transform:translateY(-2px);box-shadow:0 6px 20px rgba(37,99,235,.1)}
 .mode .ic{font-size:30px;margin-bottom:8px}
 .mode h3{font-size:15px;margin-bottom:4px}
 .mode p{font-size:12px;color:var(--m)}
 .fg{margin-bottom:14px}
 .fg label{display:block;font-size:12px;font-weight:600;color:var(--m);margin-bottom:5px}
-.fg input,.fg select,.fg textarea{width:100%;padding:10px 12px;border:1px solid var(--b);border-radius:10px;font-size:14px;font-family:inherit;background:var(--bg)}
+.fg input,.fg select,.fg textarea{width:100%;padding:10px 12px;border:1px solid var(--b);border-radius:20px;font-size:14px;font-family:inherit;background:var(--bg)}
 .fg textarea{min-height:72px;resize:vertical}
 .opt{display:flex;gap:8px;align-items:center;margin-bottom:8px}
 .opt input[type=text]{flex:1}
 .opt input[type=radio]{width:18px;height:18px;accent-color:var(--p)}
-.badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600}
+.badge{display:inline-block;padding:3px 10px;border-radius:24px;font-size:11px;font-weight:600}
 .badge-pub{background:#dbeafe;color:var(--p)}.badge-priv{background:#f1f5f9;color:var(--m)}
 .list{display:flex;flex-direction:column;gap:10px}
-.item{background:var(--c);border:1px solid var(--b);border-radius:12px;padding:14px 16px;display:flex;justify-content:space-between;align-items:center;gap:12px}
+.item{background:var(--c);border:1px solid var(--b);border-radius:22px;padding:14px 16px;display:flex;justify-content:space-between;align-items:center;gap:12px}
 .item .info{flex:1;min-width:0}
 .item .info h4{font-size:14px;margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .item .info p{font-size:12px;color:var(--m)}
@@ -950,27 +950,27 @@ html,body{overflow-x:hidden}
 .side-h{padding:12px;border-bottom:1px solid var(--b);display:flex;justify-content:space-between;align-items:center;font-weight:600;font-size:13px}
 .side-tog{display:none;background:none;border:none;font-size:20px;cursor:pointer}
 .qnav{flex:1;overflow-y:auto;padding:8px;display:grid;grid-template-columns:repeat(5,1fr);gap:4px;align-content:start}
-.qn{aspect-ratio:1;border:1px solid var(--b);border-radius:7px;background:var(--bg);font-size:11px;font-weight:500;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.qn{aspect-ratio:1;border:1px solid var(--b);border-radius:17px;background:var(--bg);font-size:11px;font-weight:500;cursor:pointer;display:flex;align-items:center;justify-content:center}
 .qn.cur{border-color:var(--p);background:#dbeafe;color:var(--p);font-weight:700}
 .qn.ans{background:#dcfce7;border-color:#86efac;color:var(--ok)}
 .qn.flg{background:#fef3c7;border-color:#fcd34d}
 .side-f{padding:12px;border-top:1px solid var(--b)}
 .tmain{flex:1;padding:18px 24px;max-width:780px}
 .ttop{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px}
-.prog-t{font-size:14px;font-weight:700;color:var(--p);background:#eff6ff;padding:5px 12px;border-radius:20px}
-.prog-w{flex:1;min-width:120px;background:#e2e8f0;border-radius:20px;height:8px;overflow:hidden}
-.prog-f{height:100%;background:var(--p);border-radius:20px;transition:width .3s}
-.timer{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--p);background:#eff6ff;padding:5px 14px;border-radius:10px}
+.prog-t{font-size:14px;font-weight:700;color:var(--p);background:#eff6ff;padding:5px 12px;border-radius:24px}
+.prog-w{flex:1;min-width:120px;background:#e2e8f0;border-radius:24px;height:8px;overflow:hidden}
+.prog-f{height:100%;background:var(--p);border-radius:24px;transition:width .3s}
+.timer{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--p);background:#eff6ff;padding:5px 14px;border-radius:20px}
 .timer.warn{color:var(--warn);background:#fffbeb}.timer.dang{color:var(--err);background:#fef2f2;animation:pulse 1s infinite}
 @keyframes pulse{50%{opacity:.7}}
-.qc{background:var(--c);border-radius:14px;padding:20px;box-shadow:0 1px 3px rgba(0,0,0,.05);margin-bottom:16px}
+.qc{background:var(--c);border-radius:22px;padding:20px;box-shadow:0 1px 3px rgba(0,0,0,.05);margin-bottom:16px}
 .qh{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
-.qnum{font-size:12px;font-weight:600;color:var(--p);background:#eff6ff;padding:3px 10px;border-radius:20px}
-.flag{background:none;border:1px solid var(--b);border-radius:7px;padding:4px 8px;cursor:pointer;font-size:14px}
+.qnum{font-size:12px;font-weight:600;color:var(--p);background:#eff6ff;padding:3px 10px;border-radius:24px}
+.flag{background:none;border:1px solid var(--b);border-radius:17px;padding:4px 8px;cursor:pointer;font-size:14px}
 .flag.on{background:#fef3c7;border-color:#fcd34d}
 .qt{font-size:15px;margin-bottom:16px;line-height:1.6}
 .opts{display:flex;flex-direction:column;gap:7px}
-.op{display:flex;align-items:flex-start;gap:10px;padding:11px 12px;border:2px solid var(--b);border-radius:11px;cursor:pointer;transition:.15s}
+.op{display:flex;align-items:flex-start;gap:10px;padding:11px 12px;border:2px solid var(--b);border-radius:22px;cursor:pointer;transition:.15s}
 .op:hover{border-color:#93c5fd;background:#f8fafc}
 .op.sel{border-color:var(--p);background:#eff6ff}
 .ol{width:24px;height:24px;border-radius:50%;background:var(--bg);display:flex;align-items:center;justify-content:center;font-weight:600;font-size:11px;flex-shrink:0;color:var(--m)}
@@ -981,11 +981,11 @@ html,body{overflow-x:hidden}
 .score-c small{font-size:13px;font-weight:400;opacity:.85}
 .res-row{display:flex;justify-content:space-between;padding:11px 14px;border-bottom:1px solid var(--b);font-size:14px}
 .res-row:last-child{border-bottom:none}
-.rev{background:var(--c);border-radius:11px;padding:14px;margin-bottom:10px;border-left:4px solid var(--b)}
+.rev{background:var(--c);border-radius:22px;padding:14px;margin-bottom:10px;border-left:4px solid var(--b)}
 .rev.ok{border-left-color:var(--ok)}.rev.bad{border-left-color:var(--err)}
 .rev .rh{display:flex;justify-content:space-between;margin-bottom:6px;font-size:11px;color:var(--m)}
 .rev .rq{font-weight:500;margin-bottom:8px;font-size:13px}
-.rev .ra{font-size:12px;padding:6px 10px;border-radius:7px;margin-bottom:4px}
+.rev .ra{font-size:12px;padding:6px 10px;border-radius:17px;margin-bottom:4px}
 .rev .ra.u{background:#fef2f2}.rev .ra.c{background:#f0fdf4}
 .switch{display:flex;align-items:center;gap:8px;font-size:13px}
 .switch input{width:18px;height:18px;accent-color:var(--p)}
@@ -1001,7 +1001,7 @@ body:not(.is-admin){user-select:none;-webkit-user-select:none;-webkit-touch-call
 body:not(.is-admin) input,body:not(.is-admin) textarea{user-select:text;-webkit-user-select:text}
 img,svg{-webkit-user-drag:none}
 body.shield #app-shield-target,body.shield .screen{filter:blur(28px) brightness(.4);pointer-events:none}
-.name-warn{background:#fef2f2;border:2px solid #dc2626;color:#7f1d1d;border-radius:14px;padding:14px 16px;font-size:16px;line-height:1.5;margin-bottom:16px}
+.name-warn{background:#fef2f2;border:2px solid #dc2626;color:#7f1d1d;border-radius:22px;padding:14px 16px;font-size:16px;line-height:1.5;margin-bottom:16px}
 .name-warn .nw-t{font-size:19px;font-weight:800;margin-bottom:4px;display:block}
 body.dark .name-warn{background:#450a0a;color:#fecaca;border-color:#ef4444}
 #wm{position:fixed;inset:0;z-index:99998;pointer-events:none;background-repeat:repeat;display:none}
@@ -1014,14 +1014,14 @@ body.shield #shield-msg{display:flex}
 #lock-ov h2{margin:10px 0}
 #lock-ov p{opacity:.85;margin-bottom:18px;font-size:14px}
 .stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
-.stat{background:var(--bg);border-radius:10px;padding:10px;text-align:center}
+.stat{background:var(--bg);border-radius:20px;padding:10px;text-align:center}
 .stat b{display:block;font-size:20px;color:var(--p)}
 .stat span{font-size:11px;color:var(--m)}
 .chart-wrap{overflow-x:auto}
 .tbar{display:flex;align-items:center;gap:8px;font-size:12px;margin:7px 0}
 .tbar .tn{width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tbar .tb{flex:1;background:#e2e8f0;border-radius:10px;height:10px;overflow:hidden}
-.tbar .tb i{display:block;height:100%;background:var(--p);border-radius:10px}
+.tbar .tb{flex:1;background:#e2e8f0;border-radius:20px;height:10px;overflow:hidden}
+.tbar .tb i{display:block;height:100%;background:var(--p);border-radius:20px}
 .tbar .tv{width:44px;text-align:right;font-weight:600}
 @media(max-width:768px){.stat-grid{grid-template-columns:repeat(2,1fr)}}
 /* ===== Қосымша мүмкіндіктер ===== */
@@ -1029,15 +1029,15 @@ body.shield #shield-msg{display:flex}
 body.in-test #theme-btn{display:none}
 #confetti{position:fixed;left:0;top:0;width:100%;height:var(--vh);pointer-events:none;z-index:99990}
 .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
-.chip{background:var(--c);border:1px solid var(--b);border-radius:20px;padding:6px 14px;font-size:13px}
+.chip{background:var(--c);border:1px solid var(--b);border-radius:24px;padding:6px 14px;font-size:13px}
 .chip.warn{background:#fef3c7;color:#92400e;border-color:#fcd34d}
-.quote{background:linear-gradient(135deg,#eff6ff,#f5f3ff);border-left:4px solid var(--p);border-radius:12px;padding:12px 14px;font-size:14px;font-style:italic;margin:10px 0;color:#1e293b;cursor:pointer}
-.qotd-op{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:2px solid var(--b);border-radius:11px;cursor:pointer;margin-bottom:7px;font-size:13px}
+.quote{background:linear-gradient(135deg,#eff6ff,#f5f3ff);border-left:4px solid var(--p);border-radius:22px;padding:12px 14px;font-size:14px;font-style:italic;margin:10px 0;color:#1e293b;cursor:pointer}
+.qotd-op{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:2px solid var(--b);border-radius:22px;cursor:pointer;margin-bottom:7px;font-size:13px}
 .qotd-op:hover{border-color:#93c5fd}
 .qotd-op.ok{border-color:var(--ok);background:#dcfce7;color:#14532d}
 .qotd-op.bad{border-color:var(--err);background:#fee2e2;color:#7f1d1d}
 .qotd-op.lock{cursor:default}
-.fcard{background:var(--c);border:2px solid var(--b);border-radius:18px;min-height:240px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:26px 20px;cursor:pointer;position:relative;animation:flipin .25s}
+.fcard{background:var(--c);border:2px solid var(--b);border-radius:26px;min-height:240px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:26px 20px;cursor:pointer;position:relative;animation:flipin .25s}
 .fcard.back{border-color:var(--p);background:#eff6ff;color:#0f172a}
 .fcard .flab{position:absolute;top:12px;left:16px;font-size:11px;font-weight:700;color:var(--m);text-transform:uppercase}
 .fcard .ftxt{font-size:20px;font-weight:600;line-height:1.5}
@@ -1050,13 +1050,13 @@ body.in-test #theme-btn{display:none}
 @keyframes bob{50%{transform:translateY(-6px)}}
 .pod .pname{font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pod .ppts{font-size:12px;color:var(--m)}
-.pod .pbase{border-radius:10px 10px 0 0;color:#fff;font-weight:800;padding-top:8px;margin-top:6px;font-size:18px}
+.pod .pbase{border-radius:20px 10px 0 0;color:#fff;font-weight:800;padding-top:8px;margin-top:6px;font-size:18px}
 .pod.p1 .pbase{background:linear-gradient(#fbbf24,#f59e0b);height:84px}
 .pod.p2 .pbase{background:linear-gradient(#cbd5e1,#94a3b8);height:62px}
 .pod.p3 .pbase{background:linear-gradient(#fdba74,#c2763a);height:46px}
 .item.me{border-color:var(--p);background:#eff6ff;color:#0f172a}
 .item.me .info p{color:#475569}
-.plan-day{background:var(--c);border:1px solid var(--b);border-radius:12px;padding:10px 14px;margin-bottom:8px}
+.plan-day{background:var(--c);border:1px solid var(--b);border-radius:22px;padding:10px 14px;margin-bottom:8px}
 .plan-day.today{border-color:var(--p);box-shadow:0 0 0 2px rgba(37,99,235,.15)}
 .plan-day h4{font-size:13px;margin-bottom:6px}
 .plan-day label{display:flex;gap:8px;align-items:flex-start;font-size:13px;margin-bottom:4px;cursor:pointer}
@@ -1065,7 +1065,7 @@ body.in-test #theme-btn{display:none}
 .ttable th,.ttable td{padding:8px 6px;border-bottom:1px solid var(--b);text-align:left;vertical-align:middle}
 .ttable th{font-size:11px;color:var(--m);text-transform:uppercase}
 .tscroll{overflow-x:auto}
-.gl-item{background:var(--c);border:1px solid var(--b);border-radius:12px;padding:12px 14px}
+.gl-item{background:var(--c);border:1px solid var(--b);border-radius:22px;padding:12px 14px}
 .gl-item h4{font-size:14px;margin-bottom:3px}
 .gl-item p{font-size:13px;color:var(--t)}
 .gl-cat{font-size:10px;font-weight:700;color:var(--p);text-transform:uppercase;letter-spacing:.5px}
@@ -1100,18 +1100,18 @@ body.dark #contact-box,body.dark #contact-box *{color:#111}
 body.dark #contact-box [style*="background:#075e54"] *,body.dark #contact-box [style*="background:#075e54"]{color:#fff}
 body.dark #admin-chat input,body.dark #admin-chat textarea{color:#111}
 .cbox{margin-top:8px}
-.cmsgs{height:260px;overflow-y:auto;background:var(--bg);border:1px solid var(--b);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:6px}
-.cmsg{max-width:82%;padding:7px 11px;border-radius:12px;font-size:13px;white-space:pre-wrap;word-break:break-word}
+.cmsgs{height:260px;overflow-y:auto;background:var(--bg);border:1px solid var(--b);border-radius:22px;padding:10px;display:flex;flex-direction:column;gap:6px}
+.cmsg{max-width:82%;padding:7px 11px;border-radius:22px;font-size:13px;white-space:pre-wrap;word-break:break-word}
 .cmsg.me{align-self:flex-end;background:var(--p);color:#fff}
 .cmsg.other{align-self:flex-start;background:var(--c);border:1px solid var(--b)}
 .cmsg.sys{align-self:center;background:#fef3c7;color:#92400e;font-size:12px;text-align:center}
 .cmsg small{display:block;opacity:.7;font-size:10px;margin-top:2px}
 .crow{display:flex;gap:8px;margin-top:8px}
-.crow input{flex:1;padding:10px 12px;border:1px solid var(--b);border-radius:10px;background:var(--bg);color:var(--t);font-family:inherit;font-size:14px}
+.crow input{flex:1;padding:10px 12px;border:1px solid var(--b);border-radius:20px;background:var(--bg);color:var(--t);font-family:inherit;font-size:14px}
 body.dark .cmsg.sys{background:#422006;color:#fcd34d}
 
 /* ===== Жаңа дизайн (v2) ===== */
-:root{--r:18px;--sh:0 6px 24px rgba(30,41,59,.07);--grad:linear-gradient(135deg,#2563eb,#7c3aed)}
+:root{--r:28px;--sh:0 6px 24px rgba(30,41,59,.07);--grad:linear-gradient(135deg,#2563eb,#7c3aed)}
 body{background:radial-gradient(900px 420px at 0% -5%,rgba(37,99,235,.14),transparent 60%),radial-gradient(800px 420px at 100% 0%,rgba(124,58,237,.13),transparent 55%),var(--bg);background-attachment:fixed}
 body.dark{background:radial-gradient(900px 420px at 0% -5%,rgba(59,130,246,.16),transparent 60%),radial-gradient(800px 420px at 100% 0%,rgba(139,92,246,.14),transparent 55%),var(--bg);background-attachment:fixed}
 .topback{background:color-mix(in srgb,var(--bg) 90%,transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
@@ -1119,7 +1119,7 @@ body.dark{background:radial-gradient(900px 420px at 0% -5%,rgba(59,130,246,.16),
 @keyframes scrIn{from{opacity:0}to{opacity:1}}
 .hdr h1,.hdr h2{letter-spacing:-.3px}
 .card{border-radius:var(--r);box-shadow:var(--sh);border-color:rgba(148,163,184,.28)}
-.btn{border-radius:12px}
+.btn{border-radius:22px}
 .btn:active{transform:scale(.98)}
 .btn-p{background:var(--grad);box-shadow:0 4px 14px rgba(37,99,235,.28)}
 .btn-p:hover{background:var(--grad);filter:brightness(1.08);transform:translateY(-1px)}
@@ -1127,23 +1127,23 @@ body.dark{background:radial-gradient(900px 420px at 0% -5%,rgba(59,130,246,.16),
 .mode{border-radius:var(--r);border:1px solid rgba(148,163,184,.3);box-shadow:var(--sh);position:relative;overflow:hidden}
 .mode::before{content:'';position:absolute;left:0;right:0;top:0;height:4px;background:var(--grad);opacity:0;transition:.2s}
 .mode:hover::before{opacity:1}
-.mode .ic{width:58px;height:58px;border-radius:16px;background:linear-gradient(135deg,rgba(37,99,235,.12),rgba(124,58,237,.16));display:flex;align-items:center;justify-content:center;margin:0 auto 10px;font-size:28px}
+.mode .ic{width:58px;height:58px;border-radius:24px;background:linear-gradient(135deg,rgba(37,99,235,.12),rgba(124,58,237,.16));display:flex;align-items:center;justify-content:center;margin:0 auto 10px;font-size:28px}
 .profile-bar{border-radius:0 0 var(--r) var(--r);box-shadow:0 4px 18px rgba(30,41,59,.07);border-bottom:none}
 .avatar{background:var(--grad);background-size:cover;background-position:center;box-shadow:0 2px 8px rgba(37,99,235,.3);flex-shrink:0;overflow:hidden}
-.item{border-radius:14px;box-shadow:0 2px 8px rgba(30,41,59,.04);transition:.15s}
+.item{border-radius:22px;box-shadow:0 2px 8px rgba(30,41,59,.04);transition:.15s}
 .item[onclick]:hover{transform:translateY(-2px);box-shadow:var(--sh);border-color:#93c5fd}
 .item.rk.r1{background:linear-gradient(90deg,rgba(251,191,36,.20),var(--c) 70%);border-color:#fbbf24}
 .item.rk.r2{background:linear-gradient(90deg,rgba(148,163,184,.24),var(--c) 70%);border-color:#cbd5e1}
 .item.rk.r3{background:linear-gradient(90deg,rgba(194,118,58,.20),var(--c) 70%);border-color:#e0a46f}
 .item.rk.me{box-shadow:0 0 0 2px var(--p)}
-.stat{border-radius:14px;background:linear-gradient(135deg,rgba(37,99,235,.07),rgba(124,58,237,.08))}
+.stat{border-radius:22px;background:linear-gradient(135deg,rgba(37,99,235,.07),rgba(124,58,237,.08))}
 .tbar .tb i,.prog-f{background:var(--grad)}
 .score-c{background:var(--grad)}
 .pod .avatar{margin:0 auto;border:3px solid #fff}
 .pod.p1 .pbase{box-shadow:0 8px 20px rgba(245,158,11,.35)}
 .pod{cursor:pointer}
 .fg input:focus,.fg select:focus,.fg textarea:focus{outline:none;border-color:var(--p);box-shadow:0 0 0 3px rgba(37,99,235,.15);background:var(--c)}
-#s-profile .hdr,#s-pubprof .hdr{background:var(--grad);color:#fff;border-radius:24px;padding:26px 16px 22px;box-shadow:0 12px 32px rgba(79,70,229,.35);position:relative;overflow:hidden}
+#s-profile .hdr,#s-pubprof .hdr{background:var(--grad);color:#fff;border-radius:28px;padding:26px 16px 22px;box-shadow:0 12px 32px rgba(79,70,229,.35);position:relative;overflow:hidden}
 #s-profile .hdr::after,#s-pubprof .hdr::after{content:'';position:absolute;width:220px;height:220px;border-radius:50%;background:rgba(255,255,255,.10);right:-60px;top:-80px}
 #s-profile .hdr>*,#s-pubprof .hdr>*{position:relative;z-index:1}
 #s-profile .hdr .sub,#s-pubprof .hdr .sub{color:rgba(255,255,255,.88)}
@@ -1161,7 +1161,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
 
 <button id="theme-btn" class="btn btn-s" onclick="toggleTheme()" title="Қараңғы / жарық режим">🌙</button>
 <canvas id="confetti"></canvas>
-<div id="sync-ind" style="position:fixed;left:10px;bottom:10px;z-index:90;font-size:11px;padding:4px 10px;border-radius:12px;box-shadow:0 1px 6px rgba(0,0,0,.15)"></div>
+<div id="sync-ind" style="position:fixed;left:10px;bottom:10px;z-index:90;font-size:11px;padding:4px 10px;border-radius:22px;box-shadow:0 1px 6px rgba(0,0,0,.15)"></div>
 
 <div id="wm"></div>
 <div id="shield-msg">🔒 Мазмұн қорғалған</div>
@@ -1227,7 +1227,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
         <div id="chat-messages" style="height:280px;overflow-y:auto;padding:12px;background:#e5ddd5;display:flex;flex-direction:column;gap:8px"></div>
         <div style="padding:10px 12px;background:#f0f0f0;border-top:1px solid #ddd">
           <div style="display:flex;gap:8px">
-            <input id="chat-text" maxlength="1000" placeholder="Хабарлама жазыңыз..." style="flex:1;padding:10px 12px;border:1px solid #ccc;border-radius:20px;font-size:14px;font-family:inherit;background:#fff" onkeydown="if(event.key==='Enter')sendChatMsg()">
+            <input id="chat-text" maxlength="1000" placeholder="Хабарлама жазыңыз..." style="flex:1;padding:10px 12px;border:1px solid #ccc;border-radius:24px;font-size:14px;font-family:inherit;background:#fff" onkeydown="if(event.key==='Enter')sendChatMsg()">
             <button class="btn btn-ok" style="border-radius:50%;width:42px;height:42px;padding:0" onclick="sendChatMsg()">➤</button>
           </div>
         </div>
@@ -1272,7 +1272,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
         <div class="sub" id="p-title" style="font-size:11px">—</div>
         <div id="p-stars" style="font-size:13px;letter-spacing:2px;color:#f59e0b;line-height:1.2">☆☆☆☆☆</div>
       </div>
-      <div style="margin-left:8px;background:#eff6ff;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:700;color:var(--p)">
+      <div style="margin-left:8px;background:#eff6ff;padding:4px 10px;border-radius:24px;font-size:12px;font-weight:700;color:var(--p)">
         ⭐ <span id="p-points">0</span>
       </div>
     </div>
@@ -1879,7 +1879,7 @@ function renderChatMessages(){
     const isUser=m.role==='user';
     const admAv='<div class="avatar" style="width:28px;height:28px;font-size:12px;background:#128c7e">А</div>';
     return `<div style="display:flex;gap:6px;align-items:flex-end;justify-content:${isUser?'flex-end':'flex-start'}">${isUser?'':admAv}
-      <div style="max-width:75%;padding:8px 12px;border-radius:12px;font-size:13px;line-height:1.4;background:${isUser?'#dcf8c6':'#fff'};box-shadow:0 1px 1px rgba(0,0,0,.08);word-break:break-word">
+      <div style="max-width:75%;padding:8px 12px;border-radius:22px;font-size:13px;line-height:1.4;background:${isUser?'#dcf8c6':'#fff'};box-shadow:0 1px 1px rgba(0,0,0,.08);word-break:break-word">
         <div style="font-size:11px;color:#075e54;font-weight:600;margin-bottom:2px">${isUser?esc(m.from||chatLogin):'Админ'}</div>
         <div>${esc(m.text)}</div>
         <div style="font-size:10px;color:#667;text-align:right;margin-top:4px">${esc(m.time||'')}</div>
@@ -1913,11 +1913,11 @@ function renderAdminChat(){
         ${unread?`<span class="badge" style="background:#fee2e2;color:var(--err)">${unread} жаңа</span>`:''}
         <span class="sub">${t.list.length} хабарлама</span>
       </summary>
-      <div style="display:flex;flex-direction:column;gap:8px;margin:12px 0;max-height:320px;overflow-y:auto;padding:10px;background:#e5ddd5;border-radius:10px">
+      <div style="display:flex;flex-direction:column;gap:8px;margin:12px 0;max-height:320px;overflow-y:auto;padding:10px;background:#e5ddd5;border-radius:20px">
         ${t.list.map(m=>{
           const isUser=m.role!=='admin';
           return `<div style="display:flex;gap:6px;align-items:flex-end;justify-content:${isUser?'flex-start':'flex-end'}">${isUser?chatAvFor(m.from||name):''}
-            <div style="max-width:80%;padding:8px 12px;border-radius:12px;font-size:13px;background:${isUser?'#fff':'#dcf8c6'};word-break:break-word">
+            <div style="max-width:80%;padding:8px 12px;border-radius:22px;font-size:13px;background:${isUser?'#fff':'#dcf8c6'};word-break:break-word">
               <div style="font-size:11px;color:#075e54;font-weight:600;margin-bottom:2px">${isUser?esc(m.from||name):'Админ'}</div>
               <div>${esc(m.text)}</div>
               <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:4px">
@@ -1927,7 +1927,7 @@ function renderAdminChat(){
             </div></div>`}).join('')}
       </div>
       <div style="display:flex;gap:8px;margin-bottom:8px">
-        <input id="${inId}" placeholder="Жауап жазыңыз..." style="flex:1;padding:10px 12px;border:1px solid var(--b);border-radius:10px;font-size:14px;font-family:inherit" onkeydown="if(event.key==='Enter')adminSendReply(${jsq(t.key)},'${inId}')">
+        <input id="${inId}" placeholder="Жауап жазыңыз..." style="flex:1;padding:10px 12px;border:1px solid var(--b);border-radius:20px;font-size:14px;font-family:inherit" onkeydown="if(event.key==='Enter')adminSendReply(${jsq(t.key)},'${inId}')">
         <button class="btn btn-p btn-sm" onclick="adminSendReply(${jsq(t.key)},'${inId}')">Жіберу</button>
       </div>
       <button class="btn btn-d btn-sm" onclick="adminDelThread(${jsq(t.key)})">🗑 Бүкіл чатты өшіру</button>
@@ -2681,9 +2681,9 @@ const bulkName={c:'',e:'',f:''};
 function bulkInfoHTML(r){
   if(!r)return '';
   let h='';
-  if(r.questions.length)h+='<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:8px">✅ <b>'+r.questions.length+'</b> сұрақ танылды'+(r.meta&&r.meta.topic?' · тақырып: <b>'+esc(r.meta.topic)+'</b>':'')+'</div>';
+  if(r.questions.length)h+='<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:20px;padding:10px 12px;font-size:13px;margin-bottom:8px">✅ <b>'+r.questions.length+'</b> сұрақ танылды'+(r.meta&&r.meta.topic?' · тақырып: <b>'+esc(r.meta.topic)+'</b>':'')+'</div>';
   if(r.errors.length){
-    h+='<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;padding:10px 12px;font-size:12px;margin-bottom:8px">⚠ <b>'+r.errors.length+'</b> сұрақта қате бар (олар қосылмайды):<ul style="margin:6px 0 0 18px">'
+    h+='<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:20px;padding:10px 12px;font-size:12px;margin-bottom:8px">⚠ <b>'+r.errors.length+'</b> сұрақта қате бар (олар қосылмайды):<ul style="margin:6px 0 0 18px">'
       +r.errors.slice(0,8).map(e=>'<li>'+(e.line?e.line+'-жол: ':'')+esc(e.msg)+'</li>').join('')+'</ul>'+(r.errors.length>8?'<div>… және тағы '+(r.errors.length-8)+'</div>':'')+'</div>';
   }
   if(!r.questions.length&&!r.errors.length)h='<div class="sub">Сұрақ табылмады. Үлгі форматты қараңыз.</div>';
@@ -2731,7 +2731,7 @@ function bulkBlock(ctx){
     <h3 style="margin-bottom:6px">📥 ${ctx==='c'?'Сұрақтар файлы (барлық сұрақ бір файлда)':ctx==='f'?'Сұрақтар файлы':'Файлдан сұрақ қосу'}</h3>
     <p class="sub" style="margin-bottom:10px">Файл таңдаңыз (.txt, .csv) немесе мәтінді / Excel-ден көшірілген кестені қойыңыз. Бір реттен 500 сұраққа дейін.</p>
     <details style="margin-bottom:12px"><summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--p)">Формат үлгісі</summary>
-      <pre style="font-size:12px;background:var(--bg);border-radius:10px;padding:10px;margin:8px 0;white-space:pre-wrap">1. Сұрақ мәтіні
+      <pre style="font-size:12px;background:var(--bg);border-radius:20px;padding:10px;margin:8px 0;white-space:pre-wrap">1. Сұрақ мәтіні
 A) нұсқа
 B) нұсқа
 C) нұсқа
@@ -3976,8 +3976,8 @@ function classCardHTML(c){
     </div>
     <div class="sub" style="margin-bottom:10px">Оқушылар: <b>${c.students.length}</b> · сыныптың орташа балы: <b>${avg}</b></div>
     ${c.students.length?`<div class="tscroll"><table class="ttable"><tr><th>Оқушы</th><th>Тест</th><th>Орташа</th><th>Қате</th><th>Ұпай</th><th></th></tr>${rows}</table></div>`:'<div class="sub">Оқушы жоқ. Төмендегі өріс арқылы логин бойынша қосыңыз немесе кодты оқушыларға беріңіз.</div>'}
-    <div style="display:flex;gap:8px;margin-top:12px"><input id="tch-add-${c.id}" placeholder="Оқушы логині" style="flex:1;padding:9px 12px;border:1px solid var(--b);border-radius:10px;background:var(--bg);color:var(--t);font-family:inherit"><button class="btn btn-ok btn-sm" onclick="addStudent('${c.id}')">➕ Қосу</button></div>
-    <div style="display:flex;gap:8px;margin-top:8px"><input id="tch-ncode-${c.id}" placeholder="Жаңа код (бос = кездейсоқ)" maxlength="8" style="flex:1;padding:9px 12px;border:1px solid var(--b);border-radius:10px;background:var(--bg);color:var(--t);font-family:inherit;text-transform:uppercase"><button class="btn btn-w btn-sm" onclick="changeClassCode('${c.id}')">🔄 Кодты өзгерту</button></div>
+    <div style="display:flex;gap:8px;margin-top:12px"><input id="tch-add-${c.id}" placeholder="Оқушы логині" style="flex:1;padding:9px 12px;border:1px solid var(--b);border-radius:20px;background:var(--bg);color:var(--t);font-family:inherit"><button class="btn btn-ok btn-sm" onclick="addStudent('${c.id}')">➕ Қосу</button></div>
+    <div style="display:flex;gap:8px;margin-top:8px"><input id="tch-ncode-${c.id}" placeholder="Жаңа код (бос = кездейсоқ)" maxlength="8" style="flex:1;padding:9px 12px;border:1px solid var(--b);border-radius:20px;background:var(--bg);color:var(--t);font-family:inherit;text-transform:uppercase"><button class="btn btn-w btn-sm" onclick="changeClassCode('${c.id}')">🔄 Кодты өзгерту</button></div>
   </div>`;
 }
 function renderTeacher(){
