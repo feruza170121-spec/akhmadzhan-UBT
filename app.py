@@ -318,8 +318,7 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
       <div class="fg" id="admin-pass-wrap" style="display:none"><label class="sub">Админ ретінде кіру</label></div>
       <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doLogin()">Кіру</button>
       <button class="btn btn-s" style="width:100%;margin-bottom:10px" onclick="showRegister()">Тіркелу</button>
-      <button class="btn btn-s btn-sm" style="width:100%;margin-bottom:10px" onclick="showForgot()">Парольді ұмыттым</button>
-      <button class="btn btn-s btn-sm" style="width:100%;margin-bottom:10px" onclick="showTeacherReg()">👨‍🏫 Мұғалімдерге арналған кабинет</button>
+      <button class="btn btn-s btn-sm" style="width:100%;margin-bottom:10px" onclick="showTeacherReg()">👨‍🏫 Мұғалім болуға өтініш жіберу</button>
       <button class="btn btn-w btn-sm" style="width:100%" onclick="showContactAdmin()">💬 Админге жазу</button>
     </div>
     <div class="card" id="register-box" style="display:none">
@@ -332,8 +331,8 @@ body.dark .cmsg.sys{background:#422006;color:#fcd34d}
       <button class="btn btn-s" style="width:100%" onclick="showLoginBox()">Артқа</button>
     </div>
     <div class="card" id="teacher-reg-box" style="display:none">
-      <h3 style="margin-bottom:6px">👨‍🏫 Мұғалімдерге арналған кабинет</h3>
-      <p class="sub" style="margin-bottom:12px">Тіркелгеннен кейін өтініш админге түседі. Админ рұқсат бергенше мұғалім мүмкіндіктері ашылмайды.</p>
+      <h3 style="margin-bottom:6px">👨‍🏫 Мұғалім болуға өтініш</h3>
+      <p class="sub" style="margin-bottom:12px">Өтініш админге түседі. Админ мақұлдағанға дейін мұғалім болу және сынып ашу мүмкін емес.</p>
       <div class="fg"><label>Аты-жөніңіз (логин) *</label><input id="tr-name" placeholder="Мыс: Айгүл Серікқызы" maxlength="30"></div>
       <div class="fg"><label>Мектеп / пән</label><input id="tr-info" placeholder="Мыс: №12 мектеп, математика" maxlength="80"></div>
       <div class="fg"><label>Пароль *</label><input id="tr-pass" type="password" placeholder="Кемінде 4 таңба"></div>
@@ -2579,12 +2578,34 @@ function checkRollover(){
   });
   if(ch){LS.set('ubt_trophies',tr);LS.set('ubt_awarded',done)}
 }
+function classBoard(){
+  return getClasses().filter(c=>c.students&&c.students.length).map(c=>{
+    const total=c.students.reduce((a,id)=>a+(getUserStats(id).points||0),0);
+    const withT=c.students.map(id=>studentStats(id)).filter(x=>x.n);
+    const tavg=withT.length?Math.round(withT.reduce((a,x)=>a+x.avg,0)/withT.length):0;
+    return{id:c.id,name:c.name,teacher:c.teacherName||'',n:c.students.length,total,avg:Math.round(total/c.students.length),tavg,mine:!!(user&&(c.teacherId===user.id||c.students.includes(user.id)))};
+  }).sort((a,b)=>b.avg-a.avg||b.total-a.total||b.n-a.n);
+}
+function showClassRanking(){
+  const board=classBoard(),cups=['🏆','🥈','🥉'],medals=['🥇','🥈','🥉'];
+  document.getElementById('rank-sub').textContent='Үздік сыныптар · оқушылардың орташа ұпайы бойынша';
+  document.getElementById('rank-podium').innerHTML=board.length?`<div class="podium">`+[1,0,2].filter(i=>board[i]).map(i=>`<div class="pod p${i+1}"><div class="pcup">${cups[i]}</div><div class="pname">${esc(board[i].name)}</div><div class="ppts">⭐ ${board[i].avg}</div><div class="pbase">${i+1}</div></div>`).join('')+`</div>`:'';
+  const el=document.getElementById('rank-list');
+  if(!board.length)el.innerHTML='<div class="empty"><div class="ic">🏫</div><p>Әзірге оқушысы бар сынып жоқ</p></div>';
+  else el.innerHTML=board.map((c,i)=>`<div class="item${c.mine?' me':''}">
+      <div style="width:36px;height:36px;border-radius:50%;background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0">🏫</div>
+      <div class="info"><h4>${medals[i]||('#'+(i+1))} ${esc(c.name)} ${c.mine?'(сіздің сынып)':''}</h4><p>👨‍🏫 ${esc(c.teacher||'—')} · 👥 ${c.n} оқушы · жалпы ⭐ ${c.total}${c.tavg?' · тест орташасы '+c.tavg+'%':''}</p></div>
+      <div style="font-weight:700;color:var(--p);font-size:16px;text-align:right">⭐ ${c.avg}<div class="sub" style="font-size:10px;font-weight:400">орташа</div></div></div>`).join('');
+  document.getElementById('rank-hall').innerHTML='';
+  showScr('s-ranking');
+}
 let rankMode='all';
 function showRanking(mode){
   if(mode)rankMode=mode;
   checkRollover();
-  const tabs=[['all','Жалпы'],['w','Апта'],['m','Ай']];
+  const tabs=[['all','Жалпы'],['w','Апта'],['m','Ай'],['cls','🏫 Үздік сынып']];
   document.getElementById('rank-tabs').innerHTML=tabs.map(t=>`<button class="btn ${rankMode===t[0]?'btn-p':'btn-s'} btn-sm" onclick="showRanking('${t[0]}')">${t[1]}</button>`).join('');
+  if(rankMode==='cls'){showClassRanking();return}
   let board;
   if(rankMode==='all'){board=getLeaderboard();document.getElementById('rank-sub').textContent='Ең көп ұпай жинағандар'}
   else{
@@ -3029,6 +3050,15 @@ function renderTeacherReq(){
   const pend=Object.values(LS.get('ubt_profiles',{})).filter(p=>p.role==='teacher'&&!p.teacherApproved);
   el.innerHTML=pend.length?pend.map(p=>`<div class="item"><div class="info"><h4>${esc(p.name)}</h4><p>${esc(p.teacherInfo||'—')}</p></div><div class="acts"><button class="btn btn-ok btn-sm" onclick="adminSetTeacher(${jsq(p.id)},true)">✓ Мұғалім ету</button><button class="btn btn-d btn-sm" onclick="adminRejectTeacher(${jsq(p.id)})">✕ Бас тарту</button></div></div>`).join(''):'<p class="sub">Жаңа өтініш жоқ</p>';
 }
+function requestTeacher(){
+  if(!user||user.isAdmin)return;
+  const info=((document.getElementById('tch-want-info')||{}).value||'').trim();
+  if(info.length<2){alert('Мектеп / пәніңізді жазыңыз');return}
+  const ok=mutateProfile((findUserByLogin(user.name)||{}).id,p=>{if(p.role==='teacher'&&p.teacherApproved)return;p.role='teacher';p.teacherApproved=false;p.teacherInfo=info});
+  if(!ok){alert('Аккаунт табылмады');return}
+  alert('✅ Өтініш админге жіберілді. Админ мақұлдағаннан кейін мұғалім кабинеті мен сынып ашу ашылады.');
+  renderTeacher();
+}
 function adminRejectTeacher(id){
   if(!confirm('Өтінішті қабылдамау керек пе? Аккаунт оқушы ретінде қалады.'))return;
   mutateProfile(id,p=>{delete p.role;delete p.teacherApproved;delete p.teacherInfo});showAdmin();
@@ -3048,7 +3078,7 @@ function adminRejectTeacher(id){
     const n=document.getElementById('tch-notice');
     n.innerHTML=T?'':(isTeacherPending()
       ?'<div class="card"><h3>⏳ Өтініш қаралуда</h3><p class="sub">Админ мұғалім рұқсатын бергенше сынып құру ашылмайды. Қазір сыныпқа кодпен қосыла аласыз.</p></div>'
-      :'<div class="card"><h3>🔒 Мұғалім кабинеті</h3><p class="sub">Сынып құру тек админ рұқсат берген мұғалімдерге ашық. Оқушы болсаңыз, төмендегі кодпен сыныпқа қосылыңыз.</p></div>');
+      :(user&&!user.isAdmin?'<div class="card"><h3>🔒 Мұғалім кабинеті</h3><p class="sub" style="margin-bottom:10px">Мұғалім болу және сынып ашу тек админ мақұлдағаннан кейін ғана мүмкін. Мұғалім болғыңыз келсе, админге өтініш жіберіңіз. Оқушы болсаңыз, төмендегі кодпен сыныпқа қосыла аласыз.</p><div class="fg"><input id="tch-want-info" placeholder="Мектеп / пән (мыс: №12 мектеп, математика)" maxlength="80"></div><button class="btn btn-p btn-sm" onclick="requestTeacher()">📨 Мұғалім болуға өтініш жіберу</button></div>':''));
   };
 })();
 
