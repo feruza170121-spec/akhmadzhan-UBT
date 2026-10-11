@@ -1024,7 +1024,7 @@ function setSyncInd(ok){
   const e=document.getElementById('sync-ind');if(!e)return;
   const sm=window.__store||'';
   if(ok&&sm==='local'){e.textContent='🟡 Ортақ база қосулы · ⚠ уақытша (сыртқы база жоқ)';e.style.background='#fef3c7';e.style.color='#92400e';return}
-  if(ok&&sm==='error'){e.textContent='🟠 Ортақ база қосулы · сыртқы база қолжетімсіз';e.style.background='#ffedd5';e.style.color='#9a3412';return}
+  if(ok&&sm==='error'){e.textContent='🟠 Ортақ база қосулы · сыртқы база қолжетімсіз'+(window.__err?' · '+window.__err:'');e.style.background='#ffedd5';e.style.color='#9a3412';return}
   e.textContent=ok?'🟢 Ортақ база қосулы'+(sm==='remote'||sm==='pending'?' · 🗄 тұрақты':''):'⚠ Ортақ база жоқ — деректер тек осы құрылғыда';
   e.style.background=ok?'#dcfce7':'#fee2e2';e.style.color=ok?'#14532d':'#7f1d1d';
 }
@@ -3853,7 +3853,7 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
   window.addEventListener('message',function(ev){
     var d=ev.data;if(!d||d.type!=='streamlit:render')return;
     var args=d.args||{},db=args.db||{},ack=(args.ack||{})[sid]||0,changed=0;
-    window.__store=args.store||'';
+    window.__store=args.store||'';window.__err=args.err||'';
     unacked=unacked.filter(function(o){return o.n>ack});
     Object.keys(pend).forEach(function(k){if(pend[k]<=ack)delete pend[k]});
     Object.keys(db).forEach(function(k){
@@ -3898,6 +3898,6 @@ _write_frontend()
 _ubt_comp = components.declare_component("ubt_plus", path=FRONT_DIR)
 
 _apply_ops(st.session_state.get("ubt_comp"))
-_res = _ubt_comp(db=_snapshot(), ack=dict(st.session_state.get("_ubt_ack", {})), store=_store_mode(_store()), key="ubt_comp", default=None)
+_res = _ubt_comp(db=_snapshot(), ack=dict(st.session_state.get("_ubt_ack", {})), store=_store_mode(_store()), err=str(_store().get("err") or "")[:160], key="ubt_comp", default=None)
 if _apply_ops(_res):
     st.rerun()
