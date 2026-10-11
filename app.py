@@ -78,7 +78,14 @@ def _snapshot():
         return dict(_store()["db"])
 
 st.set_page_config(page_title="ҰБТ+", page_icon="📘", layout="wide", initial_sidebar_state="collapsed")
-st.markdown("""<style>#MainMenu,footer,header{visibility:hidden}.block-container{padding:0!important;max-width:100%!important}iframe{border:none!important}</style>""", unsafe_allow_html=True)
+st.markdown("""<style>
+#MainMenu,footer,header{visibility:hidden}
+html,body,.stApp,[data-testid="stAppViewContainer"],[data-testid="stMain"],section.main{height:100%!important;overflow:hidden!important}
+.block-container,[data-testid="stMainBlockContainer"]{padding:0!important;max-width:100%!important}
+[data-testid="stVerticalBlock"]{gap:0!important}
+[data-testid="stBottom"],[data-testid="stBottomBlockContainer"]{display:none!important}
+iframe{border:none!important;display:block!important;width:100%!important;height:100vh!important;height:100dvh!important}
+</style>""", unsafe_allow_html=True)
 
 html_code = r"""
 <!DOCTYPE html>
@@ -92,8 +99,12 @@ html_code = r"""
 :root{--p:#2563eb;--pd:#1d4ed8;--ok:#16a34a;--err:#dc2626;--warn:#f59e0b;--bg:#f1f5f9;--c:#fff;--t:#0f172a;--m:#64748b;--b:#e2e8f0}
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t);min-height:100vh;line-height:1.5}
+html{-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
 .screen{display:none;min-height:100vh}.screen.active{display:block}
-.wrap{max-width:760px;margin:0 auto;padding:32px 16px}
+.wrap{max-width:760px;margin:0 auto;padding:32px 16px 110px}
+.tmain{padding-bottom:110px!important}
+.topback{position:sticky;top:0;z-index:60;background:var(--bg);padding:8px 0;margin:-20px 0 10px;display:flex}
+.topback .btn{box-shadow:0 1px 4px rgba(0,0,0,.08)}
 .wrap.wide{max-width:920px}
 .hdr{text-align:center;margin-bottom:28px}
 .logo{display:inline-flex;align-items:center;justify-content:center;width:72px;height:72px;background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;font-weight:800;font-size:26px;border-radius:20px;margin-bottom:14px;box-shadow:0 8px 24px rgba(37,99,235,.35);letter-spacing:-0.5px}
@@ -3433,6 +3444,24 @@ function startUbt140(){
 try{if(user&&document.getElementById('s-home').classList.contains('active'))renderHomeExtras()}catch(e){}
 </script>
 <script>
+// ===== «Артқа» батырмасын беттің үстіне қою =====
+(function(){
+  document.querySelectorAll('.screen').forEach(function(scr){
+    if(scr.id==='s-login'||scr.id==='s-home'||scr.id==='s-test')return;
+    var btn=null;
+    scr.querySelectorAll('button').forEach(function(b){if(b.textContent.trim()==='Артқа')btn=b});
+    if(!btn)return;
+    var host=scr.querySelector('.wrap')||scr;
+    var bar=document.createElement('div');bar.className='topback';
+    var row=btn.parentElement;
+    btn.textContent='← Артқа';
+    bar.appendChild(btn);
+    host.insertBefore(bar,host.firstChild);
+    if(row&&row.classList.contains('row')&&!row.children.length)row.remove();
+  });
+})();
+</script>
+<script>
 // ===== Streamlit екі жақты компонент көпірі =====
 (function(){
   var sid=Math.random().toString(36).slice(2,10),n=0,pend={},unacked=[],pollN=0,booted=false,connected=false,first=true,flushT=null,lastH=0;
@@ -3452,7 +3481,7 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
     var s=document.createElement('script');s.textContent=document.getElementById('app-src').textContent;document.body.appendChild(s);
   }
   function height(){
-    var h=950;try{h=Math.max(700,window.parent.innerHeight-16)}catch(e){}
+    var h=800;try{h=Math.max(320,window.parent.innerHeight)}catch(e){}
     if(h!==lastH){lastH=h;post({type:'streamlit:setFrameHeight',height:h})}
   }
   window.addEventListener('message',function(ev){
@@ -3473,6 +3502,8 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
     if(!booted)boot();
     else{try{setSyncInd(true);if(changed)syncRefresh()}catch(e){}}
   });
+  try{window.parent.addEventListener('resize',height)}catch(e){}
+  window.addEventListener('resize',height);
   window.__bridge={push:push,connected:function(){return connected}};
   post({type:'streamlit:componentReady',apiVersion:1});height();
   setInterval(function(){if(connected&&document.visibilityState!=='hidden')send()},5000);
