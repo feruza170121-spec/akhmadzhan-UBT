@@ -2965,10 +2965,7 @@ function inField(t){return !!(t&&t.closest&&t.closest('input,textarea,[contented
 document.addEventListener('selectstart',e=>{if(isAdminNow()||inField(e.target))return;e.preventDefault()},true);
 let shieldTimer=null;
 function shieldOn(ms){
-  if(isAdminNow())return;
-  document.body.classList.add('shield');
-  clearTimeout(shieldTimer);
-  if(ms)shieldTimer=setTimeout(shieldOff,ms);
+  return; // өшірілген: «сайт қорғалған» экраны көрсетілмейді
 }
 function shieldOff(){clearTimeout(shieldTimer);document.body.classList.remove('shield')}
 function clearClip(){try{navigator.clipboard.writeText(' ')}catch(e){}}
