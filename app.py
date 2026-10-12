@@ -531,15 +531,9 @@ def _handle_req(state, sid, rq):
         return {"ok": True}
 
     if typ == "chat_claim":
-        login = str(d.get("login") or "").strip()[:60]
-        if len(login) < 2:
-            return {"ok": False, "msg": "Логиніңізді жазыңыз (кемінде 2 таңба)"}
-        if sess:
-            return {"ok": True, "login": login if sess["admin"] else sess["name"]}
-        with state["lock"]:
-            if login.lower() in _ADMIN_NAMES or login.lower() in _profiles(state):
-                return {"ok": False, "msg": "Бұл ат тіркелген. Алдымен аккаунтқа кіріңіз немесе чат үшін басқа ат жазыңыз (мыс: аты-жөніңіз + сынып)."}
-        return {"ok": True, "login": login}
+        if not sess or sess["admin"]:
+            return {"ok": False, "msg": "Хабарлама жазу үшін аккаунтыңызға кіріңіз"}
+        return {"ok": True, "login": sess["name"]}
 
     if typ == "admin_setpass":
         if not (sess and sess["admin"]):
@@ -614,6 +608,8 @@ def _process_reqs(state, sid, reqs):
 
 # ---------------------------------------------------------------- жазу құқығын тексеру
 def _merge_chat(state, sess, v):
+    if not sess:
+        return None
     inc = _jload(v, list, None)
     if inc is None:
         return None
@@ -621,7 +617,6 @@ def _merge_chat(state, sess, v):
         return _jdump([m for m in inc if isinstance(m, dict)])
     stored = _jload(state["db"].get("ubt_chat", "[]"), list, [])
     ids = {m.get("id") for m in stored if isinstance(m, dict)}
-    profs = _profiles(state)
     add = []
     for m in inc:
         if not isinstance(m, dict) or m.get("role") != "user":
@@ -631,12 +626,7 @@ def _merge_chat(state, sess, v):
             continue
         if not isinstance(text, str) or not text.strip() or len(text) > 2000:
             continue
-        if sess:
-            frm = sess["name"]
-        else:
-            frm = str(m.get("from") or "").strip()[:60]
-            if len(frm) < 2 or frm.lower() in profs or frm.lower() in _ADMIN_NAMES:
-                continue
+        frm = sess["name"]
         add.append({"id": mid, "from": frm, "thread": frm.strip().lower(), "text": text, "role": "user",
                     "time": str(m.get("time") or "")[:40], "read": False})
         ids.add(mid)
@@ -835,7 +825,9 @@ def _apply_ops(res):
 def _chat_for(raw, sess, claim):
     if sess and sess["admin"]:
         return raw if isinstance(raw, str) else "[]"
-    key = (sess["name"] if sess else str(claim or "")).strip().lower()
+    if not sess:
+        return "[]"
+    key = sess["name"].strip().lower()
     if not key:
         return "[]"
     out = []
@@ -1178,7 +1170,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doLogin()">Кіру</button>
       <button class="btn btn-s" style="width:100%;margin-bottom:10px" onclick="showRegister()">Тіркелу</button>
       <button class="btn btn-s btn-sm" style="width:100%;margin-bottom:10px" onclick="showTeacherReg()">👨‍🏫 Мұғалім болуға өтініш жіберу</button>
-      <button class="btn btn-w btn-sm" style="width:100%" onclick="showContactAdmin()">💬 Админге жазу</button>
+      <p class="sub" style="text-align:center;margin-top:8px">💬 Админге жазу үшін алдымен кіріңіз немесе тіркеліңіз.</p>
     </div>
     <div class="card" id="register-box" style="display:none">
       <h3 style="margin-bottom:12px">Тіркелу</h3>
@@ -1769,17 +1761,13 @@ function showRegister(){
 function showForgot(){sendForgotCode()}
 let chatLogin=null;
 function showContactAdmin(){
+  if(!user||user.isAdmin){showLoginBox();return}
+  chatLogin=user.name;
   document.getElementById('login-box').style.display='none';
   document.getElementById('register-box').style.display='none';
   document.getElementById('forgot-box').style.display='none';
   document.getElementById('contact-box').style.display='block';
-  if(chatLogin){openChatRoom()}
-  else{
-    document.getElementById('chat-room').style.display='none';
-    document.getElementById('chat-gate').style.display='block';
-    document.getElementById('chat-sub').textContent='ҰБТ+ қолдау';
-    document.getElementById('chat-login').value=(document.getElementById('login-name').value||'').trim();
-  }
+  openChatRoom();
 }
 function openContactFromApp(){
   if(user&&user.isAdmin){showAdmin();return}
@@ -1787,15 +1775,9 @@ function openContactFromApp(){
   showScr('s-login');showContactAdmin();
 }
 function enterChat(){
-  const l=document.getElementById('chat-login').value.trim();
-  if(l.length<2){alert('Логиніңізді жазыңыз (кемінде 2 таңба)');return}
-  guarded(async()=>{
-    const r=await authCall('chat_claim',{login:l});
-    if(!r.ok){alert(r.msg||'Қате');return}
-    chatLogin=r.login||l;
-    try{await window.__bridge.refresh()}catch(e){}
-    openChatRoom();
-  });
+  if(!user||user.isAdmin){alert('Хабарлама жазу үшін аккаунтыңызға кіріңіз');return}
+  chatLogin=user.name;
+  openChatRoom();
 }
 function openChatRoom(){
   document.getElementById('chat-gate').style.display='none';
@@ -1841,7 +1823,7 @@ function doLogin(){return guarded(async()=>{
   document.getElementById('login-pass').value='';
   await startSession(r);
 })}
-function sendForgotCode(){alert('Парольді ұмытсаңыз, «Админге хабарласу» батырмасы арқылы админге жазыңыз. Админ жаңа пароль орнатады.')}
+function sendForgotCode(){alert('Парольді қалпына келтіру үшін әкімшіге басқа байланыс арнасы арқылы хабарласыңыз.')}
 function doForgotReset(){sendForgotCode()}
 function getChatMessages(){return LS.get('ubt_chat',[])}
 function saveChatMessages(m){LS.set('ubt_chat',m)}
@@ -1849,6 +1831,8 @@ function threadKey(x){return String(x||'').trim().toLowerCase()}
 function threadOf(m){return threadKey(m.role==='admin'?m.to:m.from)}
 function newMsgId(){return 'm_'+Date.now()+'_'+Math.random().toString(36).slice(2,7)}
 function sendChatMsg(){
+  if(!user||user.isAdmin||!window.__token){alert('Хабарлама жазу үшін аккаунтыңызға кіріңіз');return}
+  chatLogin=user.name;
   if(!chatLogin){alert('Алдымен логиніңізді жазыңыз');return}
   const text=document.getElementById('chat-text').value.trim();
   if(!text){alert('Хабарлама жазыңыз');return}
