@@ -1940,6 +1940,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <button class="mode" onclick="showBookmarks()"><span class="ic">🔖</span><h3>Таңдаулылар</h3><p>Сақталған сұрақтар</p></button>
       <button class="mode" onclick="showPlanner()"><span class="ic">🗓</span><h3>Жоспар</h3><p>Дайындық жоспары</p></button>
       <button class="mode" onclick="showTeacher()"><span class="ic">🏫</span><h3>Сынып / Мұғалім</h3><p>Сыныппен жұмыс</p></button>
+      <button class="mode" id="admin-copied-card" style="display:none" onclick="showCopiedTests()"><span class="ic">📥</span><h3>Жүктелген тесттер</h3><p>Басқалардан алынған тесттер · жіберу</p></button>
       <button class="mode" onclick="showQuestionBank()" style="grid-column:1/-1"><span class="ic">📚</span><h3>Сұрақтар базасы</h3><p>Пәндер бойынша өз сұрақтарым</p></button>
       <button class="mode" id="admin-btn" style="display:none;grid-column:1/-1" onclick="showAdmin()"><span class="ic">🛠</span><h3>Админ</h3><p>Басқару панелі</p></button>
     </div>
@@ -2033,7 +2034,15 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <button class="btn btn-p" onclick="sendAssignedTest()">📨 Тестті жіберу</button>
     </div>
     <div class="card"><h3>Жіберілген тесттер</h3><div id="sent-test-list" class="list"></div></div>
-    <div class="row"><button class="btn btn-s" onclick="showAdmin()">Админ панеліне оралу</button></div>
+    <div class="row"><button class="btn btn-s" onclick="backFromSendTests()">Артқа</button></div>
+  </div>
+</div>
+
+<div id="s-copied-tests" class="screen">
+  <div class="wrap">
+    <div class="hdr"><h2>📥 Жүктелген тесттер</h2><p class="sub">Басқа қолданушылардан көшірген тесттеріңіз осы жерде сақталады</p></div>
+    <div id="copied-tests-list" class="list"></div>
+    <div class="row"><button class="btn btn-p" onclick="showSendTests()">📨 Тест жіберу</button><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
 </div>
 
@@ -2888,6 +2897,7 @@ function refreshProfileBar(){
   if(v){v.style.display=s.verified?'block':'none'}
   document.getElementById('admin-btn').style.display=user.isAdmin?'block':'none';
   document.getElementById('admin-json-card').style.display=user.isAdmin?'block':'none';
+  document.getElementById('admin-copied-card').style.display=user.isAdmin?'block':'none';
 }
 function enterApp(){
   refreshProfileBar();
@@ -3177,13 +3187,28 @@ function showAdmin(){
   }
 }
 function adminDelTest(id){if(!confirm('Тестті өшіру?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showAdmin()}
-function showSendTests(){
+let sendTestsFromCopies=false;
+function backFromSendTests(){sendTestsFromCopies?showCopiedTests():showAdmin()}
+function showSendTests(selectedId){
   if(!user||!user.isAdmin)return;
+  sendTestsFromCopies=typeof selectedId==='string';
   const profiles=LS.get('ubt_profiles',{});
   document.getElementById('send-test-logins').innerHTML=Object.keys(profiles).map(k=>`<option value="${esc(k)}"></option>`).join('');
   const tests=allTests().filter(t=>!t.assignmentId&&Array.isArray(t.questions)&&t.questions.length);
   document.getElementById('send-test-choice').innerHTML=tests.map(t=>`<option value="${esc(t.id)}">${esc(t.topic||'Тест')} · ${esc(t.authorName||'')} (${t.questions.length} сұрақ)</option>`).join('');
+  if(typeof selectedId==='string'&&tests.some(t=>t.id===selectedId))document.getElementById('send-test-choice').value=selectedId;
   renderSentTests();showScr('s-send-tests');
+}
+function isCopiedTest(t){return !!(t&&t.authorId==='admin'&&(t.copiedFromId||String(t.id||'').startsWith('t_admin_copy_')))}
+function showCopiedTests(){
+  if(!user||!user.isAdmin)return;
+  const tests=allTests().filter(isCopiedTest),el=document.getElementById('copied-tests-list');
+  el.innerHTML=tests.length?tests.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic||'Тест')}</h4><p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ${t.copiedFromName?' · Бастапқы автор: '+esc(t.copiedFromName):''}</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="showSendTests(${jsq(t.id)})">📨 Адамға жіберу</button><button class="btn btn-s btn-sm" onclick="previewTest(${jsq(t.id)})">👁 Қарау</button><button class="btn btn-s btn-sm" onclick="exportTest(${jsq(t.id)})">⬇ Файл</button><button class="btn btn-d btn-sm" onclick="removeCopiedTest(${jsq(t.id)})">Өшіру</button></div></div>`).join(''):'<div class="empty"><p>Әлі тест жүктелмеді. Админ панелінен басқа қолданушының тестін «Өзіме көшіру» арқылы алыңыз.</p></div>';
+  showScr('s-copied-tests');
+}
+function removeCopiedTest(id){
+  if(!user||!user.isAdmin||!confirm('Жүктелген тестті өшіру керек пе?'))return;
+  saveAllTests(allTests().filter(t=>t.id!==id));showCopiedTests();
 }
 function renderSentTests(){
   const el=document.getElementById('sent-test-list');if(!el||!user||!user.isAdmin)return;
@@ -3231,15 +3256,16 @@ function adminUnpublishTest(id){
 function adminCopyTest(id){
   if(!user||!user.isAdmin)return;
   const all=allTests(),source=all.find(x=>x.id===id);
-  if(!source||!Array.isArray(source.questions))return;
+  if(!source||!Array.isArray(source.questions)||source.authorId===user.id)return;
   const copy=JSON.parse(JSON.stringify(source));
   copy.id='t_admin_copy_'+Date.now()+'_'+Math.random().toString(36).slice(2,9);
   copy.topic=(source.topic||'Тест')+' (көшірме)';
   copy.authorId=user.id;copy.authorName=user.name;
+  copy.copiedFromId=source.id;copy.copiedFromName=source.authorName||'Белгісіз';
   copy.isPublic=false;copy.status='private';copy.adminApproved=false;
   delete copy.classId;delete copy.className;
   copy.createdAt=new Date().toISOString();
-  all.unshift(copy);saveAllTests(all);showAdmin();
+  all.unshift(copy);saveAllTests(all);showCopiedTests();
 }
 function approveTest(id){
   if(!user||!user.isAdmin)return;
@@ -3357,7 +3383,7 @@ function saveAllTests(a){
   LS.set('ubt_tests',a);
   if(user) a.filter(t=>t.authorId===user.id&&t.subject).forEach(t=>rememberQuestionsInBank(t.subject,t.questions||[],'Тест: '+(t.topic||'')));
 }
-function myTests(){return allTests().filter(t=>t.authorId===user.id&&!t.assignmentId)}
+function myTests(){return allTests().filter(t=>t.authorId===user.id&&!t.assignmentId&&!isCopiedTest(t))}
 function publicTests(){return allTests().filter(t=>(t.isPublic||t.status==='approved')&&!t.classId&&t.questions.length>0)}
 function showFormulas(){
   renderFormulas();showScr('s-formulas');
@@ -6586,7 +6612,7 @@ function showPublicTests(subj){
     h+=`<div class="card"><h3>🎲 ${esc(nm)}: аралас тест</h3><p class="sub" style="margin:4px 0 10px">Осы пәннің барлық жария тесттерінен кездейсоқ ${Math.min(20,n)} сұрақ (қолжетімді: ${n})</p><button class="btn btn-p btn-sm" onclick="startSubjectMix(${jsq(pubSubj)})">▶ Бастау</button></div>`;
   }
   if(!tests.length)h+='<div class="empty"><div class="ic">🌐</div><p>Әзірге жария тест жоқ.<br>Тест құрып, «Жариялауға жіберу» белгілеңіз — админ мақұлдаған соң осында шығады.</p></div>';
-  else h+=tests.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic)}</h4><p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ${t.timerMin?' · ⏱ '+t.timerMin+' мин':''}${t.limit?' · лимит: '+t.limit:''} · Автор: ${esc(t.authorName||'Аноним')}${t.desc?' · '+esc(t.desc):''}</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest(${jsq(t.id)})">Тапсыру</button>${user&&user.isAdmin&&t.isPublic===true&&t.status==='approved'&&t.adminApproved===true?`<button class="btn btn-s btn-sm" onclick="importPublicTestToBank(${jsq(t.id)})">📥 Сұрақтарды базаға жүктеу</button>`:''}${user&&user.isAdmin?`<button class="btn btn-d btn-sm" onclick="adminDelPublished(${jsq(t.id)})">🗑 Өшіру</button>`:''}</div></div>`).join('');
+  else h+=tests.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic)}</h4><p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ${t.timerMin?' · ⏱ '+t.timerMin+' мин':''}${t.limit?' · лимит: '+t.limit:''} · Автор: ${esc(t.authorName||'Аноним')}${t.desc?' · '+esc(t.desc):''}</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest(${jsq(t.id)})">Тапсыру</button>${user&&user.isAdmin&&t.authorId!==user.id?`<button class="btn btn-s btn-sm" onclick="adminCopyTest(${jsq(t.id)})">📥 Өзіме жүктеу</button>`:''}${user&&user.isAdmin?`<button class="btn btn-d btn-sm" onclick="adminDelPublished(${jsq(t.id)})">🗑 Өшіру</button>`:''}</div></div>`).join('');
   list.innerHTML=h;
   showScr('s-public');
 }
