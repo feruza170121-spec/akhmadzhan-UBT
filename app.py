@@ -653,6 +653,23 @@ def _handle_req(state, sid, rq):
             _commit(state)
         return {"ok": True}
 
+    if typ == "admin_new_letter":
+        if not sess or sess["admin"]:
+            return {"ok": False, "msg": "Рұқсат жоқ"}
+        body = str(d.get("text") or "").strip()
+        if not body or len(body) > 2000:
+            return {"ok": False, "msg": "Хабарлама 1–2000 таңба болуы керек"}
+        with state["lock"]:
+            letters = _jload(state["db"].get("ubt_admin_letters", "[]"), list, [])
+            if len(letters) >= 3000:
+                return {"ok": False, "msg": "Хабарламалар саны шегіне жетті"}
+            letters.append({"id": secrets.token_hex(12), "role": "user", "toUid": sess["uid"],
+                            "toName": sess["name"], "text": body,
+                            "time": int(time.time()), "read": False})
+            _put(state, "ubt_admin_letters", _jdump(letters))
+            _commit(state)
+        return {"ok": True}
+
     if typ == "admin_read_replies":
         if not (sess and sess["admin"]):
             return {"ok": False, "msg": "Рұқсат жоқ"}
@@ -1619,7 +1636,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <div class="mode" onclick="showAddQ()"><div class="ic">🖼</div><h3>Сұрақ қосу</h3><p>Сурет · кесте · барлық пән</p></div>
       <div class="mode" onclick="showSchemes()"><div class="ic">🗺</div><h3>Схема құру</h3><p>Кезеңдер · карточка · фото</p></div>
       <div class="mode" onclick="showLessons()"><div class="ic">🎬</div><h3>Анимациялық сабақтар</h3><p>Анимация + код</p></div>
-      <div class="mode" onclick="showRanking()"><div class="ic">🏆</div><h3>Рейтинг</h3><p>Ортақ көшбасшылар</p></div>
+      <div class="mode" onclick="showRanking()" style="grid-column:1/-1"><div class="ic">🏆</div><h3>Рейтинг</h3><p>Ортақ көшбасшылар</p></div>
     </div>
     <div class="grid2 home-tools">
       <button class="mode" onclick="showFormulas()"><span class="ic">📐</span><h3>Формула</h3><p>Формулаларды қарау</p></button>
@@ -1641,8 +1658,9 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
 <div id="s-admin-inbox" class="screen">
   <div class="wrap">
     <div class="hdr"><h2>📩 Админнен</h2><p class="sub">Сізге келген жеке хабарламалар</p></div>
+    <button class="btn btn-p btn-sm" style="margin-bottom:14px" onclick="selectAdminInboxLetter('new')">✏️ Админге жаңа хабарлама жазу</button>
     <div id="admin-inbox-list" class="list"></div>
-    <div class="card" id="admin-inbox-reply" style="padding:18px;display:none"><h3 style="margin-bottom:8px">↩ Хабарламаға жауап беру</h3><p class="sub" id="admin-inbox-target" style="margin-bottom:8px"></p><textarea id="admin-inbox-text" maxlength="2000" rows="3" placeholder="Жауабыңызды жазыңыз" style="width:100%;padding:10px;border:1px solid var(--b);border-radius:12px;background:var(--bg);color:var(--t);font:inherit"></textarea><button class="btn btn-p btn-sm" id="admin-inbox-send" onclick="sendAdminInboxReply()" style="margin-top:8px">📨 Жауап жіберу</button></div>
+    <div class="card" id="admin-inbox-reply" style="padding:18px"><h3 style="margin-bottom:8px" id="admin-inbox-compose-title">✏️ Жаңа хабарлама</h3><p class="sub" id="admin-inbox-target" style="margin-bottom:8px"></p><textarea id="admin-inbox-text" maxlength="2000" rows="3" placeholder="Хабарламаңызды жазыңыз" style="width:100%;padding:10px;border:1px solid var(--b);border-radius:12px;background:var(--bg);color:var(--t);font:inherit"></textarea><button class="btn btn-p btn-sm" id="admin-inbox-send" onclick="sendAdminInboxReply()" style="margin-top:8px">📨 Жіберу</button></div>
     <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
 </div>
@@ -2571,20 +2589,22 @@ function updateAdminInboxBadge(){
 }
 function renderAdminInbox(){
   const el=document.getElementById('admin-inbox-list');if(!el)return;
-  const all=ownAdminLetters(),list=all.filter(m=>m.role!=='user').slice().reverse();
+  const all=ownAdminLetters(),list=all.filter(m=>m.role!=='user'||!m.replyTo).slice().reverse();
   const form=document.getElementById('admin-inbox-reply');
-  if(list.length&&!list.some(m=>m.id===form.dataset.letterId))form.dataset.letterId=list[0].id;
+  if(!form.dataset.letterId||form.dataset.letterId!=='new'&&!list.some(m=>m.id===form.dataset.letterId&&m.role!=='user'))form.dataset.letterId='new';
   el.innerHTML=list.length?list.map((m,i)=>{
     const replies=all.filter(r=>r.role==='user'&&r.replyTo===m.id);
-    return `<div class="card" style="padding:16px;margin-bottom:10px;border-left:4px solid ${m.read?'#dce8dc':'#ef4444'}"><div class="row" style="justify-content:space-between"><b>📩 Админнен · ${list.length-i}</b><span class="sub">${esc(new Date(m.time*1000).toLocaleString('kk-KZ'))}</span></div><p style="white-space:pre-wrap;overflow-wrap:anywhere;margin-top:10px">${esc(m.text)}</p>${replies.map(r=>`<div style="margin:10px 0 0 auto;padding:10px;border-radius:12px;background:#e1f3e5;max-width:85%;white-space:pre-wrap;overflow-wrap:anywhere"><b>↩ Менің жауабым</b> · <small>${esc(new Date(r.time*1000).toLocaleString('kk-KZ'))}</small><div>${esc(r.text)}</div></div>`).join('')}<button class="btn btn-s btn-sm" style="margin-top:12px" onclick="selectAdminInboxLetter(${jsq(m.id)})">↩ Осы хабарламаға жауап беру</button></div>`
+    return `<div class="card" style="padding:16px;margin-bottom:10px;border-left:4px solid ${m.role==='user'?'#89b695':m.read?'#dce8dc':'#ef4444'}"><div class="row" style="justify-content:space-between"><b>${m.role==='user'?'✏️ Менің хабарламам':'📩 Админнен'} · ${list.length-i}</b><span class="sub">${esc(new Date(m.time*1000).toLocaleString('kk-KZ'))}</span></div><p style="white-space:pre-wrap;overflow-wrap:anywhere;margin-top:10px">${esc(m.text)}</p>${replies.map(r=>`<div style="margin:10px 0 0 auto;padding:10px;border-radius:12px;background:#e1f3e5;max-width:85%;white-space:pre-wrap;overflow-wrap:anywhere"><b>↩ Менің жауабым</b> · <small>${esc(new Date(r.time*1000).toLocaleString('kk-KZ'))}</small><div>${esc(r.text)}</div></div>`).join('')}${m.role!=='user'?`<button class="btn btn-s btn-sm" style="margin-top:12px" onclick="selectAdminInboxLetter(${jsq(m.id)})">↩ Осы хабарламаға жауап беру</button>`:''}</div>`
   }).join(''):'<div class="card"><p class="sub">Әзірге админнен хабарлама келген жоқ.</p></div>';
-  form.style.display=list.length?'block':'none';
+  form.style.display='block';
   const selected=list.find(m=>m.id===form.dataset.letterId);
-  document.getElementById('admin-inbox-target').textContent=selected?'Хабарлама '+(list.length-list.indexOf(selected))+'-ге жауап жазасыз':'';
+  document.getElementById('admin-inbox-compose-title').textContent=selected?'↩ Хабарламаға жауап беру':'✏️ Админге жаңа хабарлама';
+  document.getElementById('admin-inbox-target').textContent=selected?'Хабарлама '+(list.length-list.indexOf(selected))+'-ге жауап жазасыз':'Жаңа хат тікелей админге жіберіледі';
+  document.getElementById('admin-inbox-send').textContent=selected?'📨 Жауап жіберу':'📨 Хабарлама жіберу';
 }
 function selectAdminInboxLetter(id){
   const form=document.getElementById('admin-inbox-reply');
-  if(!ownAdminLetters().some(m=>m.id===id&&m.role!=='user'))return;
+  if(id!=='new'&&!ownAdminLetters().some(m=>m.id===id&&m.role!=='user'))return;
   form.dataset.letterId=id;renderAdminInbox();form.scrollIntoView({behavior:'smooth',block:'center'});
   document.getElementById('admin-inbox-text').focus();
 }
@@ -2597,14 +2617,17 @@ async function showAdminInbox(){
 }
 async function sendAdminInboxReply(){
   if(!user||user.isAdmin)return;
-  const original=ownAdminLetters().find(m=>m.id===document.getElementById('admin-inbox-reply').dataset.letterId&&m.role!=='user');
+  const selectedId=document.getElementById('admin-inbox-reply').dataset.letterId||'new';
+  const original=ownAdminLetters().find(m=>m.id===selectedId&&m.role!=='user');
   const inp=document.getElementById('admin-inbox-text'),msg=inp.value.trim();
-  if(!original||!msg){alert('Алдымен хабарламаға жауап жазыңыз');return}
+  if(!msg){alert('Алдымен хабарлама жазыңыз');return}
+  if(selectedId!=='new'&&!original){alert('Жауап беретін хат табылмады');return}
   const btn=document.getElementById('admin-inbox-send');btn.disabled=true;
   try{
-    const r=await authCall('admin_reply_letter',{letterId:original.id,text:msg});
+    const r=await authCall(original?'admin_reply_letter':'admin_new_letter',original?{letterId:original.id,text:msg}:{text:msg});
     if(!r.ok){alert(r.msg||'Жауап жіберілмеді');return}
-    inp.value='';await window.__bridge.refresh();renderAdminInbox();updateAdminInboxBadge();
+    inp.value='';if(!original)document.getElementById('admin-inbox-reply').dataset.letterId='new';
+    await window.__bridge.refresh();renderAdminInbox();updateAdminInboxBadge();
   }finally{btn.disabled=false}
 }
 function renderAdminLetterHistory(){
