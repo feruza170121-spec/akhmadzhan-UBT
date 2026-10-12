@@ -373,6 +373,11 @@ def _session(state, tok):
     if s["exp"] < time.time():
         state["sessions"].pop(tok, None)
         return None
+    if not s["admin"]:
+        prof = next((p for p in _profiles(state).values() if isinstance(p, dict) and p.get("id") == s["uid"]), None)
+        if not prof or prof.get("accessApproved") is False:
+            state["sessions"].pop(tok, None)
+            return None
     return s
 
 
@@ -632,6 +637,8 @@ def _handle_req(state, sid, rq):
             if not good:
                 _fail(state, lk, sk)
                 return {"ok": False, "msg": _MSG_BAD}
+            if prof.get("accessApproved") is False:
+                return {"ok": False, "msg": "Тіркелу өтінішіңіз админнің растауын күтіп тұр"}
             state["fails"].pop(lk, None)
             tok = _new_session(state, prof.get("id"), prof.get("name") or name, False)
         return {"ok": True, "token": tok, "user": _pub_user(prof)}
@@ -657,7 +664,8 @@ def _handle_req(state, sid, rq):
             if len(profs) >= 20000:
                 return {"ok": False, "msg": "Тіркелу уақытша жабық"}
             uid = _new_uid(state, key)
-            prof = {"name": name, "id": uid, "isAdmin": False, "ph": ph_new}
+            prof = {"name": name, "id": uid, "isAdmin": False, "ph": ph_new,
+                    "accessApproved": False, "registeredAt": int(now)}
             if d.get("teacher"):
                 subject = str(d.get("subject") or "")[:40]
                 if subject not in ("history", "reading", "mathlit", "math", "physics", "chemistry", "biology", "geography", "informatics", "english", "kazakh", "worldhistory", "law", "other"):
@@ -672,6 +680,22 @@ def _handle_req(state, sid, rq):
             stats[uid] = {"points": 0, "title": "", "stars": 0, "verified": False}
             _put(state, "ubt_user_stats", _jdump(stats))
             lst.append(now)
+            _commit(state)
+        return {"ok": True}
+
+    if typ == "admin_approve_registration":
+        if not (sess and sess["admin"]):
+            return {"ok": False, "msg": "Рұқсат жоқ"}
+        uid = str(d.get("uid") or "")
+        with state["lock"]:
+            profiles = _profiles(state)
+            prof = next((p for p in profiles.values() if isinstance(p, dict) and p.get("id") == uid), None)
+            if not prof:
+                return {"ok": False, "msg": "Өтініш табылмады"}
+            prof["accessApproved"] = True
+            if prof.get("role") == "teacher":
+                prof["teacherApproved"] = True
+            _put(state, "ubt_profiles", _jdump(profiles))
             _commit(state)
         return {"ok": True}
 
@@ -942,6 +966,14 @@ def _merge_profiles(state, sess, v):
         elif s.get("password"):
             n["password"] = s["password"]
         if not admin:
+            if "accessApproved" in s:
+                n["accessApproved"] = s["accessApproved"]
+            else:
+                n.pop("accessApproved", None)
+            if "registeredAt" in s:
+                n["registeredAt"] = s["registeredAt"]
+            else:
+                n.pop("registeredAt", None)
             if s.get("teacherApproved"):
                 for f in ("role", "teacherApproved", "teacherInfo", "teacherSubject"):
                     if f in s:
@@ -1382,7 +1414,8 @@ def _snapshot(tok="", claim=""):
     db["ubt_admin_letters"] = _jdump(letters if sess["admin"] else [
         m for m in letters if isinstance(m, dict) and m.get("toUid") == sess["uid"]])
     if "ubt_profiles" in db:
-        db["ubt_profiles"] = _jdump({k: _pub_user(p) for k, p in profs.items() if isinstance(p, dict)})
+        db["ubt_profiles"] = _jdump({k: _pub_user(p) for k, p in profs.items() if isinstance(p, dict) and
+                                      (sess["admin"] or p.get("accessApproved") is not False)})
     if not sess["admin"] and "ubt_schemes" in db:
         sch = _jload(db.get("ubt_schemes"), list, [])
         db["ubt_schemes"] = _jdump([t for t in sch if isinstance(t, dict) and (
@@ -2028,6 +2061,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <button class="mode" id="admin-copied-card" style="display:none" onclick="showCopiedTests()"><span class="ic">📥</span><h3>Жүктелген тесттер</h3><p>Тестті бір адамға жіберу</p></button>
       <button class="mode" onclick="showQuestionBank()" style="grid-column:1/-1"><span class="ic">📚</span><h3>Сұрақтар базасы</h3><p>Пәндер бойынша өз сұрақтарым</p></button>
       <button class="mode" id="admin-btn" style="display:none;grid-column:1/-1" onclick="showAdmin()"><span class="ic">🛠</span><h3>Админ</h3><p>Басқару панелі</p></button>
+      <button class="mode" id="admin-requests-card" style="display:none;grid-column:1/-1" onclick="showAccessRequests()"><span class="ic">📨</span><h3>Өтініштер <span id="home-requests-count"></span></h3><p>Жаңа аккаунттар және мұғалім өтініштері</p></button>
     </div>
   </div>
 </div>
@@ -2039,6 +2073,14 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
     <div id="admin-inbox-list" class="list"></div>
     <div class="card" id="admin-inbox-reply" style="padding:18px"><h3 style="margin-bottom:8px" id="admin-inbox-compose-title">✏️ Жаңа хабарлама</h3><p class="sub" id="admin-inbox-target" style="margin-bottom:8px"></p><textarea id="admin-inbox-text" maxlength="2000" rows="3" placeholder="Хабарламаңызды жазыңыз" style="width:100%;padding:10px;border:1px solid var(--b);border-radius:12px;background:var(--bg);color:var(--t);font:inherit"></textarea><button class="btn btn-p btn-sm" id="admin-inbox-send" onclick="sendAdminInboxReply()" style="margin-top:8px">📨 Жіберу</button></div>
     <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+  </div>
+</div>
+
+<div id="s-access-requests" class="screen">
+  <div class="wrap wide">
+    <div class="hdr"><h2>📨 Өтініштер</h2><p class="sub">Админ рұқсат бергенге дейін жаңа аккаунт сайт ішіне кірмейді</p></div>
+    <div id="access-requests-list" class="list"></div>
+    <div class="row"><button class="btn btn-s" onclick="showAdmin()">Админ панеліне оралу</button></div>
   </div>
 </div>
 
@@ -2593,6 +2635,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
 <div id="s-admin" class="screen">
   <div class="wrap wide">
     <div class="hdr"><h2>🛠 Админ панелі</h2><p class="sub">Толық басқару</p></div>
+    <button class="btn btn-p" style="width:100%;margin-bottom:16px" onclick="showAccessRequests()">📨 Өтініштер <span id="admin-requests-count"></span></button>
     <div class="card" style="padding:20px">
       <h3 style="margin-bottom:12px">📩 Оқушыға немесе мұғалімге хабарлама жіберу <span id="admin-letter-unread" class="badge" style="background:#ef4444;color:white;display:none"></span></h3>
       <div class="fg"><label>Алушының логині</label><input id="admin-letter-login" list="admin-letter-logins" placeholder="Логинді жазыңыз немесе тізімнен таңдаңыз" autocomplete="off"><datalist id="admin-letter-logins"></datalist></div>
@@ -2618,10 +2661,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <div id="admin-class-threads" class="list"></div>
       <div id="admin-class-chat"></div>
     </div>
-    <div class="card" style="padding:20px">
-      <h3 style="margin-bottom:12px">👨‍🏫 Мұғалім өтініштері</h3>
-      <div id="admin-teacher-req" class="list"></div>
-    </div>
+    <div id="admin-teacher-req" style="display:none"></div>
     <div class="card" style="padding:20px">
       <h3 style="margin-bottom:12px">👥 Тіркелгендер</h3>
       <div class="fg"><input id="admin-user-q" placeholder="🔍 Атын жазып іздеу..." oninput="renderAdminUsers()"></div>
@@ -2678,10 +2718,12 @@ function setSyncInd(ok){
 function syncRefresh(){
   try{
     updateAdminInboxBadge();
+    updateAccessRequestCounts();
     const a=document.querySelector('.screen.active');if(!a)return;
     const id=a.id;
     if(id==='s-home')renderHomeExtras();
     else if(id==='s-admin-inbox')renderAdminInbox();
+    else if(id==='s-access-requests')renderAccessRequests();
     else if(id==='s-admin'&&user&&user.isAdmin)renderAdminLetterHistory();
     else if(id==='s-public')showPublicTests(pubSubj);
     else if(id==='s-mytests')showMyTests();
@@ -2818,7 +2860,7 @@ function doRegister(){return guarded(async()=>{
   const r=await authCall('register',{name:name,pass:pass});
   if(!r.ok){alert(r.msg||'Қате');return}
   ['reg-name','reg-pass','reg-pass2'].forEach(i=>{const e=document.getElementById(i);if(e)e.value=''});
-  alert('✅ Тіркелу сәтті! Енді кіріңіз.');
+  alert('✅ Тіркелу өтініші админге жіберілді. Админ рұқсат бергеннен кейін сайтқа кіре аласыз.');
   showLoginBox();
   document.getElementById('login-name').value=name;
 })}
@@ -2996,6 +3038,7 @@ function refreshProfileBar(){
   const v=document.getElementById('p-verified');
   if(v){v.style.display=s.verified?'block':'none'}
   document.getElementById('admin-btn').style.display=user.isAdmin?'block':'none';
+  document.getElementById('admin-requests-card').style.display=user.isAdmin?'block':'none';
   document.getElementById('admin-json-card').style.display=isTeacherUser()?'block':'none';
   document.getElementById('admin-copied-card').style.display=user.isAdmin?'block':'none';
   document.getElementById('teacher-home-card').style.gridColumn=user.isAdmin?'':'1/-1';
@@ -3204,7 +3247,7 @@ function renderAdminUsers(){
   const el=document.getElementById('admin-users');if(!el)return;
   const q=((document.getElementById('admin-user-q')||{}).value||'').trim().toLowerCase();
   const tests=allTests();
-  let users=Object.values(LS.get('ubt_profiles',{})).map(p=>{
+  let users=Object.values(LS.get('ubt_profiles',{})).filter(p=>p&&p.accessApproved!==false).map(p=>{
     const st0=getUserStats(p.id);
     const pub=tests.filter(t=>t.authorId===p.id&&(t.isPublic||t.status==='approved'));
     return{p,s:st0,pub};
@@ -3234,7 +3277,8 @@ function showAdmin(){
   const formulas=LS.get('ubt_formulas',[]);
   const pending=tests.filter(t=>t.status==='pending');
   const approved=tests.filter(t=>t.isPublic||t.status==='approved');
-  const users=Object.values(profiles);
+  const users=Object.values(profiles).filter(p=>p&&p.accessApproved!==false);
+  updateAccessRequestCounts();
   document.getElementById('admin-letter-logins').innerHTML=users.filter(p=>p&&p.name).map(p=>`<option value="${esc(p.name)}">${p.role==='teacher'?'Мұғалім':'Оқушы'}</option>`).join('');
   renderAdminLetterHistory();
 
@@ -3282,11 +3326,57 @@ function showAdmin(){
   renderAdminChat();
 
   showScr('s-admin');
-  window.__bridge.refresh().then(()=>{if(document.getElementById('s-admin').classList.contains('active')){renderAdminLetterHistory();renderAdminUsers()}}).catch(()=>{});
+  window.__bridge.refresh().then(()=>{if(document.getElementById('s-admin').classList.contains('active')){renderAdminLetterHistory();renderAdminUsers();updateAccessRequestCounts()}}).catch(()=>{});
   if(LS.get('ubt_admin_letters',[]).some(m=>m.role==='user'&&!m.read)){
     authCall('admin_read_replies',{}).then(async r=>{if(r.ok){await window.__bridge.refresh();renderAdminLetterHistory()}});
   }
 }
+function accessRequests(){
+  if(!user||!user.isAdmin)return [];
+  return Object.values(LS.get('ubt_profiles',{})).filter(p=>p&&p.id&&
+    (p.accessApproved===false||(p.role==='teacher'&&!p.teacherApproved)));
+}
+function updateAccessRequestCounts(){
+  if(!user||!user.isAdmin)return;
+  const n=accessRequests().length;
+  ['home-requests-count','admin-requests-count'].forEach(id=>{const el=document.getElementById(id);if(el)el.textContent=n?'('+n+')':''});
+}
+function showAccessRequests(){
+  if(!user||!user.isAdmin)return;
+  renderAccessRequests();showScr('s-access-requests');
+  window.__bridge.refresh().then(()=>{if(document.getElementById('s-access-requests').classList.contains('active'))renderAccessRequests()}).catch(()=>{});
+}
+function renderAccessRequests(){
+  if(!user||!user.isAdmin)return;
+  const list=accessRequests();updateAccessRequestCounts();
+  document.getElementById('access-requests-list').innerHTML=list.length?list.map(p=>{
+    const isNew=p.accessApproved===false,teacher=p.role==='teacher';
+    const label=isNew?(teacher?'Жаңа мұғалім · сайтқа кіру':'Жаңа оқушы · сайтқа кіру'):'Мұғалім мәртебесі';
+    return `<div class="item"><div class="info"><h4>${esc(p.name)}</h4><p>${label}${teacher&&p.teacherSubject?' · '+esc(subjName(p.teacherSubject)):''}${p.teacherInfo?' · '+esc(p.teacherInfo):''}</p></div><div class="acts"><button class="btn btn-ok btn-sm" onclick="approveAccessRequest(${jsq(p.id)},${isNew})">✓ Рұқсат беру</button><button class="btn btn-d btn-sm" onclick="rejectAccessRequest(${jsq(p.id)},${isNew})">✕ Бас тарту</button></div></div>`;
+  }).join(''):'<div class="empty"><p>Қаралатын өтініш жоқ</p></div>';
+}
+function approveAccessRequest(uid,isNew){return guarded(async()=>{
+  if(!user||!user.isAdmin)return;
+  if(isNew){
+    const r=await authCall('admin_approve_registration',{uid});
+    if(!r.ok){alert(r.msg||'Рұқсат беру мүмкін болмады');return}
+    await window.__bridge.refresh();
+  }else{
+    mutateProfile(uid,p=>{if(p.role==='teacher')p.teacherApproved=true});
+  }
+  renderAccessRequests();
+})}
+function rejectAccessRequest(uid,isNew){return guarded(async()=>{
+  if(!user||!user.isAdmin||!confirm('Бұл өтінішті қабылдамайсыз ба?'))return;
+  if(isNew){
+    const r=await authCall('admin_deluser',{uid});
+    if(!r.ok){alert(r.msg||'Өтінішті өшіру мүмкін болмады');return}
+    await window.__bridge.refresh();
+  }else{
+    mutateProfile(uid,p=>{delete p.role;delete p.teacherApproved;delete p.teacherInfo;delete p.teacherSubject});
+  }
+  renderAccessRequests();
+})}
 function adminDelTest(id){if(!confirm('Тестті өшіру?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showAdmin()}
 let sendTestsFromCopies=false;
 function backFromSendTests(){sendTestsFromCopies?showCopiedTests():showAdmin()}
@@ -6474,7 +6564,7 @@ function doRegisterTeacher(){return guarded(async()=>{
   const r=await authCall('register',{name:name,pass:pass,teacher:true,info:info,subject});
   if(!r.ok){alert(r.msg||'Қате');return}
   ['tr-name','tr-info','tr-pass','tr-pass2','tr-subject'].forEach(i=>document.getElementById(i).value='');
-  alert('✅ Өтініш админге жіберілді. Қазір оқушы ретінде кіре аласыз; админ рұқсат бергесін мұғалім кабинеті ашылады.');
+  alert('✅ Мұғалімнің тіркелу өтініші админге жіберілді. Рұқсат берілгеннен кейін ғана сайтқа кіре аласыз.');
   showLoginBox();document.getElementById('login-name').value=name;
 })}
 function mutateProfile(id,fn){
