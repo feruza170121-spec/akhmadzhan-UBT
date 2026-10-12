@@ -1252,7 +1252,7 @@ def _snapshot(tok="", claim=""):
         tests = _jload(db.get("ubt_tests", "[]"), list, [])
         db["ubt_tests"] = _jdump([t for t in tests if isinstance(t, dict) and
             (t.get("authorId") == sess["uid"] or
-             (t.get("classId") in joined if t.get("classId") else (t.get("isPublic") or t.get("status") == "approved")))])
+             (t.get("authorId") != "admin" and (t.get("classId") in joined if t.get("classId") else (t.get("isPublic") or t.get("status") == "approved"))))])
         for k in list(db.keys()):
             if k.startswith(_PRIVATE_PREFIXES) and not (any(k == p + sess["uid"] for p in _PRIVATE_PREFIXES) or
                 (teacher and any(k == p + uid for c in mine if c.get("id") in managed for uid in c.get("students", [])
@@ -1858,7 +1858,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <button class="mode" onclick="showFormulas()"><span class="ic">📐</span><h3>Формула</h3><p>Формулаларды қарау</p></button>
       <button class="mode" onclick="showMistakes()"><span class="ic">❌</span><h3>Қателер</h3><p>Қате жауаптар</p></button>
       <button class="mode" onclick="showHistory()"><span class="ic">📋</span><h3>Тарих</h3><p>Тест нәтижелері</p></button>
-      <button class="mode" onclick="showFileTest()"><span class="ic">📂</span><h3>JSON / файл тесті</h3><p>JSON жүктеп, бірден жеке тест тапсыру</p></button>
+      <button class="mode" id="admin-json-card" style="display:none" onclick="showFileTest()"><span class="ic">📂</span><h3>JSON / файл тесті</h3><p>Тек админге: JSON жүктеп, тест тапсыру</p></button>
       <button class="mode" onclick="showMyProfile()"><span class="ic">📈</span><h3>График</h3><p>Үлгерім көрсеткіші</p></button>
       <button class="mode" onclick="showFlash()"><span class="ic">🃏</span><h3>Флеш-карталар</h3><p>Қайталауға арналған</p></button>
       <button class="mode" onclick="showGloss()"><span class="ic">📖</span><h3>Глоссарий</h3><p>Терминдер мен ұғымдар</p></button>
@@ -2434,6 +2434,8 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
     </div>
     <div class="card" style="padding:20px">
       <h3 style="margin-bottom:12px">📚 Барлық тесттер</h3>
+      <button class="btn btn-p btn-sm" style="margin-bottom:12px" onclick="showFileTest()">📂 JSON файлдан тест ашу</button>
+      <p class="sub" style="margin-bottom:12px">Басқа қолданушылардың жеке және жария тесттерін көріп, өзіңізге көшіре аласыз.</p>
       <div id="admin-tests" class="list"></div>
     </div>
     <div class="card" style="padding:20px">
@@ -2787,6 +2789,7 @@ function refreshProfileBar(){
   const v=document.getElementById('p-verified');
   if(v){v.style.display=s.verified?'block':'none'}
   document.getElementById('admin-btn').style.display=user.isAdmin?'block':'none';
+  document.getElementById('admin-json-card').style.display=user.isAdmin?'block':'none';
 }
 function enterApp(){
   refreshProfileBar();
@@ -3061,7 +3064,7 @@ function showAdmin(){
   document.getElementById('admin-tests').innerHTML=tests.length?tests.map(t=>`
     <div class="item"><div class="info"><h4>${esc(t.topic)}</h4>
       <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · ${esc(t.authorName||'')} · ${t.isPublic||t.status==='approved'?'🌐 Жария':t.status==='pending'?'⏳ Күту':'🔒 Жеке'}${t.adminApproved&&((t.isPublic||t.status==='approved')&&!t.classId)?' · ✅ Базаға импортқа рұқсат':''}</p></div>
-    <div class="acts"><button class="btn btn-s btn-sm" onclick="previewTest('${t.id}')">👁 Қарау</button>${(t.isPublic||t.status==='approved')&&!t.classId&&t.questions.length&&!t.adminApproved?`<button class="btn btn-ok btn-sm" onclick="adminApproveBankImport(${jsq(t.id)})">✓ Базаға импортқа рұқсат</button>`:''}<button class="btn btn-d btn-sm" onclick="adminDelTest('${t.id}')">Өшіру</button></div></div>`).join(''):'<p class="sub">Тест жоқ</p>';
+    <div class="acts"><button class="btn btn-s btn-sm" onclick="previewTest(${jsq(t.id)})">👁 Қарау</button>${t.authorId!==user.id?`<button class="btn btn-ok btn-sm" onclick="adminCopyTest(${jsq(t.id)})">📋 Өзіме көшіру</button>`:''}${(t.isPublic||t.status==='approved')&&!t.classId&&t.questions.length&&!t.adminApproved?`<button class="btn btn-ok btn-sm" onclick="adminApproveBankImport(${jsq(t.id)})">✓ Базаға импортқа рұқсат</button>`:''}${t.isPublic||t.status==='approved'?`<button class="btn btn-s btn-sm" onclick="adminUnpublishTest(${jsq(t.id)})">Жариядан алу</button>`:''}<button class="btn btn-d btn-sm" onclick="adminDelTest(${jsq(t.id)})">Өшіру</button></div></div>`).join(''):'<p class="sub">Тест жоқ</p>';
 
   document.getElementById('admin-formulas').innerHTML=formulas.length?formulas.map((f,i)=>`
     <div class="item"><div class="info"><h4>${esc(f.title)}</h4><p>${esc(f.subject)} · ${esc(f.authorName||'')} · ${esc(f.body)}</p></div>
@@ -3076,6 +3079,25 @@ function showAdmin(){
   }
 }
 function adminDelTest(id){if(!confirm('Тестті өшіру?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showAdmin()}
+function adminUnpublishTest(id){
+  if(!user||!user.isAdmin)return;
+  const all=allTests(),t=all.find(x=>x.id===id);if(!t)return;
+  t.isPublic=false;t.status='private';t.adminApproved=false;
+  saveAllTests(all);showAdmin();
+}
+function adminCopyTest(id){
+  if(!user||!user.isAdmin)return;
+  const all=allTests(),source=all.find(x=>x.id===id);
+  if(!source||!Array.isArray(source.questions))return;
+  const copy=JSON.parse(JSON.stringify(source));
+  copy.id='t_admin_copy_'+Date.now()+'_'+Math.random().toString(36).slice(2,9);
+  copy.topic=(source.topic||'Тест')+' (көшірме)';
+  copy.authorId=user.id;copy.authorName=user.name;
+  copy.isPublic=false;copy.status='private';copy.adminApproved=false;
+  delete copy.classId;delete copy.className;
+  copy.createdAt=new Date().toISOString();
+  all.unshift(copy);saveAllTests(all);showAdmin();
+}
 function approveTest(id){
   if(!user||!user.isAdmin)return;
   const all=allTests();const t=all.find(x=>x.id===id);
@@ -3193,7 +3215,7 @@ function saveAllTests(a){
   if(user) a.filter(t=>t.authorId===user.id&&t.subject).forEach(t=>rememberQuestionsInBank(t.subject,t.questions||[],'Тест: '+(t.topic||'')));
 }
 function myTests(){return allTests().filter(t=>t.authorId===user.id)}
-function publicTests(){return allTests().filter(t=>(t.isPublic||t.status==='approved')&&!t.classId&&t.questions.length>0)}
+function publicTests(){return allTests().filter(t=>t.authorId!=='admin'&&(t.isPublic||t.status==='approved')&&!t.classId&&t.questions.length>0)}
 function showFormulas(){
   renderFormulas();showScr('s-formulas');
 }
@@ -4730,12 +4752,14 @@ function matchSubject(sub){
   return Array.from(el.options||[]).find(o=>o.value&&(o.value===x||String(o.text).toLowerCase()===x))||null;
 }
 function showFileTest(){
+  if(!user||!user.isAdmin){alert('JSON файлын тек админ жүктей алады');return}
   clearBulk('f');
   const sel=document.getElementById('f-question-subject');
   if(!sel.options.length)sel.innerHTML=Array.from(document.querySelectorAll('#c-subject option')).map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('');
   sel.value='';showScr('s-file');
 }
 function startFromFile(){
+  if(!user||!user.isAdmin)return;
   const r=takeBulkQs('f');if(!r)return;
   const subject=document.getElementById('f-question-subject').value;
   const label=r.meta.topic||(bulkName.f||'').replace(/\.[^.]+$/,'')||'Файлдан тест';
@@ -4746,6 +4770,7 @@ function startFromFile(){
   beginTest();
 }
 function saveFromFile(){
+  if(!user||!user.isAdmin)return;
   const r=takeBulkQs('f');if(!r)return;
   const subject=document.getElementById('f-question-subject').value;
   if(!subject){alert('Сұрақтарды базаға сақтау үшін пәнді таңдаңыз');return}
