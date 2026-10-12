@@ -46,7 +46,7 @@ _TABLE = "ubt_kv"
 #  * Қате парольді қайта-қайта енгізуге шектеу бар (бұғаттау).
 # ======================================================================
 _PBKDF_ITER = 100_000
-_MIN_PASS = 6
+_MIN_PASS = 10
 _SERVER_ONLY = ("ubt_admin_pass", "ubt_admin_ph")
 _ADMIN_NAMES = ("админ", "admin")
 _USER_TTL = 14 * 86400
@@ -54,8 +54,7 @@ _ADMIN_TTL = 12 * 3600
 _USER_PREFIXES = ("ubt_mistakes_", "ubt_hist_", "ubt_prog_", "ubt_bm_", "ubt_plan_done_",
                   "ubt_plan_", "ubt_qotd_", "ubt_streak_", "ubt_avatar_", "ubt_viol_",
                   "ubt_qbank_", "ubt_qbank_hidden_", "ubt_ubt140_selection_")
-_PRIVATE_PREFIXES = ("ubt_mistakes_", "ubt_plan_done_", "ubt_plan_", "ubt_bm_",
-                     "ubt_qbank_", "ubt_qbank_hidden_", "ubt_ubt140_selection_")
+_PRIVATE_PREFIXES = _USER_PREFIXES
 _SINGLE_DEVICE = True   # True: бір аккаунт бір уақытта тек бір құрылғыда (жаңа кіру ескісін шығарады)
 _MAX_FAILS = 5
 _FAIL_WINDOW = 600
@@ -550,20 +549,27 @@ def _handle_req(state, sid, rq):
         return {"ok": True}
 
     if typ == "chat_claim":
-        login = str(d.get("login") or "").strip()[:60]
+        if sess and not sess["admin"] and _is_student(state, sess["uid"]):
+            return {"ok": True, "login": sess["name"]}
+        return {"ok": False, "msg": "Алдымен аккаунтыңызға кіріңіз"}
+
+    if typ == "join_class":
+        if not sess or sess["admin"]:
+            return {"ok": False, "msg": "Алдымен аккаунтыңызға кіріңіз"}
+        code = str(d.get("code") or "").strip().upper()
         with state["lock"]:
-            if sess and not sess["admin"] and _is_student(state, sess["uid"]):
-                return {"ok": True, "login": sess["name"]}
-            prof = _profiles(state).get(login.lower())
-            if not isinstance(prof, dict) or prof.get("role") == "teacher":
-                return {"ok": False, "msg": "Мұндай оқушы логині тіркелмеген. Алдымен тіркеліңіз."}
-            if len(state["chat_claims"]) > 5000:
-                state["chat_claims"] = {k: c for k, c in state["chat_claims"].items() if c["exp"] > time.time()}
-            token = secrets.token_urlsafe(32)
-            messages = _jload(state["db"].get("ubt_chat", "[]"), list, [])
-            state["chat_claims"][token] = {"name": prof["name"], "uid": prof["id"],
-                                            "exp": time.time() + 3600, "start": len(messages)}
-        return {"ok": True, "login": prof["name"], "chatToken": token}
+            classes = _jload(state["db"].get("ubt_classes", "[]"), list, [])
+            cls = next((c for c in classes if isinstance(c, dict) and c.get("code") == code), None)
+            if not cls:
+                return {"ok": False, "msg": "Мұндай код табылмады"}
+            if cls.get("teacherId") == sess["uid"]:
+                return {"ok": False, "msg": "Бұл — сіздің сыныбыңыз"}
+            if sess["uid"] in cls.get("students", []):
+                return {"ok": False, "msg": "Сіз бұл сыныптасыз"}
+            cls.setdefault("students", []).append(sess["uid"])
+            _put(state, "ubt_classes", _jdump(classes))
+            _commit(state)
+        return {"ok": True, "name": cls.get("name", "")}
 
     if typ == "admin_setpass":
         if not (sess and sess["admin"]):
@@ -734,8 +740,7 @@ def _process_reqs(state, sid, reqs):
 
 # ---------------------------------------------------------------- жазу құқығын тексеру
 def _merge_chat(state, sess, v, chat_token=""):
-    claim = None if sess else _guest_chat(state, chat_token)
-    if not sess and not claim:
+    if not sess:
         return None
     inc = _jload(v, list, None)
     if inc is None:
@@ -755,7 +760,7 @@ def _merge_chat(state, sess, v, chat_token=""):
             continue
         if not isinstance(text, str) or not text.strip() or len(text) > 2000:
             continue
-        frm = sess["name"] if sess else claim["name"]
+        frm = sess["name"]
         add.append({"id": mid, "from": frm, "thread": frm.strip().lower(), "text": text, "role": "user",
                     "time": str(m.get("time") or "")[:40], "read": False})
         ids.add(mid)
@@ -851,6 +856,8 @@ def _merge_tests(state, sess, v):
         if not isinstance(t, dict) or not isinstance(t.get("id"), str):
             continue
         tid = t["id"]
+        if len(tid) > 100:
+            continue
         seen.add(tid)
         s = sby.get(tid)
         if s is not None:
@@ -859,6 +866,8 @@ def _merge_tests(state, sess, v):
                 continue
             n = dict(t)
             n["authorId"] = uid
+            if n.get("classId") and not _class_manager(state, sess, n["classId"]):
+                n["classId"] = s.get("classId") if _class_manager(state, sess, s.get("classId")) else None
             n["adminApproved"] = (bool(s.get("adminApproved"))
                                   and n.get("subject") == s.get("subject")
                                   and n.get("questions") == s.get("questions"))
@@ -879,6 +888,8 @@ def _merge_tests(state, sess, v):
             n = dict(t)
             n["authorId"] = uid
             n["adminApproved"] = False
+            if n.get("classId") and not _class_manager(state, sess, n["classId"]):
+                n.pop("classId", None)
             if not teacher:
                 n["isPublic"] = False
                 if n.get("status") not in ("pending", "private"):
@@ -888,6 +899,133 @@ def _merge_tests(state, sess, v):
         if isinstance(s, dict) and s.get("id") not in seen and s.get("authorId") != uid:
             out.append(s)
     return _jdump(out)
+
+
+def _class_manager(state, sess, cid):
+    if sess["admin"]:
+        return True
+    return any(isinstance(c, dict) and c.get("id") == cid and c.get("teacherId") == sess["uid"]
+               for c in _jload(state["db"].get("ubt_classes", "[]"), list, [])) and _is_teacher(state, sess["uid"])
+
+
+def _merge_classes(state, sess, v):
+    incoming = _jload(v, list, None)
+    if incoming is None or len(incoming) > 1000:
+        return None
+    if sess["admin"]:
+        return _jdump(incoming)
+    stored = _jload(state["db"].get("ubt_classes", "[]"), list, [])
+    inc = {c.get("id"): c for c in incoming if isinstance(c, dict) and isinstance(c.get("id"), str)}
+    out = []
+    for c in stored:
+        if not isinstance(c, dict):
+            continue
+        proposal = inc.get(c.get("id"))
+        if not proposal:
+            # Мұғалім өзі басқаратын сыныпты ғана өшіре алады.
+            if _is_teacher(state, sess["uid"]) and c.get("teacherId") == sess["uid"]:
+                continue
+            out.append(c)
+            continue
+        if _is_teacher(state, sess["uid"]) and c.get("teacherId") == sess["uid"]:
+            updated = dict(proposal)
+            updated["id"] = c["id"]
+            updated["teacherId"] = c["teacherId"]
+            updated["teacherName"] = c.get("teacherName")
+            updated["reqId"] = c.get("reqId")
+            out.append(updated)
+        elif sess["uid"] in c.get("students", []):
+            updated = dict(c)
+            updated["students"] = [x for x in c["students"] if x != sess["uid"]] if sess["uid"] not in proposal.get("students", []) else c["students"]
+            out.append(updated)
+        else:
+            out.append(c)
+    return _jdump(out)
+
+
+def _merge_class_reqs(state, sess, v):
+    inc = _jload(v, list, None)
+    if inc is None or len(inc) > 2000:
+        return None
+    if sess["admin"]:
+        return _jdump(inc)
+    stored = _jload(state["db"].get("ubt_class_reqs", "[]"), list, [])
+    if sum(isinstance(r, dict) and r.get("teacherId") == sess["uid"] and r.get("status") == "pending" for r in stored) >= 5:
+        return None
+    ids = {r.get("id") for r in stored if isinstance(r, dict)}
+    additions = []
+    for r in inc:
+        if not isinstance(r, dict) or r.get("id") in ids or r.get("id") in {x["id"] for x in additions}:
+            continue
+        if not _is_teacher(state, sess["uid"]) or r.get("teacherId") != sess["uid"] or r.get("status") != "pending":
+            continue
+        if not isinstance(r.get("id"), str) or len(r["id"]) > 60:
+            continue
+        additions.append({"id": r["id"], "teacherId": sess["uid"], "teacherName": sess["name"],
+                          "name": str(r.get("name") or "")[:100], "note": str(r.get("note") or "")[:500],
+                          "status": "pending", "createdAt": int(time.time() * 1000),
+                          "dueAt": int((time.time() + 12 * 3600) * 1000)})
+        if len(additions) >= 5 - sum(isinstance(x, dict) and x.get("teacherId") == sess["uid"] and x.get("status") == "pending" for x in stored):
+            break
+    return _jdump(stored + additions) if additions else None
+
+
+def _merge_class_chat(state, sess, v):
+    inc = _jload(v, dict, None)
+    if inc is None:
+        return None
+    stored = _jload(state["db"].get("ubt_class_chat", "{}"), dict, {})
+    reqs = _jload(state["db"].get("ubt_class_reqs", "[]"), list, [])
+    classes = _jload(state["db"].get("ubt_classes", "[]"), list, [])
+    out = dict(stored)
+    for tid, messages in inc.items():
+        if not isinstance(tid, str) or not isinstance(messages, list):
+            continue
+        allowed = sess["admin"] or any(r.get("id") == tid and r.get("teacherId") == sess["uid"] for r in reqs if isinstance(r, dict)) or any((c.get("reqId") or "cls_" + str(c.get("id"))) == tid and c.get("teacherId") == sess["uid"] for c in classes if isinstance(c, dict))
+        if not allowed:
+            continue
+        old = stored.get(tid, [])
+        if not isinstance(old, list):
+            old = []
+        for m in messages[len(old):len(old) + 5]:
+            if not isinstance(m, dict) or len(str(m.get("text") or "")) > 500 or not str(m.get("text") or "").strip():
+                continue
+            out[tid] = out.get(tid, old) + [{"from": "admin" if sess["admin"] else "teacher", "name": sess["name"],
+                                              "text": m["text"], "t": int(time.time() * 1000)}]
+    return _jdump(out) if len(_jdump(out)) < 2_000_000 else None
+
+
+def _merge_attempts(state, sess, key, value):
+    is_result = key.startswith("ubt_tres_")
+    tid = key[len("ubt_tres_"):] if is_result else key[len("ubt_att_"):]
+    tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
+    test = next((t for t in tests if isinstance(t, dict) and t.get("id") == tid), None)
+    if not test or not test.get("classId"):
+        return None
+    classes = _jload(state["db"].get("ubt_classes", "[]"), list, [])
+    cls = next((c for c in classes if isinstance(c, dict) and c.get("id") == test["classId"]), None)
+    if not cls or (not sess["admin"] and sess["uid"] not in cls.get("students", [])):
+        return None
+    old = _jload(state["db"].get(key, "[]" if is_result else "{}"), list if is_result else dict, [] if is_result else {})
+    new = _jload(value, list if is_result else dict, None)
+    if new is None:
+        return None
+    if sess["admin"]:
+        return _jdump(new)
+    uid = sess["uid"]
+    if is_result:
+        extra = [r for r in new[len(old):len(old) + 1] if isinstance(r, dict) and r.get("uid") == uid]
+        if not extra or type(extra[0].get("score")) not in (int, float) or type(extra[0].get("max")) not in (int, float):
+            return None
+        r = extra[0]
+        if not (0 <= r["score"] <= r["max"] <= 1000):
+            return None
+        return _jdump(old + [{"uid": uid, "name": sess["name"], "score": r["score"],
+                              "max": r["max"], "t": int(time.time() * 1000)}])
+    count = new.get(uid)
+    if type(count) is not int or count != int(old.get(uid, 0)) + 1:
+        return None
+    return _jdump({**old, uid: count})
 
 
 _SCH_CONTENT = ("subject", "title", "tabMain", "subs", "theme", "root", "kids")
@@ -966,6 +1104,24 @@ def _authorize(state, sess, k, v, chat_token=""):
         return _merge_tests(state, sess, v)
     if k == "ubt_schemes":
         return _merge_schemes(state, sess, v)
+    if k == "ubt_classes":
+        return _merge_classes(state, sess, v)
+    if k == "ubt_class_reqs":
+        return _merge_class_reqs(state, sess, v)
+    if k == "ubt_class_chat":
+        return _merge_class_chat(state, sess, v)
+    if k == "ubt_qotd_day":
+        day = _jload(v, dict, None)
+        old = _jload(state["db"].get(k, "{}"), dict, {})
+        if day and isinstance(day.get("date"), str) and re.fullmatch(r"\d{4}-\d\d-\d\d", day["date"]) and isinstance(day.get("q"), dict) and day["date"] != old.get("date"):
+            return _jdump({"date": day["date"], "q": day["q"]})
+        return None
+    if k in ("ubt_formulas", "ubt_season_idx", "ubt_awarded", "ubt_trophies") or k.startswith("ubt_season_"):
+        return v if sess["admin"] else None
+    if k == "ubt_seed_funksiya":
+        return "true" if v == "true" else None
+    if k.startswith("ubt_att_") or k.startswith("ubt_tres_"):
+        return _merge_attempts(state, sess, k, v)
     if k in ("ubt_hist_order", "ubt_hist_hidden"):
         if not sess["admin"]:
             return None
@@ -985,7 +1141,7 @@ def _authorize(state, sess, k, v, chat_token=""):
         if sess["admin"] or any(k == p + sess["uid"] for p in _USER_PREFIXES):
             return v
         return None
-    return v
+    return None
 
 
 def _key_ok(k):
@@ -1039,15 +1195,14 @@ def _apply_ops(res):
 def _chat_for(raw, sess, claim, state):
     if sess and sess["admin"]:
         return raw if isinstance(raw, str) else "[]"
-    guest = None if sess else _guest_chat(state, claim)
-    if not sess and not guest:
+    if not sess:
         return "[]"
-    key = (sess["name"] if sess else guest["name"]).strip().lower()
+    key = sess["name"].strip().lower()
     if not key:
         return "[]"
     out = []
     messages = _jload(raw, list, []) if isinstance(raw, str) else []
-    for m in (messages[guest["start"]:] if guest else messages):
+    for m in messages:
         if not isinstance(m, dict):
             continue
         who = m.get("to") if m.get("role") == "admin" else m.get("from")
@@ -1081,11 +1236,37 @@ def _snapshot(tok="", claim=""):
         db["ubt_schemes"] = _jdump([t for t in sch if isinstance(t, dict) and (
             t.get("authorId") == sess["uid"] or (t.get("status") == "approved" and t.get("isPublic")))])
     if not sess["admin"]:
+        classes = _jload(db.get("ubt_classes", "[]"), list, [])
+        mine = [c for c in classes if isinstance(c, dict) and
+                (c.get("teacherId") == sess["uid"] or sess["uid"] in c.get("students", []))]
+        managed = {c.get("id") for c in mine if teacher and c.get("teacherId") == sess["uid"]}
+        joined = {c.get("id") for c in mine}
+        db["ubt_classes"] = _jdump([c if c.get("id") in managed else
+            {**c, "code": "", "students": [sess["uid"]] if sess["uid"] in c.get("students", []) else []} for c in mine])
+        reqs = _jload(db.get("ubt_class_reqs", "[]"), list, [])
+        db["ubt_class_reqs"] = _jdump([r for r in reqs if isinstance(r, dict) and r.get("teacherId") == sess["uid"]])
+        cc = _jload(db.get("ubt_class_chat", "{}"), dict, {})
+        threads = {r.get("id") for r in reqs if isinstance(r, dict) and r.get("teacherId") == sess["uid"]}
+        threads.update(c.get("reqId") or "cls_" + str(c.get("id")) for c in mine if c.get("id") in managed)
+        db["ubt_class_chat"] = _jdump({k: v for k, v in cc.items() if k in threads})
+        tests = _jload(db.get("ubt_tests", "[]"), list, [])
+        db["ubt_tests"] = _jdump([t for t in tests if isinstance(t, dict) and
+            (t.get("authorId") == sess["uid"] or
+             (t.get("classId") in joined if t.get("classId") else (t.get("isPublic") or t.get("status") == "approved")))])
         for k in list(db.keys()):
-            if k.startswith(_PRIVATE_PREFIXES) and not (k.endswith(sess["uid"]) and any(k == p + sess["uid"] for p in _PRIVATE_PREFIXES)):
-                if teacher and k.startswith("ubt_mistakes_"):
-                    continue
+            if k.startswith(_PRIVATE_PREFIXES) and not (any(k == p + sess["uid"] for p in _PRIVATE_PREFIXES) or
+                (teacher and any(k == p + uid for c in mine if c.get("id") in managed for uid in c.get("students", [])
+                                 for p in ("ubt_hist_", "ubt_prog_", "ubt_mistakes_")))):
                 db.pop(k, None)
+                continue
+            if k.startswith(("ubt_att_", "ubt_tres_")):
+                tid = k[len("ubt_att_"):] if k.startswith("ubt_att_") else k[len("ubt_tres_"):]
+                relevant = next((t for t in tests if isinstance(t, dict) and t.get("id") == tid), None)
+                if not relevant or relevant.get("classId") not in joined:
+                    db.pop(k, None)
+                elif relevant.get("classId") not in managed:
+                    data = _jload(db[k], list if k.startswith("ubt_tres_") else dict, [] if k.startswith("ubt_tres_") else {})
+                    db[k] = _jdump([r for r in data if isinstance(r, dict) and r.get("uid") == sess["uid"]] if isinstance(data, list) else {sess["uid"]: data.get(sess["uid"], 0)})
     return db
 
 
@@ -1553,7 +1734,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <h3 style="margin-bottom:12px">Тіркелу</h3>
       <div class="name-warn"><span class="nw-t">⚠️ Назар аударыңыз!</span>Атыңызды <b>толық және дұрыс</b> жазыңыз (мыс: «Айгүл Серікова»). Жалған, қысқартылған немесе бөтен ат жазсаңыз, <b>админ аккаунтыңызды өшіріп тастауы мүмкін.</b></div>
       <div class="fg"><label>Аты-жөніңіз (толық, нақты) *</label><input id="reg-name" placeholder="Мыс: Айгүл Серікова" maxlength="30"></div>
-      <div class="fg"><label>Пароль *</label><input id="reg-pass" type="password" placeholder="Кемінде 6 таңба"></div>
+      <div class="fg"><label>Пароль *</label><input id="reg-pass" type="password" placeholder="Кемінде 10 таңба"></div>
       <div class="fg"><label>Парольді қайталаңыз *</label><input id="reg-pass2" type="password" placeholder="Қайталаңыз"></div>
       <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doRegister()">Тіркелу</button>
       <button class="btn btn-s btn-sm" style="width:100%;margin-bottom:10px" onclick="showTeacherReg()">👨‍🏫 Мұғалім ретінде тіркелу</button>
@@ -1566,7 +1747,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
 
       <div class="fg"><label>Аты-жөніңіз (логин) *</label><input id="tr-name" placeholder="Мыс: Айгүл Серікқызы" maxlength="30"></div>
       <div class="fg"><label>Мектеп / пән</label><input id="tr-info" placeholder="Мыс: №12 мектеп, математика" maxlength="80"></div>
-      <div class="fg"><label>Пароль *</label><input id="tr-pass" type="password" placeholder="Кемінде 6 таңба"></div>
+      <div class="fg"><label>Пароль *</label><input id="tr-pass" type="password" placeholder="Кемінде 10 таңба"></div>
       <div class="fg"><label>Парольді қайталаңыз *</label><input id="tr-pass2" type="password" placeholder="Қайталаңыз"></div>
       <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doRegisterTeacher()">Өтініш жіберу</button>
       <button class="btn btn-s" style="width:100%" onclick="showLoginBox()">Артқа</button>
@@ -1589,8 +1770,8 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
         <button class="btn btn-sm" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,.4)" onclick="closeChat()">✕</button>
       </div>
       <div id="chat-gate" style="padding:20px 16px;background:#f0f0f0">
-        <div class="fg"><label>Админге жазу үшін тіркелген логиніңізді енгізіңіз</label><input id="chat-login" placeholder="Логин" maxlength="40" style="background:#fff" onkeydown="if(event.key==='Enter')enterChat()"></div>
-        <button class="btn btn-ok" style="width:100%;margin-bottom:8px" onclick="enterChat()">Логинді тексеру және чатқа өту</button>
+        <div class="fg"><label>Хабарлама жіберу үшін аккаунтыңызға кіріңіз</label><input id="chat-login" placeholder="Логин" maxlength="40" style="display:none" autocomplete="off"></div>
+        <button class="btn btn-ok" style="width:100%;margin-bottom:8px" onclick="showLoginBox()">Кіру</button>
         <button class="btn btn-s" style="width:100%" onclick="showRegister()">Тіркелу</button>
       </div>
       <div id="chat-room" style="display:none">
@@ -2385,10 +2566,9 @@ function openContactFromApp(){
   showScr('s-login');showContactAdmin();
 }
 function enterChat(){
-  const login=document.getElementById('chat-login').value.trim();
-  if(login.length<2){alert('Тіркелген логиніңізді жазыңыз');return}
+  if(!user||!window.__token){alert('Алдымен аккаунтыңызға кіріңіз');return}
   guarded(async()=>{
-    const r=await authCall('chat_claim',{login:login});
+    const r=await authCall('chat_claim',{});
     if(!r.ok){alert(r.msg||'Логин табылмады');return}
     chatLogin=r.login;
     window.__chatToken=r.chatToken||'';
@@ -2421,7 +2601,7 @@ function doRegister(){return guarded(async()=>{
   const pass2=document.getElementById('reg-pass2').value;
   if(!name||name.length<2){alert('Атыңызды жазыңыз');return}
   if(!/\p{L}{2}/u.test(name)){alert('Атыңызды әріппен толық жазыңыз');return}
-  if(!pass||pass.length<6){alert('Пароль кемінде 6 таңба');return}
+  if(!pass||pass.length<10){alert('Пароль кемінде 10 таңба');return}
   if(pass!==pass2){alert('Парольдер сәйкес емес');return}
   if(!confirm('Атыңыз: «'+name+'»\n\nАтыңыз толық және дұрыс па? Жалған ат жазсаңыз, админ аккаунтты өшіріп тастауы мүмкін.'))return;
   const r=await authCall('register',{name:name,pass:pass});
@@ -2984,7 +3164,7 @@ function adminViewUser(id){
 function adminChangeUserPass(){return guarded(async()=>{
   if(!viewingUserId||!user||!user.isAdmin)return;
   const pass=document.getElementById('uv-newpass').value;
-  if(!pass||pass.length<6){alert('Пароль кемінде 6 таңба');return}
+  if(!pass||pass.length<10){alert('Пароль кемінде 10 таңба');return}
   const r=await authCall('admin_setpass',{uid:viewingUserId,pass:pass});
   if(!r.ok){alert(r.msg||'Қате');return}
   document.getElementById('uv-newpass').value='';
@@ -5741,14 +5921,12 @@ function removeStudent(cid,sid){
   c.students=c.students.filter(x=>x!==sid);saveClasses(a);
   document.getElementById('tch-detail').innerHTML='';renderTeacher();
 }
-function joinClass(){
+async function joinClass(){
   const code=document.getElementById('tch-code').value.trim().toUpperCase();if(!code)return;
-  const a=getClasses(),c=a.find(x=>x.code===code);
-  if(!c){alert('Мұндай код табылмады');return}
-  if(c.teacherId===user.id){alert('Бұл — сіздің сыныбыңыз');return}
-  if(c.students.includes(user.id)){alert('Сіз бұл сыныптасыз');return}
-  c.students.push(user.id);saveClasses(a);
-  document.getElementById('tch-code').value='';renderTeacher();alert('✅ Сыныпқа қосылдыңыз: '+c.name);
+  const r=await authCall('join_class',{code});
+  if(!r||!r.ok){alert(r&&r.msg||'Қосылу мүмкін болмады');return}
+  await window.__bridge.refresh();
+  document.getElementById('tch-code').value='';renderTeacher();alert('✅ Сыныпқа қосылдыңыз: '+r.name);
 }
 function leaveClass(cid){
   if(!confirm('Сыныптан шығу керек пе?'))return;
@@ -5906,7 +6084,7 @@ function doRegisterTeacher(){return guarded(async()=>{
   const info=document.getElementById('tr-info').value.trim();
   const pass=document.getElementById('tr-pass').value,pass2=document.getElementById('tr-pass2').value;
   if(!name||name.length<2){alert('Аты-жөніңізді жазыңыз');return}
-  if(!pass||pass.length<6){alert('Пароль кемінде 6 таңба');return}
+  if(!pass||pass.length<10){alert('Пароль кемінде 10 таңба');return}
   if(pass!==pass2){alert('Парольдер сәйкес емес');return}
   const r=await authCall('register',{name:name,pass:pass,teacher:true,info:info});
   if(!r.ok){alert(r.msg||'Қате');return}
@@ -6610,13 +6788,13 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
       if(noSync(k)||pend[k]!==undefined)return;
       try{if(localStorage.getItem(k)!==db[k]){localStorage.setItem(k,db[k]);changed++}}catch(e){}
     });
+    if(window.__token && args.tk===window.__token){
+      try{var stale=[];for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(!noSync(k)&&!(k in db)&&pend[k]===undefined)stale.push(k)}
+      stale.forEach(function(k){localStorage.removeItem(k);changed++})}catch(e){}
+    }
     var ar=(args.authres||{})[sid]||{};
     Object.keys(ar).forEach(function(id){if(waiters[id]){var w=waiters[id];delete waiters[id];w(ar[id])}});
-    if(first&&window.__token){
-      first=false;var up=[];
-      try{for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(!noSync(k)&&!(k in db))up.push({key:k,value:localStorage.getItem(k)})}}catch(e){}
-      if(up.length)push(up);
-    }
+    if(first&&window.__token)first=false;
     connected=true;height();
     if(args.dead&&window.__token){try{if(window.__kicked)window.__kicked()}catch(e){}}
     if(renderWaiters.length&&(args.tk||'')===(window.__token||'')){var rw=renderWaiters;renderWaiters=[];rw.forEach(function(f){try{f()}catch(e){}})}
