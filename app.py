@@ -1708,9 +1708,11 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
     <div class="row" style="margin-bottom:12px">
       <button class="btn btn-s btn-sm" id="sch-t-pub" onclick="schTab('pub')">🌐 Жария</button>
       <button class="btn btn-s btn-sm" id="sch-t-mine" onclick="schTab('mine')">📁 Менікі</button>
+      <button class="btn btn-s btn-sm" id="sch-t-history" onclick="schTab('history')">🇰🇿 Қазақстан тарихы</button>
       <button class="btn btn-s btn-sm" id="sch-t-pend" style="display:none" onclick="schTab('pend')">⏳ Күтіп тұрған</button>
     </div>
     <div class="fg"><select id="sch-f-subj" onchange="renderSchemes()"></select></div>
+    <div class="row" id="sch-bulk-actions" style="display:none;margin-bottom:12px"><button class="btn btn-d btn-sm" onclick="schDeleteMine()">🗑 Менің барлық схемаларымды толық өшіру</button></div>
     <div id="sch-list" class="list"></div>
     <div class="row" style="margin-top:20px"><button class="btn btn-p" onclick="schNew()">➕ Схема құру</button><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
@@ -3207,7 +3209,14 @@ function showSchemes(tab){
 }
 function schTab(t){schTabCur=t;renderSchemes()}
 function renderSchemes(){
-  ['pub','mine','pend'].forEach(k=>{const b=document.getElementById('sch-t-'+k);if(b){b.className='btn btn-sm '+(k===schTabCur?'btn-p':'btn-s')}});
+  ['pub','mine','history','pend'].forEach(k=>{const b=document.getElementById('sch-t-'+k);if(b){b.className='btn btn-sm '+(k===schTabCur?'btn-p':'btn-s')}});
+  const bulk=document.getElementById('sch-bulk-actions');
+  bulk.style.display=schTabCur==='mine'&&user&&allSchemes().some(t=>t.authorId===user.id)?'flex':'none';
+  document.getElementById('sch-f-subj').parentElement.style.display=schTabCur==='history'?'none':'';
+  if(schTabCur==='history'){
+    document.getElementById('sch-list').innerHTML=HIST.map((h,i)=>`<div class="item"><div class="info"><h4>${esc(h[2])}</h4><p>${esc(h[0])} · ${h[5].length} жеке тармақ</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="histPreview(${i})">👁 Қарау</button>${user?`<button class="btn btn-s btn-sm" onclick="histCopyMine(${i})">📁 Өзіме қосу</button>`:''}</div></div>`).join('');
+    return;
+  }
   const subj=document.getElementById('sch-f-subj').value;
   let a=allSchemes();
   if(schTabCur==='pub')a=a.filter(schIsPub);
@@ -3243,7 +3252,18 @@ function schMut(id,fn){
 function schApprove(id){if(!user||!user.isAdmin)return;schMut(id,t=>{t.isPublic=true;t.status='approved'})}
 function schReject(id){if(!user||!user.isAdmin)return;schMut(id,t=>{t.isPublic=false;t.status='rejected'})}
 function schRequest(id){schMut(id,t=>{t.status='pending';t.isPublic=false});alert('Админге жіберілді. Мақұлдаған соң жарияланады.')}
-function schDel(id){if(!confirm('Схеманы өшіру керек пе?'))return;saveSchemes(allSchemes().filter(x=>x.id!==id));renderSchemes()}
+function schDel(id){
+  const t=allSchemes().find(x=>x.id===id);
+  if(!t||!user||!(user.isAdmin||t.authorId===user.id)||!confirm('Схеманы біржола өшіру керек пе?'))return;
+  saveSchemes(allSchemes().filter(x=>x.id!==id));renderSchemes();
+}
+function schDeleteMine(){
+  if(!user)return;
+  const mine=allSchemes().filter(t=>t.authorId===user.id);
+  if(!mine.length)return;
+  if(!confirm(`Өзіңіздің ${mine.length} схемаңызды, соның ішінде жарияланғандарын да, біржола өшіру керек пе?`))return;
+  saveSchemes(allSchemes().filter(t=>t.authorId!==user.id));renderSchemes();
+}
 
 function schBlankCard(){return {title:'',img:'',img2:'',fields:[{k:'Дәуір',v:''},{k:'Мекен',v:''}]}}
 function schNew(){
@@ -3606,9 +3626,34 @@ const HIST=[
   ['Орта ғасырлар','VI–XVII ғасырлар',[['Ерте орта ғасырлар','VI–IX ғғ.: Түрік, Батыс Түрік, Түргеш, Қарлұқ, Оғыз, Қимақ қағанаттары'],['Дамыған орта ғасырлар','X–XIII ғғ. басы: Қарахан, Қыпшақ мемлекеттері; қалалар мен Ұлы Жібек жолы дамыды'],['Моңғол және кейінгі кезең','XIII–XV ғғ.: Моңғол империясы, Жошы ұлысы, Алтын Орда, Ақ Орда, Моғолстан, Әбілқайыр хандығы, Ноғай Ордасы'],['Қазақ хандығы','1465/1466 ж. құрылуы; Керей мен Жәнібек; XVI–XVII ғғ. хандықтың нығаюы'],['Мәдениеттер мен мұра','Түркі жазба ескерткіштері; Қарахан дәуірінің сәулеті; Отырар, Тараз, Сауран, Сығанақ; Қожа Ахмет Ясауи кесенесі']]],
   ['Жаңа заман','XVIII ғасыр – 1917 жыл',[['Негізгі кезеңдер','XVIII ғ. жоңғар шапқыншылығына қарсы күрес; Ресей империясының отарлау саясаты; XIX ғ. реформалар мен ұлт-азаттық қозғалыстар'],['Маңызды тұлғалар','Абылай хан, Кенесары Қасымұлы, Исатай Тайманұлы, Махамбет Өтемісұлы, Сырым Датұлы'],['Мәдениет пен ағартушылық','Шоқан Уәлиханов, Ыбырай Алтынсарин, Абай Құнанбайұлы; дәстүрлі күй, жыр, айтыс'],['XX ғасыр басы','1905–1907 жж. оқиғалар; 1916 жылғы ұлт-азаттық көтеріліс; 1917 ж. Алаш қозғалысы']]],
   ['Кеңестік кезең','1917/1920–1991 жылдар',[['Саяси кезеңдер','Алаш қозғалысы; Қазақ АКСР (1920); Қазақ КСР (1936); қайта құру кезеңі'],['Қасіретті оқиғалар','Ұжымдастыру мен ашаршылық (1931–1933); саяси қуғын-сүргін (әсіресе 1937–1938)'],['Соғыс және даму','Екінші дүниежүзілік соғыс (1941–1945); тың игеру (1954 жылдан); индустрияландыру'],['Мәдениет','Мұхтар Әуезов, Сәкен Сейфуллин, Қаныш Сәтбаев; әдебиет, ғылым, театр мен кино дамуы'],['Тәуелсіздікке жол','1986 ж. Желтоқсан оқиғасы; 1990 ж. 25 қазан — Мемлекеттік егемендік туралы декларация']]],
-  ['Тәуелсіз Қазақстан','1991 жылдан бүгінге дейін',[['Тәуелсіздік','1991 ж. 16 желтоқсан — тәуелсіздік жарияланды'],['Мемлекеттік нышандар','1992 ж. 4 маусым — Ту мен Елтаңба қабылданды; Әнұранның қазіргі нұсқасы 2006 ж.'],['Конституциялар','1993 ж. 28 қаңтар; 1995 ж. 30 тамыз — Конституция қабылданды'],['Астана','1997 ж. астана Ақмолаға көшті; 1998 ж. Астана аталды; 2019 ж. Нұр-Сұлтан; 2022 ж. Астана атауы қайтарылды'],['Қоғам және мәдениет','Тәуелсіз мемлекеттің институттары, ұлттық мәдениетті жаңғырту, халықаралық байланыстар']]]]]
+  ['Тәуелсіз Қазақстан','1991 жылдан бүгінге дейін',[['Тәуелсіздік','1991 ж. 16 желтоқсан — тәуелсіздік жарияланды'],['Мемлекеттік нышандар','1992 ж. 4 маусым — Ту мен Елтаңба қабылданды; Әнұранның қазіргі нұсқасы 2006 ж.'],['Конституциялар','1993 ж. 28 қаңтар; 1995 ж. 30 тамыз — Конституция қабылданды'],['Астана','1997 ж. астана Ақмолаға көшті; 1998 ж. Астана аталды; 2019 ж. Нұр-Сұлтан; 2022 ж. Астана атауы қайтарылды'],['Қоғам және мәдениет','Тәуелсіз мемлекеттің институттары, ұлттық мәдениетті жаңғырту, халықаралық байланыстар']]]]],
+['Ежелгі дәуір','blue','Ежелгі дәуірдің бөлінуі',1,
+ [['Бөлінуі','Тас дәуірі → қола дәуірі → ерте темір дәуірі'],['Тас дәуірі','Палеолит, мезолит, неолит; кейін мыс-тас дәуірі — энеолит'],['Маңыздысы','Мәдениеттер бір-бірінің ұрпағы деп берілмейді; әрқайсысы өз дәуірінің жеке тармағы']],
+ [['Палеолит','Ежелгі тас дәуірі',[['Кезеңдері','Ерте, орта, кейінгі палеолит'],['Тұрақтары','Бөріқазған мен Тәңірқазған — Қаратау өңірі; Батпақ, Шүлбі']]],
+  ['Мезолит','Орта тас дәуірі',[['Ерекшелігі','Микролит, садақ пен жебе; аңшылық пен балық аулау']]],
+  ['Неолит','Жаңа тас дәуірі',[['Ерекшелігі','Қыш ыдыс, тас өңдеу және шаруашылықтағы өзгерістер']]],
+  ['Энеолит','Мыс-тас дәуірі',[['Мәдениет','Ботай — Солтүстік Қазақстан, жылқы шаруашылығының ерте белгілері']]],
+  ['Қола дәуірі','Металлургия мен мал шаруашылығы',[['Мәдениеттер','Андронов; кейінгі қола — Беғазы-Дәндібай']]],
+  ['Ерте темір дәуірі','Көшпелі мәдениеттер',[['Тайпалар','Сақ, сармат, үйсін, қаңлы, ғұн'],['Ескерткіштер','Есік, Бесшатыр, Шілікті, Берел']]]]],
+['Ежелгі дәуір','blue','Археологиялық мәдениеттер: дәуірлер бойынша',1,
+ [['Оқу тәртібі','Әр дәуір мен мәдениет негізгі тақырыптан жеке тармақ болып шығады'],['Туыстық','Уақыт бойынша қатар не кейін орналасуы тікелей ұрпақтық байланыс дегенді білдірмейді']],
+ [['Палеолит','Қаратау тұрақтары',[['Мысалдар','Бөріқазған, Тәңірқазған'],['Аймақ','Оңтүстік Қазақстан']]],
+  ['Энеолит','Ботай мәдениеті',[['Аймақ','Солтүстік Қазақстан'],['Ерекшелік','Жылқы сүйектері мол табылған']]],
+  ['Қола дәуірі','Андронов мәдени қауымдастығы',[['Аймақ','Қазақстан және көршілес далалық аймақтар'],['Белгі','Металлургия, мал шаруашылығы; Федоров пен Алакөл топтары']]],
+  ['Кейінгі қола','Беғазы-Дәндібай мәдениеті',[['Аймақ','Орталық Қазақстан'],['Белгі','Ірі тас кесенелер мен жерлеу ескерткіштері']]],
+  ['Ерте темір','Сақ мәдениеті',[['Белгі','Аң стилі, қорғандар'],['Ескерткіштер','Есік, Бесшатыр, Шілікті, Берел']]],
+  ['Ерте темір','Сармат ескерткіштері',[['Аймақ','Батыс Қазақстан'],['Ескерткіш','Аралтөбе']]],
+  ['Қаңлы кезеңі','Сырдария өңірінің мәдениеттері',[['Топтары','Қауыншы, Отырар-Қаратау, Жетіасар']]]]]
 ];
 function histId(i){return 'hist_'+String(i+1).padStart(2,'0')}
+function histCopyMine(i){
+  if(!user||!HIST[i])return;
+  const all=allSchemes();
+  if(all.filter(t=>t.authorId===user.id).length>=30){alert('Бір адам ең көбі 30 схема құра алады');return}
+  const id='sc_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+  all.unshift({...histBuild(i),id,authorId:user.id,authorName:user.name,createdAt:new Date().toISOString(),isPublic:false,status:'private'});
+  saveSchemes(all);schTabCur='mine';renderSchemes();
+}
 function histBuild(i){
   const h=HIST[i],card=(title,f)=>({title:title,img:'',img2:'',fields:f.map(x=>({k:x[0],v:x[1]}))});
   return {subject:'history',subjectName:'Қазақстан тарихы',title:(i+1)+'. '+h[2],tabMain:h[0],subs:['Қазақстан тарихы'],theme:h[1],
