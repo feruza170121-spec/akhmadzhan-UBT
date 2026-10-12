@@ -763,6 +763,9 @@ def _merge_tests(state, sess, v):
                 continue
             n = dict(t)
             n["authorId"] = uid
+            n["adminApproved"] = (bool(s.get("adminApproved"))
+                                  and n.get("subject") == s.get("subject")
+                                  and n.get("questions") == s.get("questions"))
             if not teacher:
                 n["isPublic"] = bool(s.get("isPublic"))
                 if s.get("status") != "approved" and not s.get("isPublic") and t.get("status") in ("pending", "private"):
@@ -773,10 +776,13 @@ def _merge_tests(state, sess, v):
                     n.pop("status", None)
             out.append(n)
         elif tid == "seed_funksiya" and t.get("authorId") == "system":
-            out.append(t)
+            n = dict(t)
+            n["adminApproved"] = False
+            out.append(n)
         else:
             n = dict(t)
             n["authorId"] = uid
+            n["adminApproved"] = False
             if not teacher:
                 n["isPublic"] = False
                 if n.get("status") not in ("pending", "private"):
@@ -1162,6 +1168,21 @@ body.dark{background:radial-gradient(900px 420px at 0% -5%,rgba(59,130,246,.16),
 .home-tools .mode h3{line-height:1.35}
 .home-tools .mode p{line-height:1.4}
 @media(max-width:520px){.home-tools{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.home-tools .mode{min-height:135px;padding:14px 8px}.home-tools .mode h3{font-size:13px}}
+.exam-entry{grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:18px}
+.exam-entry .mode{min-height:172px;text-align:left;padding:22px;border-color:rgba(59,130,246,.27);background:linear-gradient(135deg,rgba(37,99,235,.10),rgba(124,58,237,.08)),var(--c)}
+.exam-entry .mode:nth-child(2){background:linear-gradient(135deg,rgba(16,185,129,.11),rgba(37,99,235,.08)),var(--c)}
+.exam-entry .mode .ic{margin:0 0 12px;border-radius:18px}
+.exam-entry .mode h3{font-size:18px}
+.exam-entry .mode p{font-size:13px;margin-top:4px}
+.exam-entry .mode:focus-visible,.subject-choice:focus-visible{outline:3px solid var(--p);outline-offset:3px}
+.subject-choices{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin:14px 0 18px}
+.subject-choice{display:flex;align-items:flex-start;gap:10px;min-width:0;padding:12px;border:1px solid var(--b);border-radius:18px;background:var(--c);color:var(--t);text-align:left;cursor:pointer;font:inherit;transition:.2s}
+.subject-choice:hover,.subject-choice.selected{border-color:var(--p);background:linear-gradient(120deg,rgba(37,99,235,.12),rgba(124,58,237,.07));box-shadow:0 2px 10px rgba(37,99,235,.10)}
+.subject-choice .subject-mark{font-size:21px;line-height:1.2}
+.subject-choice strong{display:block;font-size:12px;line-height:1.4;overflow-wrap:anywhere}
+.subject-choice small{display:block;font-size:11px;color:var(--m);margin-top:3px}
+@media(max-width:700px){.subject-choices{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:440px){.exam-entry .mode{min-height:156px;padding:15px}.exam-entry .mode h3{font-size:15px}.exam-entry .mode p{font-size:11px}.subject-choice{padding:10px;gap:7px}}
 .uv-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
 .uv-actions .btn{width:100%;min-height:48px;padding:10px 12px;text-align:center;font-size:13px;line-height:1.3}
 .uv-actions .uv-danger{grid-column:1/-1}
@@ -1332,6 +1353,10 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
   </div>
   <div class="wrap">
     <div class="hdr"><h2>Басты бет</h2><p class="sub">Тест тапсырыңыз немесе өз тестіңізді құрыңыз</p></div>
+    <div class="grid2 exam-entry">
+      <button class="mode" onclick="showUbt140()"><span class="ic">🎓</span><h3>140 форматтағы тест</h3><p>120 сұрақ · өз базаңыздан таңдаңыз немесе кездейсоқ алыңыз</p></button>
+      <button class="mode" onclick="startQuickSubject()"><span class="ic">📘</span><h3>Пән тесттерім</h3><p>Әр пәнді бөлек тапсырыңыз · қолмен немесе кездейсоқ</p></button>
+    </div>
     <div id="home-extras"></div>
     <div class="grid2" style="margin-bottom:20px">
       <div class="mode" onclick="showPublicTests()"><div class="ic">🌐</div><h3>Жария тесттер</h3><p>Админ мақұлдаған</p></div>
@@ -1343,7 +1368,6 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <button class="mode" onclick="showFormulas()"><span class="ic">📐</span><h3>Формула</h3><p>Формулаларды қарау</p></button>
       <button class="mode" onclick="showMistakes()"><span class="ic">❌</span><h3>Қателер</h3><p>Қате жауаптар</p></button>
       <button class="mode" onclick="showHistory()"><span class="ic">📋</span><h3>Тарих</h3><p>Тест нәтижелері</p></button>
-      <button class="mode" onclick="startQuickSubject()"><span class="ic">⚡</span><h3>Жылдам</h3><p>Жылдам тест</p></button>
       <button class="mode" onclick="showFileTest()"><span class="ic">📂</span><h3>Файлдан</h3><p>Файлдан тест ашу</p></button>
       <button class="mode" onclick="showMyProfile()"><span class="ic">📈</span><h3>График</h3><p>Үлгерім көрсеткіші</p></button>
       <button class="mode" onclick="showFlash()"><span class="ic">🃏</span><h3>Флеш-карталар</h3><p>Қайталауға арналған</p></button>
@@ -1351,7 +1375,6 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <button class="mode" onclick="showBookmarks()"><span class="ic">🔖</span><h3>Таңдаулылар</h3><p>Сақталған сұрақтар</p></button>
       <button class="mode" onclick="showPlanner()"><span class="ic">🗓</span><h3>Жоспар</h3><p>Дайындық жоспары</p></button>
       <button class="mode" onclick="showTeacher()"><span class="ic">🏫</span><h3>Сынып / Мұғалім</h3><p>Сыныппен жұмыс</p></button>
-      <button class="mode" onclick="showUbt140()"><span class="ic">🎓</span><h3>140 формат</h3><p>ҰБТ үлгісіндегі тест</p></button>
       <button class="mode" onclick="showQuestionBank()"><span class="ic">📚</span><h3>Сұрақтар базасы</h3><p>Пәндер бойынша өз сұрақтарым</p></button>
       <button class="mode" onclick="openContactFromApp()"><span class="ic">💬</span><h3>Админге</h3><p>Хабарлама жазу</p></button>
       <button class="mode" id="admin-btn" style="display:none" onclick="showAdmin()"><span class="ic">🛠</span><h3>Админ</h3><p>Басқару панелі</p></button>
@@ -1411,10 +1434,10 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
 
 <div id="s-public" class="screen">
   <div class="wrap">
-    <div class="hdr"><h2>🌐 Жария тесттер</h2><p class="sub">Барлық пайдаланушылардың тесттері</p></div>
+    <div class="hdr"><h2>🌐 Жария тесттер</h2><p class="sub">Әкімші рұқсат еткен тесттердің сұрақтарын өз базаңызға жүктей аласыз</p></div>
     <div id="public-subj" class="row" style="justify-content:flex-start;margin-bottom:12px"></div>
     <div id="public-list" class="list"></div>
-    <div class="row" style="margin-top:20px"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+    <div class="row" style="margin-top:20px"><button class="btn btn-s" onclick="showQuestionBank()">📚 Сұрақтар базасы</button><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
 </div>
 
@@ -1507,13 +1530,19 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
 
 <div id="s-subj" class="screen">
   <div class="wrap">
-    <div class="hdr"><h2>Пән бойынша тест</h2><p class="sub">Өз сұрақтарыңыздан немесе дайын пәндерден тест құрыңыз</p></div>
+    <div class="hdr"><h2>📘 Пән тесттерім</h2><p class="sub">Пәнді таңдаңыз да, өз базаңыздағы сұрақтармен жеке тест тапсырыңыз</p></div>
     <div class="card" id="bank-subject-card">
-      <h3 style="margin-bottom:8px">📚 Өз базамнан</h3>
-      <div class="grid2"><div class="fg"><label>Пән</label><select id="bs-subject" onchange="renderBankSubjectList()"></select></div>
-        <div class="fg"><label>Кездейсоқ сұрақ саны</label><input id="bs-count" type="number" min="1" max="500" value="20"></div></div>
-      <div class="row" style="justify-content:flex-start;margin-bottom:12px"><button class="btn btn-s btn-sm" onclick="startBankSubject(false)">Белгіленгендермен бастау</button><button class="btn btn-p btn-sm" onclick="startBankSubject(true)">🎲 Кездейсоқ бастау</button></div>
+      <h3>1. Пәнді таңдаңыз</h3>
+      <select id="bs-subject" aria-label="Таңдалған пән" style="display:none"></select>
+      <div id="bs-subject-grid" class="subject-choices"></div>
+      <h3 id="bs-heading" style="margin-bottom:6px">2. Сұрақтарды таңдаңыз</h3>
+      <div class="ubt-modes">
+        <label><input type="radio" name="bs-mode" value="manual" checked onchange="renderBankSubjectList()"> Өзім таңдаймын</label>
+        <label><input type="radio" name="bs-mode" value="random" onchange="renderBankSubjectList()"> 🎲 Базадан кездейсоқ</label>
+      </div>
+      <div class="fg" id="bs-count-wrap" style="display:none"><label>Кездейсоқ алынатын сұрақ саны</label><input id="bs-count" type="number" min="1" max="500" value="20"></div>
       <div id="bs-list"></div>
+      <div class="row" style="justify-content:flex-start;margin-top:12px"><button class="btn btn-p" id="bs-start" onclick="startBankSubject(bankSubjectMode()==='random')">▶ Тестті бастау</button><button class="btn btn-s" onclick="showQuestionBank()">📚 Сұрақтар базасы</button></div>
     </div>
     <h3 style="margin:18px 0 12px">Дайын жаттығулар</h3>
     <div id="subj-grid" class="grid2"></div>
@@ -1714,22 +1743,21 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
 <div id="s-question-bank" class="screen">
   <div class="wrap">
     <div class="hdr"><h2>📚 Сұрақтар базасы</h2><p class="sub">Әр пәннің сұрақтары бөлек. Тестте немесе осында қосқан сұрақтарыңыз сақталады.</p></div>
-    <div class="grid2 home-tools">
+    <div class="grid2 exam-entry">
       <button class="mode" onclick="showUbt140()"><span class="ic">🎓</span><h3>140 формат</h3><p>Базадан қолмен не кездейсоқ алу</p></button>
-      <button class="mode" onclick="showBankSubjectTest()"><span class="ic">📖</span><h3>Пән бойынша тест</h3><p>Бір пәннің сұрақтарын таңдау</p></button>
-      <button class="mode" onclick="showMyTests()"><span class="ic">📚</span><h3>Менің тесттерім</h3><p>Өз тестіңізге сұрақ қосу</p></button>
+      <button class="mode" onclick="showBankSubjectTest()"><span class="ic">📘</span><h3>Пән тесттерім</h3><p>Әр пәнді жеке тапсыру · қолмен немесе кездейсоқ</p></button>
     </div>
     <div class="card">
-      <h3>Пәндер бойынша сұрақтарым</h3>
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:12px"><h3>Пәндер бойынша сұрақтарым</h3><button class="btn btn-s btn-sm" onclick="showMyTests()">📚 Менің тесттерім</button></div>
       <p class="sub" style="margin-bottom:12px">Өзіңіз енгізген сұрақтар пәні бойынша сақталады. 140 форматқа қолмен таңдаңыз немесе өз базаңыздан кездейсоқ алыңыз.</p>
       <div class="grid2">
         <div class="fg"><label>Пән бойынша сүзу</label><select id="u-bank-subject" onchange="renderUbtBank()"></select></div>
         <div class="fg"><label>Сұрақты іздеу</label><input id="u-bank-search" placeholder="Сұрақ мәтіні" oninput="renderUbtBank()"></div>
       </div>
-      <button class="btn btn-ok" style="margin-bottom:16px" onclick="showAddQuestionFromBank()">➕ Сұрақ қосу</button>
+      <div class="row" style="justify-content:flex-start;margin-bottom:16px"><button class="btn btn-ok" onclick="showAddQuestionFromBank()">➕ Сұрақ қосу</button><button class="btn btn-s" onclick="showPublicTests()">🌐 Жария тесттен жүктеу</button></div>
       <div id="u-bank-list"></div>
     </div>
-    <div class="row"><button class="btn btn-p" onclick="showUbt140()">🎓 140 форматқа өту</button><button class="btn btn-s" onclick="goHome()">Басты бет</button></div>
+    <div class="row"><button class="btn btn-s" onclick="goHome()">Басты бет</button></div>
   </div>
 </div>
 
@@ -2303,8 +2331,8 @@ function showAdmin(){
 
   document.getElementById('admin-tests').innerHTML=tests.length?tests.map(t=>`
     <div class="item"><div class="info"><h4>${esc(t.topic)}</h4>
-      <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · ${esc(t.authorName||'')} · ${t.isPublic||t.status==='approved'?'🌐 Жария':t.status==='pending'?'⏳ Күту':'🔒 Жеке'}</p></div>
-    <div class="acts"><button class="btn btn-d btn-sm" onclick="adminDelTest('${t.id}')">Өшіру</button></div></div>`).join(''):'<p class="sub">Тест жоқ</p>';
+      <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · ${esc(t.authorName||'')} · ${t.isPublic||t.status==='approved'?'🌐 Жария':t.status==='pending'?'⏳ Күту':'🔒 Жеке'}${t.adminApproved&&((t.isPublic||t.status==='approved')&&!t.classId)?' · ✅ Базаға импортқа рұқсат':''}</p></div>
+    <div class="acts">${(t.isPublic||t.status==='approved')&&!t.classId&&t.questions.length&&!t.adminApproved?`<button class="btn btn-ok btn-sm" onclick="adminApproveBankImport(${jsq(t.id)})">✓ Базаға импортқа рұқсат</button>`:''}<button class="btn btn-d btn-sm" onclick="adminDelTest('${t.id}')">Өшіру</button></div></div>`).join(''):'<p class="sub">Тест жоқ</p>';
 
   document.getElementById('admin-formulas').innerHTML=formulas.length?formulas.map((f,i)=>`
     <div class="item"><div class="info"><h4>${esc(f.title)}</h4><p>${esc(f.subject)} · ${esc(f.authorName||'')} · ${esc(f.body)}</p></div>
@@ -2316,12 +2344,23 @@ function showAdmin(){
 }
 function adminDelTest(id){if(!confirm('Тестті өшіру?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showAdmin()}
 function approveTest(id){
+  if(!user||!user.isAdmin)return;
   const all=allTests();const t=all.find(x=>x.id===id);
-  if(t){t.isPublic=true;t.status='approved';saveAllTests(all);showAdmin()}
+  if(t){t.isPublic=true;t.status='approved';t.adminApproved=true;saveAllTests(all);showAdmin()}
 }
 function rejectTest(id){
+  if(!user||!user.isAdmin)return;
   const all=allTests();const t=all.find(x=>x.id===id);
-  if(t){t.isPublic=false;t.status='rejected';saveAllTests(all);showAdmin()}
+  if(t){t.isPublic=false;t.status='rejected';t.adminApproved=false;saveAllTests(all);showAdmin()}
+}
+function adminApproveBankImport(id){
+  if(!user||!user.isAdmin)return;
+  const all=allTests(),t=all.find(x=>x.id===id);
+  if(!t||(t.status!=='approved'&&!t.isPublic)||t.classId||!Array.isArray(t.questions)||!t.questions.length){
+    alert('Импортқа тек жария тестке рұқсат беруге болады.');return;
+  }
+  t.isPublic=true;t.status='approved';t.adminApproved=true;
+  saveAllTests(all);showAdmin();
 }
 function adminDelUser(id){return guarded(async()=>{
   if(!user||!user.isAdmin)return;
@@ -2466,7 +2505,7 @@ function createFromFile(){
   if(!draftQs.length){alert('Кемінде 1 сұрақ қосыңыз!');return}
   const r={qs:draftQs.slice()};
   const test={id:'t_'+Date.now(),subject,subjectName,topic,desc:document.getElementById('c-desc').value.trim(),isPublic:false,status:requestPub?'pending':'private',authorId:user.id,authorName:user.name,questions:r.qs,createdAt:new Date().toISOString()};
-  if((user.isAdmin||isTeacherUser())&&requestPub){test.isPublic=true;test.status='approved'}
+  if((user.isAdmin||isTeacherUser())&&requestPub){test.isPublic=true;test.status='approved';if(user.isAdmin)test.adminApproved=true}
   if(isTeacherUser()){
     const cid=(document.getElementById('c-class')||{}).value||'';
     const tm=parseInt((document.getElementById('c-timer')||{}).value,10),lm=parseInt((document.getElementById('c-limit')||{}).value,10);
@@ -2503,7 +2542,7 @@ function showMyTests(){
 function requestPub(id){
   const all=allTests();const t=all.find(x=>x.id===id);
   if(!t)return;
-  if(user.isAdmin||isTeacherUser()){t.isPublic=true;t.status='approved';saveAllTests(all);alert('Жарияланды!');showMyTests();return}
+  if(user.isAdmin||isTeacherUser()){t.isPublic=true;t.status='approved';if(user.isAdmin)t.adminApproved=true;saveAllTests(all);alert('Жарияланды!');showMyTests();return}
   t.status='pending';t.isPublic=false;saveAllTests(all);alert('Админге жіберілді. Мақұлдаған соң жарияланады.');showMyTests();
 }
 function delTest(id){if(!confirm('Тестті өшіру керек пе?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showMyTests()}
@@ -2584,25 +2623,52 @@ function startUserTest(id){
   st=baseState();st.questions=t.questions.map(q=>({...q,subjectName:label}));st.subjectName=label;st.testId=id;
   st.timerSeconds=Math.max(t.questions.length*90,600);shuf(st.questions);beginTest();
 }
-function startQuickSubject(){
+const bankSubjectSelection=new Map();
+function bankSubjectMode(){return (document.querySelector('input[name="bs-mode"]:checked')||{}).value||'manual'}
+function startQuickSubject(subject){
   document.getElementById('subj-grid').innerHTML=Object.entries(BANK).map(([k,v])=>
     `<div class="mode" onclick="startBank('${k}')"><div class="ic">📖</div><h3>${v.name}</h3><p>${v.qs.length} сұрақ</p></div>`).join('');
   const sel=document.getElementById('bs-subject');
   if(!sel.options.length)sel.innerHTML=Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value).map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('');
+  const available=ubtQuestionBank();
+  if(subject&&Array.from(sel.options).some(o=>o.value===subject))sel.value=subject;
+  else if(!sel.value||!available.some(q=>q.subject===sel.value))sel.value=(available[0]||{}).subject||'history';
+  document.getElementById('bs-count').value=Math.min(20,available.filter(q=>q.subject===sel.value).length)||1;
   renderBankSubjectList();
   showScr('s-subj');
 }
 function showBankSubjectTest(){
-  const subject=document.getElementById('u-bank-subject').value;
-  startQuickSubject();
-  if(subject)document.getElementById('bs-subject').value=subject;
+  startQuickSubject(document.getElementById('u-bank-subject').value);
+}
+function selectBankSubject(key){
+  const sel=document.getElementById('bs-subject');
+  if(!Array.from(sel.options).some(o=>o.value===key))return;
+  sel.value=key;
+  document.getElementById('bs-count').value=Math.min(20,ubtQuestionBank().filter(q=>q.subject===key).length)||1;
   renderBankSubjectList();
 }
+function toggleBankSubjectQuestion(id,on){
+  const key=user.id+'|'+document.getElementById('bs-subject').value;
+  const picked=bankSubjectSelection.get(key)||new Set();
+  if(on)picked.add(id);else picked.delete(id);
+  bankSubjectSelection.set(key,picked);
+  document.getElementById('bs-selected').textContent=String(ubtQuestionBank().filter(q=>q.subject===document.getElementById('bs-subject').value&&picked.has(q.id)).length);
+}
 function renderBankSubjectList(){
-  const key=document.getElementById('bs-subject').value;
-  const pool=ubtQuestionBank().filter(q=>q.subject===key);
-  document.getElementById('bs-list').innerHTML=`<p class="sub" style="margin-bottom:10px">${esc(subjName(key))} · Базада: ${pool.length} сұрақ</p>`+
-    (pool.length?pool.map(q=>`<label class="ubt-bank-row"><input type="checkbox" class="bs-pick" value="${esc(q.id)}"><span class="info"><strong>${esc(q.text)}</strong></span></label>`).join(''):'<p class="sub">Бұл пәннен сұрақ жоқ. Сұрақтар базасына қосыңыз.</p>');
+  const sel=document.getElementById('bs-subject'),key=sel.value,bank=ubtQuestionBank();
+  const pool=bank.filter(q=>q.subject===key),manual=bankSubjectMode()==='manual';
+  const icons={history:'🏛',reading:'📖',mathlit:'🔢',math:'📐',physics:'⚡',chemistry:'🧪',biology:'🧬',geography:'🌍',informatics:'💻',english:'🇬🇧',kazakh:'📝',worldhistory:'🌐',law:'⚖️',other:'📚'};
+  document.getElementById('bs-subject-grid').innerHTML=Array.from(sel.options).filter(o=>o.value).map(o=>{
+    const n=bank.filter(q=>q.subject===o.value).length;
+    return `<button type="button" class="subject-choice${key===o.value?' selected':''}" aria-pressed="${key===o.value}" onclick="selectBankSubject(${jsq(o.value)})"><span class="subject-mark">${icons[o.value]||'📚'}</span><span><strong>${esc(o.textContent)}</strong><small>${n} сұрақ</small></span></button>`;
+  }).join('');
+  document.getElementById('bs-heading').textContent='2. '+subjName(key)+' · сұрақтарды таңдаңыз';
+  document.getElementById('bs-count-wrap').style.display=manual?'none':'';
+  document.getElementById('bs-start').textContent=manual?'▶ Белгіленгендермен бастау':'🎲 Кездейсоқ бастау';
+  const picked=bankSubjectSelection.get(user.id+'|'+key)||new Set();
+  const visibleCount=pool.filter(q=>picked.has(q.id)).length;
+  document.getElementById('bs-list').innerHTML=`<p class="sub" style="margin-bottom:10px">Базада: <b>${pool.length}</b> сұрақ · Белгіленгені: <b id="bs-selected">${visibleCount}</b>${manual?'':' · Тест үшін сұрақтар автоматты таңдалады'}</p>`+
+    (pool.length?pool.map(q=>`<label class="ubt-bank-row"><input type="checkbox" class="bs-pick" value="${esc(q.id)}" ${manual?'':'disabled'} ${picked.has(q.id)?'checked':''} onchange="toggleBankSubjectQuestion(this.value,this.checked)"><span class="info"><strong>${esc(q.text)}</strong><p>${esc(q.source)}</p></span></label>`).join(''):'<p class="sub">Бұл пәннен сұрақ жоқ. Сұрақтар базасына қосыңыз.</p>');
 }
 function startBankSubject(random){
   const key=document.getElementById('bs-subject').value,pool=ubtQuestionBank().filter(q=>q.subject===key);
@@ -4660,9 +4726,18 @@ function showPublicTests(subj){
     h+=`<div class="card"><h3>🎲 ${esc(nm)}: аралас тест</h3><p class="sub" style="margin:4px 0 10px">Осы пәннің барлық жария тесттерінен кездейсоқ ${Math.min(20,n)} сұрақ (қолжетімді: ${n})</p><button class="btn btn-p btn-sm" onclick="startSubjectMix(${jsq(pubSubj)})">▶ Бастау</button></div>`;
   }
   if(!tests.length)h+='<div class="empty"><div class="ic">🌐</div><p>Әзірге жария тест жоқ.<br>Тест құрып, «Жариялауға жіберу» белгілеңіз — админ мақұлдаған соң осында шығады.</p></div>';
-  else h+=tests.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic)}</h4><p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ${t.timerMin?' · ⏱ '+t.timerMin+' мин':''}${t.limit?' · лимит: '+t.limit:''} · Автор: ${esc(t.authorName||'Аноним')}${t.desc?' · '+esc(t.desc):''}</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest('${t.id}')">Тапсыру</button></div></div>`).join('');
+  else h+=tests.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic)}</h4><p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ${t.timerMin?' · ⏱ '+t.timerMin+' мин':''}${t.limit?' · лимит: '+t.limit:''} · Автор: ${esc(t.authorName||'Аноним')}${t.desc?' · '+esc(t.desc):''}</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest(${jsq(t.id)})">Тапсыру</button>${t.isPublic===true&&t.status==='approved'&&t.adminApproved===true?`<button class="btn btn-s btn-sm" onclick="importPublicTestToBank(${jsq(t.id)})">📥 Сұрақтарды базаға жүктеу</button>`:''}</div></div>`).join('');
   list.innerHTML=h;
   showScr('s-public');
+}
+function importPublicTestToBank(id){
+  if(!user){alert('Сұрақтарды базаңызға жүктеу үшін жүйеге кіріңіз.');return}
+  const t=publicTests().find(x=>x.id===id&&x.isPublic===true&&x.status==='approved'&&x.adminApproved===true);
+  if(!t||!t.subject||!Array.isArray(t.questions)||!t.questions.length){alert('Бұл тестті жүктеуге рұқсат жоқ.');return}
+  const before=ubtQuestionBank().length;
+  rememberQuestionsInBank(t.subject,t.questions,'Жария тест: '+(t.topic||subjName(t.subject)),true);
+  const added=ubtQuestionBank().length-before;
+  alert(added>0?'✅ '+added+' сұрақ өз базаңызға жүктелді.':'Бұл тесттің сұрақтары базаңызда бар.');
 }
 function subjectPool(key){
   const seen={},out=[];
