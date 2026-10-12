@@ -624,11 +624,48 @@ def _handle_req(state, sid, rq):
             letters = _jload(state["db"].get("ubt_admin_letters", "[]"), list, [])
             if len(letters) >= 3000:
                 return {"ok": False, "msg": "Хабарламалар саны шегіне жетті"}
-            letters.append({"id": secrets.token_hex(12), "toUid": person["id"],
+            letters.append({"id": secrets.token_hex(12), "role": "admin", "toUid": person["id"],
                             "toName": person.get("name", login), "text": body,
                             "time": int(time.time()), "read": False})
             _put(state, "ubt_admin_letters", _jdump(letters))
             _commit(state)
+        return {"ok": True}
+
+    if typ == "admin_reply_letter":
+        if not sess or sess["admin"]:
+            return {"ok": False, "msg": "Рұқсат жоқ"}
+        parent = str(d.get("letterId") or "")
+        body = str(d.get("text") or "").strip()
+        if not body or len(body) > 2000:
+            return {"ok": False, "msg": "Жауап 1–2000 таңба болуы керек"}
+        with state["lock"]:
+            letters = _jload(state["db"].get("ubt_admin_letters", "[]"), list, [])
+            original = next((m for m in letters if isinstance(m, dict) and m.get("id") == parent
+                             and m.get("toUid") == sess["uid"] and m.get("role") != "user"), None)
+            if not original:
+                return {"ok": False, "msg": "Хабарлама табылмады"}
+            if len(letters) >= 3000:
+                return {"ok": False, "msg": "Хабарламалар саны шегіне жетті"}
+            letters.append({"id": secrets.token_hex(12), "role": "user", "toUid": sess["uid"],
+                            "toName": sess["name"], "replyTo": parent, "text": body,
+                            "time": int(time.time()), "read": False})
+            _put(state, "ubt_admin_letters", _jdump(letters))
+            _commit(state)
+        return {"ok": True}
+
+    if typ == "admin_read_replies":
+        if not (sess and sess["admin"]):
+            return {"ok": False, "msg": "Рұқсат жоқ"}
+        with state["lock"]:
+            letters = _jload(state["db"].get("ubt_admin_letters", "[]"), list, [])
+            changed = False
+            for letter in letters:
+                if isinstance(letter, dict) and letter.get("role") == "user" and not letter.get("read"):
+                    letter["read"] = True
+                    changed = True
+            if changed:
+                _put(state, "ubt_admin_letters", _jdump(letters))
+                _commit(state)
         return {"ok": True}
 
     if typ == "admin_read_letters":
@@ -642,7 +679,7 @@ def _handle_req(state, sid, rq):
             targets = set(ids)
             changed = False
             for letter in letters:
-                if isinstance(letter, dict) and letter.get("toUid") == sess["uid"] and letter.get("id") in targets and not letter.get("read"):
+                if isinstance(letter, dict) and letter.get("role") != "user" and letter.get("toUid") == sess["uid"] and letter.get("id") in targets and not letter.get("read"):
                     letter["read"] = True
                     changed = True
             if changed:
@@ -1607,6 +1644,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
   <div class="wrap">
     <div class="hdr"><h2>📩 Админнен</h2><p class="sub">Сізге келген жеке хабарламалар</p></div>
     <div id="admin-inbox-list" class="list"></div>
+    <div class="card" id="admin-inbox-reply" style="padding:18px;display:none"><h3 style="margin-bottom:8px">↩ Админге жауап жазу</h3><textarea id="admin-inbox-text" maxlength="2000" rows="3" placeholder="Жауабыңызды жазыңыз" style="width:100%;padding:10px;border:1px solid var(--b);border-radius:12px;background:var(--bg);color:var(--t);font:inherit"></textarea><button class="btn btn-p btn-sm" id="admin-inbox-send" onclick="sendAdminInboxReply()" style="margin-top:8px">📨 Жауап жіберу</button></div>
     <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
 </div>
@@ -2118,7 +2156,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
   <div class="wrap wide">
     <div class="hdr"><h2>🛠 Админ панелі</h2><p class="sub">Толық басқару</p></div>
     <div class="card" style="padding:20px">
-      <h3 style="margin-bottom:12px">📩 Оқушыға немесе мұғалімге хабарлама жіберу</h3>
+      <h3 style="margin-bottom:12px">📩 Оқушыға немесе мұғалімге хабарлама жіберу <span id="admin-letter-unread" class="badge" style="background:#ef4444;color:white;display:none"></span></h3>
       <div class="fg"><label>Алушының логині</label><input id="admin-letter-login" list="admin-letter-logins" placeholder="Логинді жазыңыз немесе тізімнен таңдаңыз" autocomplete="off"><datalist id="admin-letter-logins"></datalist></div>
       <div class="fg"><label>Хабарлама</label><textarea id="admin-letter-text" rows="4" maxlength="2000" placeholder="Хабарламаңызды жазыңыз"></textarea></div>
       <button class="btn btn-p btn-sm" id="admin-letter-send" onclick="adminSendLetter()">📨 Жіберу</button>
@@ -2492,8 +2530,9 @@ function getUserStats(id){
   return all[id];
 }
 function starStr(n){
-  n=Math.max(0,Math.min(5,n||0));
-  return '★'.repeat(n)+'☆'.repeat(5-n);
+  n=Number(n)||0;n=Math.max(0,n);
+  const full=Math.min(5,Math.floor(n)),half=n-full>=.5&&full<5;
+  return '★'.repeat(full)+(half?'◐':'')+'☆'.repeat(Math.max(0,5-full-(half?1:0)))+(n>5?' +'+String(n-5).replace('.',','):'');
 }
 function setUserStats(id,stats){
   const all=LS.get('ubt_user_stats',{});
@@ -2528,27 +2567,42 @@ function updateAdminInboxBadge(){
   const card=document.getElementById('admin-inbox-card');if(!card)return;
   card.style.display=user&&!user.isAdmin?'block':'none';
   if(!user||user.isAdmin)return;
-  const list=ownAdminLetters(),count=list.filter(m=>!m.read).length;
+  const list=ownAdminLetters(),count=list.filter(m=>m.role!=='user'&&!m.read).length;
   const badge=document.getElementById('admin-inbox-badge');badge.style.display=count?'inline-block':'none';badge.textContent=count>99?'99+':String(count);
   document.getElementById('admin-inbox-sub').textContent=count?count+' жаңа хабарлама':list.length+' хабарлама';
 }
 function renderAdminInbox(){
   const el=document.getElementById('admin-inbox-list');if(!el)return;
   const list=ownAdminLetters().slice().reverse();
-  el.innerHTML=list.length?list.map((m,i)=>`<div class="card" style="padding:16px;margin-bottom:10px;border-left:4px solid ${m.read?'#dce8dc':'#ef4444'}"><div class="row" style="justify-content:space-between"><b>📩 Хабарлама ${list.length-i}</b><span class="sub">${esc(new Date(m.time*1000).toLocaleString('kk-KZ'))}</span></div><p style="white-space:pre-wrap;overflow-wrap:anywhere;margin-top:10px">${esc(m.text)}</p></div>`).join(''):'<div class="card"><p class="sub">Әзірге админнен хабарлама келген жоқ.</p></div>';
+  el.innerHTML=list.length?list.map((m,i)=>`<div class="card" style="padding:16px;margin-bottom:10px;border-left:4px solid ${m.role==='user'?'#89b695':m.read?'#dce8dc':'#ef4444'}"><div class="row" style="justify-content:space-between"><b>${m.role==='user'?'↩ Менің жауабым':'📩 Админнен'} · ${list.length-i}</b><span class="sub">${esc(new Date(m.time*1000).toLocaleString('kk-KZ'))}</span></div><p style="white-space:pre-wrap;overflow-wrap:anywhere;margin-top:10px">${esc(m.text)}</p></div>`).join(''):'<div class="card"><p class="sub">Әзірге админнен хабарлама келген жоқ.</p></div>';
+  document.getElementById('admin-inbox-reply').style.display=list.some(m=>m.role!=='user')?'block':'none';
 }
 async function showAdminInbox(){
   if(!user||user.isAdmin)return;
   renderAdminInbox();showScr('s-admin-inbox');
-  const ids=ownAdminLetters().filter(m=>!m.read).map(m=>m.id);
+  const ids=ownAdminLetters().filter(m=>m.role!=='user'&&!m.read).map(m=>m.id);
   for(let i=0;i<ids.length;i+=100){const r=await authCall('admin_read_letters',{ids:ids.slice(i,i+100)});if(!r.ok)break}
   if(ids.length){try{await window.__bridge.refresh()}catch(e){}updateAdminInboxBadge();renderAdminInbox()}
+}
+async function sendAdminInboxReply(){
+  if(!user||user.isAdmin)return;
+  const original=ownAdminLetters().slice().reverse().find(m=>m.role!=='user');
+  const inp=document.getElementById('admin-inbox-text'),msg=inp.value.trim();
+  if(!original||!msg){alert('Алдымен хабарламаға жауап жазыңыз');return}
+  const btn=document.getElementById('admin-inbox-send');btn.disabled=true;
+  try{
+    const r=await authCall('admin_reply_letter',{letterId:original.id,text:msg});
+    if(!r.ok){alert(r.msg||'Жауап жіберілмеді');return}
+    inp.value='';await window.__bridge.refresh();renderAdminInbox();updateAdminInboxBadge();
+  }finally{btn.disabled=false}
 }
 function renderAdminLetterHistory(){
   if(!user||!user.isAdmin)return;
   const el=document.getElementById('admin-letter-history');if(!el)return;
-  const list=LS.get('ubt_admin_letters',[]).slice(-30).reverse();
-  el.innerHTML=list.length?'<h4 style="margin:10px 0">Соңғы жіберілген хабарламалар</h4>'+list.map(m=>`<div class="item"><div class="info"><h4>${esc(m.toName||'Қолданушы')} ${m.read?'✓ Оқылды':'· Жаңа'}</h4><p>${esc(new Date(m.time*1000).toLocaleString('kk-KZ'))}</p><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(m.text)}</p></div></div>`).join(''):'<p class="sub">Әзірге хабарлама жіберілмеген.</p>';
+  const all=LS.get('ubt_admin_letters',[]),list=all.slice(-30).reverse();
+  const count=all.filter(m=>m.role==='user'&&!m.read).length, badge=document.getElementById('admin-letter-unread');
+  badge.style.display=count?'inline-block':'none';badge.textContent=count+' жаңа жауап';
+  el.innerHTML=list.length?'<h4 style="margin:10px 0">Соңғы хабарламалар мен жауаптар</h4>'+list.map(m=>`<div class="item"><div class="info"><h4>${esc(m.toName||'Қолданушы')} · ${m.role==='user'?'↩ Жауабы':'📨 Админнен'} ${m.role==='user'?(m.read?'✓ Оқылды':'🔴 Жаңа'):(m.read?'✓ Оқылды':'· Жаңа')}</h4><p>${esc(new Date(m.time*1000).toLocaleString('kk-KZ'))}</p><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(m.text)}</p></div><div class="acts"><button class="btn btn-s btn-sm" onclick="adminChooseLetterRecipient(${jsq(m.toName)})">↩ Жауап жазу</button></div></div>`).join(''):'<p class="sub">Әзірге хабарлама жіберілмеген.</p>';
 }
 async function adminSendLetter(){
   if(!user||!user.isAdmin)return;
@@ -2765,6 +2819,9 @@ function showAdmin(){
   renderAdminChat();
 
   showScr('s-admin');
+  if(LS.get('ubt_admin_letters',[]).some(m=>m.role==='user'&&!m.read)){
+    authCall('admin_read_replies',{}).then(async r=>{if(r.ok){await window.__bridge.refresh();renderAdminLetterHistory()}});
+  }
 }
 function adminDelTest(id){if(!confirm('Тестті өшіру?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showAdmin()}
 function approveTest(id){
@@ -2809,9 +2866,11 @@ function adminSetTitle(id){
 }
 function adminSetStars(id){
   const s=getUserStats(id);
-  const n=prompt('Жұлдыз саны (0-5):',String(s.stars||0));
-  if(n===null)return;
-  s.stars=Math.max(0,Math.min(5,parseInt(n)||0));setUserStats(id,s);refreshAdminUser(id);
+  const input=prompt('Жұлдыз саны (мысалы, 4,5 немесе 6):',String(s.stars||0).replace('.',','));
+  if(input===null)return;
+  const n=Number(input.trim().replace(',','.'));
+  if(!Number.isFinite(n)||n<0||Math.round(n*2)!==n*2){alert('Оң сан жазыңыз. Жарты жұлдыз үшін 4,5 түрін қолданыңыз.');return}
+  s.stars=n;setUserStats(id,s);refreshAdminUser(id);
 }
 function adminToggleVerify(id){
   const s=getUserStats(id);
@@ -2835,7 +2894,7 @@ function adminViewUser(id){
     <button class="btn ${teacherOn?'btn-s':'btn-ok'}" onclick="adminSetTeacher(${jsq(id)},${!teacherOn})">${teacherOn?'👨‍🏫 Мұғалім мәртебесін алу':'👨‍🏫 Мұғалім ету'}</button>
     <button class="btn ${s.verified?'btn-ok':'btn-s'}" onclick="adminToggleVerify(${jsq(id)})">${s.verified?'✅ Расталған':'✓ Растау белгісі'}</button>
     <button class="btn btn-w" onclick="adminSetTitle(${jsq(id)})">🏅 Атақ беру</button>
-    <button class="btn btn-s" onclick="adminSetStars(${jsq(id)})">⭐ Жұлдыз беру (${s.stars||0}/5)</button>
+    <button class="btn btn-s" onclick="adminSetStars(${jsq(id)})">⭐ Жұлдыз беру (${String(s.stars||0).replace('.',',')})</button>
     <button class="btn btn-d uv-danger" onclick="adminDelUser(${jsq(id)})">🗑 Профильді өшіру</button>`;
   document.getElementById('uv-login').value=p.name||'';
   document.getElementById('uv-curpass').value='🔒 хэштелген (көрсетілмейді)';
