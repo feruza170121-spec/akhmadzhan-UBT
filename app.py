@@ -1142,6 +1142,7 @@ html,body{overflow-x:hidden}
 .mind-branches{display:grid;grid-template-columns:1fr;gap:12px;margin:0;position:relative;min-width:0}.mind-branches:before{content:"";position:absolute;left:-12px;top:calc(74px / 2);bottom:calc(74px / 2);width:2px;background:var(--mind-line)}.mind-branch{position:relative;min-width:0}.mind-connector{position:absolute;left:-24px;top:50%;height:2px;width:24px;background:var(--mind-line)}.mind-branch .mind-node{min-height:74px;padding-right:35px}.mind-subtitle{font-size:12px;color:#6b756c;margin-top:3px}.mind-toggle{position:absolute;right:12px;top:12px;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:var(--mind-soft);color:var(--mind);font-weight:800}.mind-details{display:none;width:100%;margin-top:10px;padding-top:8px;border-top:1px solid #e5ece5;text-align:left}.mind-node.expanded .mind-details{display:block;animation:mindFade .25s both}.mind-node.expanded .mind-toggle{transform:rotate(45deg)}.mind-detail{display:grid;grid-template-columns:minmax(65px,.7fr) 1.3fr;gap:8px;padding:5px 0;font-size:12px;line-height:1.45;border-bottom:1px dashed #e6ece6}.mind-detail b{color:var(--mind)}.mind-detail span{overflow-wrap:anywhere}.mind-img{max-width:100%;max-height:150px;object-fit:contain;border-radius:10px;margin-top:8px}
 .mind-add-info{margin-top:8px;font-size:12px;padding:5px 10px}.mind-info-form{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.mind-info-form input{flex:1 1 130px;min-width:0;padding:7px;border:1px solid #b7d9bd;border-radius:8px}.mind-info-form button{padding:6px 10px}
 .mind-branch-row{display:flex;align-items:flex-start;gap:9px}.mind-branch-row>.mind-node{flex:1;min-width:0}.mind-arrow{flex:none;border:1px solid var(--mind-line);border-radius:12px;background:var(--mind-soft);color:var(--mind);font-size:19px;font-weight:800;min-width:38px;height:40px;cursor:pointer}.mind-arrow[aria-expanded="true"]{background:var(--mind);color:#fff}.mind-children{display:none;margin:10px 0 8px 25px;padding-left:16px;border-left:2px solid var(--mind-line)}.mind-children.open{display:grid;gap:9px;animation:mindFade .3s both}.mind-child{position:relative;border:1px solid var(--mind-line);border-radius:13px;background:#fff;padding:11px 13px;min-width:0}.mind-child:before{content:"";position:absolute;left:-16px;top:22px;width:16px;height:2px;background:var(--mind-line)}.mind-child summary{cursor:pointer;font-weight:700;color:#254c30}.mind-child .mind-detail:first-of-type{margin-top:9px}
+.mind-child-head{display:flex;justify-content:space-between;gap:8px;align-items:center}.mind-child-title{border:0;background:none;color:#254c30;font-family:inherit;font-size:15px;font-weight:700;text-align:left;cursor:pointer;padding:5px}.mind-child-info{margin-top:6px}.mind-child>.mind-children{margin-left:14px}
 @keyframes mindFade{from{opacity:0}to{opacity:1}}@keyframes mindPop{from{opacity:0;transform:translateY(-8px) scale(.96)}to{opacity:1;transform:translateY(0) scale(1)}}@keyframes mindSlide{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
 @media(max-width:640px){.sch-bg.mindmap{padding:20px 10px}.mind-layout{grid-template-columns:1fr;gap:22px}.mind-layout:before{display:none}.mind-branches{grid-template-columns:1fr;gap:10px}.mind-branches:before{display:none}.mind-connector{display:none}.mind-branch .mind-node{margin-left:0;width:100%}.mind-main{max-width:100%}.mind-detail{grid-template-columns:1fr;gap:2px}}
 
@@ -2079,6 +2080,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <h3 style="margin-bottom:12px">🗺 Схемалар</h3>
       <p class="sub" id="admin-sch-info" style="margin-bottom:10px"></p>
       <button class="btn btn-p btn-sm" onclick="showSchemes('pend')">Күтіп тұрған схемаларды қарау</button>
+      <div id="admin-sch-list" class="list" style="margin-top:12px"></div>
     </div>
     <div class="card" style="padding:20px">
       <h3 style="margin-bottom:12px">📜 Қазақстан тарихы — тақырыптар схемасы</h3>
@@ -2608,7 +2610,7 @@ function showAdmin(){
       </div></div>`).join(''):'<p class="sub">Күтіп тұрған тест жоқ</p>';
 
   try{renderHist()}catch(e){}
-  try{const sc=allSchemes();document.getElementById('admin-sch-info').textContent='Барлығы: '+sc.length+' · күтіп тұрған: '+sc.filter(x=>x.status==='pending').length}catch(e){}
+  try{renderAdminSchemes()}catch(e){}
   renderAdminUsers();
   // password change block
   let passBox=document.getElementById('admin-pass-box');
@@ -3199,14 +3201,16 @@ function schRender(t){
     ${t.tabMain?`<div class="mind-top">${esc(t.tabMain)}</div>`:''}
     ${subs.length?`<div class="mind-tags">${subs.map((x,i)=>`<span style="--delay:${i*100}ms">${esc(x)}</span>`).join('')}</div>`:''}
     <div class="mind-layout"><div class="mind-center"><button class="mind-node mind-main" type="button" onclick="this.classList.toggle('expanded')"><span class="mind-dot">✦</span><strong>${esc(root.head||root.title||t.title||'Қазақстан тарихы')}</strong><small>Барлық тарихи кезеңдер</small><div class="mind-details">${details(root)}${schImgOk(root.img)?`<img class="mind-img" src="${root.img}" alt="">`:''}</div></button></div>
-    ${kids.length?`<div class="mind-branches">${kids.map((k,i)=>`<article class="mind-branch" style="--delay:${i*120}ms;--branch:${['#d8a94e','#7a9fc4','#76ad8a','#c98b83','#a694cf'][i%5]}"><div class="mind-connector"></div><div class="mind-branch-row"><div class="mind-node" role="button" tabindex="0" onclick="if(event.target.closest('.mind-info-form,.mind-add-info'))return;this.classList.toggle('expanded')" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();this.classList.toggle('expanded')}"><strong>${esc(k.tab||k.title||('Тақырып '+(i+1)))}</strong>${k.title&&k.tab?`<span class="mind-subtitle">${esc(k.title)}</span>`:''}<div class="mind-details">${details(k)}${schImgOk(k.img)?`<img class="mind-img" src="${k.img}" alt="">`:''}${schImgOk(k.img2)?`<img class="mind-img" src="${k.img2}" alt="">`:''}${editable?`<button class="btn btn-s btn-sm mind-add-info" type="button" onclick="schInfoForm(this)">＋ Мәлімет қосу</button><form class="mind-info-form" style="display:none" onsubmit="return schSaveInfo(event,${jsq(t.id)},${i})"><input name="label" maxlength="30" placeholder="Атауы (мыс: Дерек)"><input name="value" maxlength="120" placeholder="Мәлімет"><button class="btn btn-p btn-sm" type="submit">Сақтау</button></form>`:''}</div><span class="mind-toggle">＋</span></div>${Array.isArray(k.children)&&k.children.length?`<button class="mind-arrow" type="button" aria-label="${esc(k.tab||k.title||'Кезең')} ішкі тақырыптарын ашу" aria-expanded="false" onclick="schToggleChildren(this)">→</button>`:''}</div>${Array.isArray(k.children)&&k.children.length?`<div class="mind-children">${k.children.map(child=>`<details class="mind-child"><summary>${esc(child.tab||child.title||'Мәдениет')}</summary>${child.title&&child.tab?`<p class="mind-subtitle">${esc(child.title)}</p>`:''}${details(child)}${schImgOk(child.img)?`<img class="mind-img" src="${child.img}" alt="">`:''}</details>`).join('')}</div>`:''}</article>`).join('')}</div>`:''}</div>
+    ${kids.length?`<div class="mind-branches">${kids.map((k,i)=>`<article class="mind-branch" style="--delay:${i*120}ms;--branch:${['#d8a94e','#7a9fc4','#76ad8a','#c98b83','#a694cf'][i%5]}"><div class="mind-connector"></div><div class="mind-branch-row"><div class="mind-node" role="button" tabindex="0" onclick="if(event.target.closest('.mind-info-form,.mind-add-info'))return;this.classList.toggle('expanded')" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();this.classList.toggle('expanded')}"><strong>${esc(k.tab||k.title||('Тақырып '+(i+1)))}</strong>${k.title&&k.tab?`<span class="mind-subtitle">${esc(k.title)}</span>`:''}<div class="mind-details">${details(k)}${schImgOk(k.img)?`<img class="mind-img" src="${k.img}" alt="">`:''}${schImgOk(k.img2)?`<img class="mind-img" src="${k.img2}" alt="">`:''}${editable?`<button class="btn btn-s btn-sm mind-add-info" type="button" onclick="schInfoForm(this)">＋ Мәлімет қосу</button><form class="mind-info-form" style="display:none" onsubmit="return schSaveInfo(event,${jsq(t.id)},${i})"><input name="label" maxlength="30" placeholder="Атауы (мыс: Дерек)"><input name="value" maxlength="120" placeholder="Мәлімет"><button class="btn btn-p btn-sm" type="submit">Сақтау</button></form>`:''}</div><span class="mind-toggle">＋</span></div>${Array.isArray(k.children)&&k.children.length?`<button class="mind-arrow" type="button" aria-label="${esc(k.tab||k.title||'Кезең')} ішкі тақырыптарын ашу" aria-expanded="false" onclick="schToggleChildren(this)">→</button>`:''}</div>${Array.isArray(k.children)&&k.children.length?`<div class="mind-children">${k.children.map(child=>`<div class="mind-child"><div class="mind-child-head"><button type="button" class="mind-child-title" aria-expanded="false" onclick="schToggleInfo(this)">▸ ${esc(child.tab||child.title||'Мәдениет')}</button>${Array.isArray(child.children)&&child.children.length?`<button class="mind-arrow" type="button" aria-label="${esc(child.tab||child.title||'Кезең')} мәдениеттерін ашу" aria-expanded="false" onclick="schToggleChildren(this)">→</button>`:''}</div><div class="mind-child-info" hidden>${child.title&&child.tab?`<p class="mind-subtitle">${esc(child.title)}</p>`:''}${details(child)}${schImgOk(child.img)?`<img class="mind-img" src="${child.img}" alt="">`:''}</div>${Array.isArray(child.children)&&child.children.length?`<div class="mind-children">${child.children.map(grand=>`<details class="mind-child"><summary>${esc(grand.tab||grand.title||'Мәдениет')}</summary>${grand.title&&grand.tab?`<p class="mind-subtitle">${esc(grand.title)}</p>`:''}${details(grand)}</details>`).join('')}</div>`:''}</div>`).join('')}</div>`:''}</article>`).join('')}</div>`:''}</div>
   </div>`;
 }
 function schToggleChildren(btn){
-  const panel=btn.closest('.mind-branch').querySelector('.mind-children');
+  const box=btn.closest('.mind-child')||btn.closest('.mind-branch');
+  const panel=box&&box.querySelector(':scope > .mind-children');
   if(!panel)return;
   const opened=panel.classList.toggle('open');btn.setAttribute('aria-expanded',String(opened));btn.textContent=opened?'←':'→';
 }
+function schToggleInfo(btn){const panel=btn.closest('.mind-child').querySelector(':scope > .mind-child-info');panel.hidden=!panel.hidden;btn.setAttribute('aria-expanded',String(!panel.hidden))}
 function schInfoForm(btn){
   const form=btn.nextElementSibling;form.style.display='flex';btn.style.display='none';form.elements.label.focus();
 }
@@ -3242,6 +3246,8 @@ function renderSchemes(){
     const groups=new Map();
     HIST.forEach((h,i)=>{const stage=h[0]==='Қазақстан тарихының кезеңдері'?'Жалпы шолу':h[0];if(!groups.has(stage))groups.set(stage,[]);groups.get(stage).push({h,i})});
     const order=['Жалпы шолу','Ежелгі дәуір','Ортағасыр','Қазақ хандығы','Отарлау дәуірі','Кеңес кезеңі','Тәуелсіздік'];
+    const ancientOrder=['Ежелгі дәуірдің бөлінуі','Палеолит: Қаратау тұрақтары','Мезолит','Неолит','Энеолит: Ботай мәдениеті','Қола дәуірі','Андронов мәдениеті','Беғазы-Дәндібай мәдениеті','Ерте темір дәуірі','Сақтар','Сармат мәдениеті'];
+    if(groups.has('Ежелгі дәуір'))groups.get('Ежелгі дәуір').sort((a,b)=>{const ia=ancientOrder.indexOf(a.h[2]),ib=ancientOrder.indexOf(b.h[2]);return (ia<0?ancientOrder.length+a.i:ia)-(ib<0?ancientOrder.length+b.i:ib)});
     document.getElementById('sch-list').innerHTML='<h3 style="margin:12px 0">📁 Қазақстан тарихы · кезеңдер бойынша</h3>'+[...groups].sort((a,b)=>order.indexOf(a[0])-order.indexOf(b[0])).map(([stage,items])=>`<details class="card" ${stage==='Жалпы шолу'?'open':''} style="margin:10px 0"><summary style="cursor:pointer;font-weight:700">📁 ${esc(stage)} · ${items.length} тақырып</summary><div style="margin-top:12px">${items.map(({h,i})=>`<div class="item"><div class="info"><h4>${esc(h[2])}</h4><p>${h[5].length} жеке тармақ</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="histPreview(${i})">👁 Қарау</button>${user?`<button class="btn btn-s btn-sm" onclick="histCopyMine(${i})">📁 Өзіме қосу</button>`:''}</div></div>`).join('')}</div></details>`).join('');
     return;
   }
@@ -3279,6 +3285,12 @@ function schMut(id,fn){
 }
 function schApprove(id){if(!user||!user.isAdmin)return;schMut(id,t=>{t.isPublic=true;t.status='approved'})}
 function schReject(id){if(!user||!user.isAdmin)return;schMut(id,t=>{t.isPublic=false;t.status='rejected'})}
+function renderAdminSchemes(){
+  if(!user||!user.isAdmin)return;
+  const sc=allSchemes(),pending=sc.filter(t=>t.status==='pending');
+  document.getElementById('admin-sch-info').textContent='Барлығы: '+sc.length+' · күтіп тұрған: '+pending.length;
+  document.getElementById('admin-sch-list').innerHTML=pending.length?pending.map(t=>`<div class="item"><div class="info"><h4>${esc(t.title||'Атаусыз')}</h4><p>${esc(t.authorName||'')} · ${esc(t.subjectName||'')}</p></div><div class="acts"><button class="btn btn-s btn-sm" onclick="schOpen(${jsq(t.id)})">👁 Қарау</button><button class="btn btn-ok btn-sm" onclick="schApprove(${jsq(t.id)});renderAdminSchemes()">✓ Рұқсат</button><button class="btn btn-d btn-sm" onclick="schReject(${jsq(t.id)});renderAdminSchemes()">✕ Бас тарту</button><button class="btn btn-d btn-sm" onclick="schDel(${jsq(t.id)});renderAdminSchemes()">🗑 Өшіру</button></div></div>`).join(''):'<p class="sub">Күтіп тұрған схема жоқ</p>';
+}
 function schRequest(id){schMut(id,t=>{t.status='pending';t.isPublic=false});alert('Админге жіберілді. Мақұлдаған соң жарияланады.')}
 function schDel(id){
   const t=allSchemes().find(x=>x.id===id);
@@ -3323,7 +3335,7 @@ function schCardForm(path,c,isKid,idx){
     ${img('img','🖼 Сурет')}${img('img2','🗺 Қосымша сурет (карта, сызба — міндетті емес)')}
     <div class="fg"><label>Мәліметтер (белгі: мән)</label>${(c.fields||[]).map((f,i)=>`<div class="sch-fr"><input placeholder="Дәуір" data-p="${path}.fields.${i}.k" value="${esc(f.k||'')}" oninput="schIn(this)" maxlength="30"><input placeholder="Б.з.д. VIII – VI ғғ." data-p="${path}.fields.${i}.v" value="${esc(f.v||'')}" oninput="schIn(this)" maxlength="120"><button class="btn btn-s btn-sm" onclick="schDelField('${path}',${i})">✕</button></div>`).join('')}
       ${(c.fields||[]).length<SCH_MAX_FIELDS?`<button class="btn btn-s btn-sm" onclick="schAddField('${path}')">➕ Жол қосу</button>`:''}</div>
-    ${isKid?`<div class="card" style="margin-top:10px"><b>→ Ішкі тақырыптар мен мәдениеттер</b>${(c.children||[]).map((child,j)=>`<div class="card" style="margin-top:8px"><div class="row" style="justify-content:space-between"><b>${j+1}. ${esc(child.tab||'Ішкі тақырып')}</b><button class="btn btn-d btn-sm" onclick="schDelChild(${idx},${j})">✕</button></div><div class="fg"><label>Атауы</label><input data-p="${path}.children.${j}.tab" value="${esc(child.tab||'')}" oninput="schIn(this)" maxlength="40"></div><div class="fg"><label>Түсіндірме</label><input data-p="${path}.children.${j}.title" value="${esc(child.title||'')}" oninput="schIn(this)" maxlength="80"></div><div class="fg"><label>Мәліметтер</label>${(child.fields||[]).map((f,n)=>`<div class="sch-fr"><input data-p="${path}.children.${j}.fields.${n}.k" value="${esc(f.k||'')}" oninput="schIn(this)" maxlength="30" placeholder="Атауы"><input data-p="${path}.children.${j}.fields.${n}.v" value="${esc(f.v||'')}" oninput="schIn(this)" maxlength="120" placeholder="Мәлімет"><button class="btn btn-s btn-sm" onclick="schDelField('${path}.children.${j}',${n})">✕</button></div>`).join('')}${(child.fields||[]).length<SCH_MAX_FIELDS?`<button class="btn btn-s btn-sm" onclick="schAddField('${path}.children.${j}')">＋ Мәлімет</button>`:''}</div></div>`).join('')}${(c.children||[]).length<20?`<button class="btn btn-s btn-sm" onclick="schAddChild(${idx})">→ Ішкі тақырып қосу</button>`:''}</div>`:''}
+    ${isKid?`<div class="card" style="margin-top:10px"><b>→ Ішкі тақырыптар мен мәдениеттер</b>${(c.children||[]).map((child,j)=>`<div class="card" style="margin-top:8px"><div class="row" style="justify-content:space-between"><b>${j+1}. ${esc(child.tab||'Ішкі тақырып')}</b><button class="btn btn-d btn-sm" onclick="schDelChild(${idx},${j})">✕</button></div><div class="fg"><label>Атауы</label><input data-p="${path}.children.${j}.tab" value="${esc(child.tab||'')}" oninput="schIn(this)" maxlength="40"></div><div class="fg"><label>Түсіндірме</label><input data-p="${path}.children.${j}.title" value="${esc(child.title||'')}" oninput="schIn(this)" maxlength="80"></div><div class="fg"><label>Мәліметтер</label>${(child.fields||[]).map((f,n)=>`<div class="sch-fr"><input data-p="${path}.children.${j}.fields.${n}.k" value="${esc(f.k||'')}" oninput="schIn(this)" maxlength="30" placeholder="Атауы"><input data-p="${path}.children.${j}.fields.${n}.v" value="${esc(f.v||'')}" oninput="schIn(this)" maxlength="120" placeholder="Мәлімет"><button class="btn btn-s btn-sm" onclick="schDelField('${path}.children.${j}',${n})">✕</button></div>`).join('')}${(child.fields||[]).length<SCH_MAX_FIELDS?`<button class="btn btn-s btn-sm" onclick="schAddField('${path}.children.${j}')">＋ Мәлімет</button>`:''}</div><div class="fg"><b>→ Осы тақырыптың мәдениеттері</b>${(child.children||[]).map((grand,n)=>`<div class="card" style="margin-top:7px"><input data-p="${path}.children.${j}.children.${n}.tab" value="${esc(grand.tab||'')}" oninput="schIn(this)" maxlength="40" placeholder="Мәдениет атауы"><input data-p="${path}.children.${j}.children.${n}.title" value="${esc(grand.title||'')}" oninput="schIn(this)" maxlength="80" placeholder="Түсіндірме">${(grand.fields||[]).map((f,q)=>`<div class="sch-fr"><input data-p="${path}.children.${j}.children.${n}.fields.${q}.k" value="${esc(f.k||'')}" oninput="schIn(this)" maxlength="30" placeholder="Атауы"><input data-p="${path}.children.${j}.children.${n}.fields.${q}.v" value="${esc(f.v||'')}" oninput="schIn(this)" maxlength="120" placeholder="Мәлімет"><button class="btn btn-s btn-sm" onclick="schDelField('${path}.children.${j}.children.${n}',${q})">✕</button></div>`).join('')}${(grand.fields||[]).length<SCH_MAX_FIELDS?`<button class="btn btn-s btn-sm" onclick="schAddField('${path}.children.${j}.children.${n}')">＋ Мәлімет</button>`:''}<button class="btn btn-d btn-sm" onclick="schDelGrand(${idx},${j},${n})">✕ Мәдениетті өшіру</button></div>`).join('')}${(child.children||[]).length<20?`<button class="btn btn-s btn-sm" onclick="schAddGrand(${idx},${j})">→ Мәдениет қосу</button>`:''}</div></div>`).join('')}${(c.children||[]).length<20?`<button class="btn btn-s btn-sm" onclick="schAddChild(${idx})">→ Ішкі тақырып қосу</button>`:''}</div>`:''}
   </div>`;
 }
 function schRenderForm(){
@@ -3342,40 +3354,18 @@ function schRenderForm(){
   ${d.kids.length<SCH_MAX_KIDS?'<button class="btn btn-s" onclick="schAddKid()">➕ Тармақ карточка қосу</button>':''}`;
 }
 function schHistoryPreset(){
-  if(schDraft.title&&schDraft.title!=='Қазақстан тарихы'&&!confirm('Қазіргі схема мазмұны дайын тарих үлгісімен ауыстырылады. Жалғастыру керек пе?'))return;
-  const card=(tab,title,fields)=>({tab,title,img:'',img2:'',fields:fields.map(([k,v])=>({k,v}))});
-  schDraft.subject='history';schDraft.title='Қазақстан тарихы';schDraft.tabMain='Ежелгі дәуірден бүгінге дейін';schDraft.subs=['Хронология','Кезеңдер','Мәдениеттер','Ескерткіштер'];
-  schDraft.root={...schBlankCard(),head:'ҚАЗАҚСТАН ТАРИХЫ',title:'Тарихи кезеңдер мен мәдениеттер',fields:[
-    {k:'Құрылымы',v:'Солдан оңға қарай оқы. Әр тармақты басып, мәліметін аш.'},
-    {k:'Ескерту',v:'Даталар кей кезеңдерде шамамен беріледі; археологиялық мерзімдер ғылыми әдебиетте әртүрлі көрсетілуі мүмкін.'}
-  ]};
-  schDraft.kids=[
-    card('Тас дәуірі','Палеолит', [['Хронология','шамамен б.з.д. 2,6 млн – б.з.д. 12 мыңжылдық'],['Кезеңдері','Ерте, орта, кейінгі палеолит'],['Ерекшелігі','Тас құралдар, аңшылық пен терімшілік'],['Ескерткіштері','Бөріқазған, Тәңірқазған, Шабақты']]),
-    card('Тас дәуірі','Мезолит', [['Хронология','б.з.д. 12–5 мыңжылдық шамасы'],['Ерекшелігі','Микролиттер, садақ пен жебенің кең таралуы'],['Шаруашылығы','Аңшылық, балық аулау, терімшілік']]),
-    card('Тас дәуірі','Неолит', [['Хронология','б.з.д. 5–3 мыңжылдық шамасы'],['Ерекшелігі','Тас өңдеу жетілді, қыш ыдыс тарады'],['Атауы','Неолиттік төңкеріс — өндіруші шаруашылыққа көшу үдерісі']]),
-    card('Энеолит','Ботай мәдениеті', [['Хронология','б.з.д. IV мыңжылдықтың соңы – III мыңжылдықтың басы шамасы'],['Орналасуы','Солтүстік Қазақстан, Ботай қонысы'],['Ерекшелігі','Жылқы сүйектері өте көп табылған; жылқыны ерте қолға үйрету мәселесін зерттеудегі маңызды ескерткіш'],['Шаруашылығы','Жылқыға негізделген шаруашылық белгілері'],['Ескерткіші','Ботай қонысы']]),
-    card('Қола дәуірі','Афанасьев мәдениеті', [['Хронология','б.з.д. IV–III мыңжылдықтар шамасы'],['Таралған аймағы','Алтай мен Саян өңірлері; Қазақстанның шығыс аймақтарымен тарихи-мәдени байланыстарын қарастыруда аталады'],['Ерекшелігі','Ерте қола дәуірінің мәдениеті; мал шаруашылығы және металл өңдеу белгілері'],['Ескерту','Қазақстан аумағындағы негізгі қола мәдениеттері ретінде Андронов пен Беғазы-Дәндібайды бөлек қарастыр']]),
-    card('Қола дәуірі','Андронов мәдениеті', [['Хронология','б.з.д. XVIII–VIII ғасырлар шамасы'],['Аймағы','Қазақстанның көп бөлігі және Еуразия даласы'],['Ерекшелігі','Қола металлургиясы, мал шаруашылығы, егіншілік'],['Тұрғын үйі','Жартылай жертөле және жер үсті үйлері'],['Жерлеу дәстүрі','Қорымдар, тас қоршаулар']]),
-    card('Қола дәуірі','Беғазы-Дәндібай мәдениеті', [['Хронология','б.з.д. XII–VIII ғасырлар шамасы'],['Аймағы','Орталық Қазақстан'],['Ерекшелігі','Ірі тас кесенелер, күрделі жерлеу құрылыстары'],['Шаруашылығы','Мал шаруашылығы, металл өңдеу'],['Ескерткіштері','Беғазы, Дәндібай']]),
-    card('Ерте темір дәуірі','Сақ мәдениеті', [['Хронология','б.з.д. VIII–III ғасырлар шамасы'],['Аймағы','Қазақстанның әр өңірі'],['Ерекшелігі','«Аң стилі», атты әскер, қорғандар'],['Ескерткіштері','Есік, Бесшатыр, Шілікті, Берел'],['Маңызды олжа','Есік қорғанындағы «Алтын адам»']]),
-    card('Ерте темір дәуірі','Сарматтар', [['Хронология','б.з.д. VIII ғ. – б.з. IV ғ. шамасы'],['Аймағы','Батыс Қазақстан, Жайық-Каспий өңірі'],['Ерекшелігі','Көшпелі мал шаруашылығы, қару-жарақ пен әшекейлер'],['Ескерткіштері','Аралтөбе және Батыс Қазақстан қорғандары']]),
-    card('Ерте темір дәуірі','Үйсіндер', [['Хронология','б.з.д. II ғ. – б.з. V ғ. шамасы'],['Аймағы','Жетісу'],['Астанасы','Чигу (Қызыл Аңғар) деп деректерде беріледі'],['Шаруашылығы','Мал шаруашылығы, егіншілік'],['Ескерткіштері','Қарғалы өңірінің археологиялық олжалары']]),
-    card('Ерте темір дәуірі','Қаңлылар', [['Хронология','б.з.д. II ғ. – б.з. V ғ. шамасы'],['Аймағы','Сырдарияның орта ағысы'],['Шаруашылығы','Суармалы егіншілік, мал шаруашылығы, қолөнер'],['Ескерткіштері','Қауыншы, Отырар-Қаратау, Жетіасар мәдениеттері']]),
-    card('Ерте темір дәуірі','Ғұндар', [['Хронология','б.з.д. III ғ. бастап; батысқа қоныс аударуы б.з. IV–V ғғ. күшейді'],['Ерекшелігі','Көшпелі әскери ұйым, атты әскер'],['Тарихи маңызы','Еуразиядағы халықтардың ұлы қоныс аудару үдерісіне ықпал етті']]),
-    card('Орта ғасырлар','Түрік қағанаттары', [['Хронология','VI–VIII ғасырлар'],['Мемлекеттер','Түрік қағанаты, Батыс Түрік, Түргеш, Қарлұқ'],['Ерекшелігі','Түркі тілдес мемлекеттер, руникалық жазба'],['Ескерткіштері','Орхон-Енисей жазбалары, балбал тастар']]),
-    card('Орта ғасырлар','Қарахан мемлекеті', [['Хронология','942–1212 жылдар'],['Аймағы','Жетісу мен Оңтүстік Қазақстанды қамтыған'],['Ерекшелігі','Исламның мемлекеттік деңгейде орнығуы'],['Мәдениет','Қалалар, сәулет, жазба әдебиет'],['Ескерткіші','Айша бибі, Бабаджа қатын кесенелері (ортағасырлық кезең)']]),
-    card('Орта ғасырлар','Қыпшақтар және Алтын Орда', [['Хронология','Қыпшақ бірлестігі: XI–XIII ғғ.; Алтын Орда: XIII–XV ғғ.'],['Аймағы','Дешті Қыпшақ және Еуразия даласы'],['Ерекшелігі','Көшпелі және қалалық мәдениеттердің байланысы'],['Қалалар','Сығанақ, Сарайшық, Отырар аймағының қалалары']]),
-    card('Қазақ хандығы','Қазақ хандығының құрылуы', [['Хронология','1465–1466 жылдар — дәстүрлі қабылданған мерзім'],['Негізін қалаушылар','Керей хан мен Жәнібек хан'],['Маңызы','Қазақ халқының саяси бірігуінің маңызды кезеңі'],['Кейінгі хандар','Қасым хан, Хақназар хан, Тәуекел хан, Есім хан, Тәуке хан, Абылай хан']]),
-    card('Жаңа заман','Қазақстан XVIII–XX ғасыр басы', [['Хронология','XVIII ғасыр – 1917 жыл'],['Негізгі үдерістер','Ресей империясының отарлау саясаты, ұлт-азаттық қозғалыстар'],['Оқиғалар','Сырым Датұлы, Исатай-Махамбет, Кенесары Қасымұлы көтерілістері'],['XX ғасыр басы','Алаш қозғалысы, 1916 жылғы ұлт-азаттық көтеріліс']]),
-    card('Кеңестік кезең','Қазақстан Кеңес дәуірінде', [['Хронология','1917–1991 жылдар'],['Оқиғалар','Ұжымдастыру, ашаршылық, саяси қуғын-сүргін, индустрияландыру'],['Маңызды кезең','1941–1945 жж. Екінші дүниежүзілік соғыс'],['Тәуелсіздікке жол','1986 жылғы Желтоқсан оқиғасы']]),
-    card('Тәуелсіздік','Қазіргі Қазақстан', [['Хронология','1991 жылғы 16 желтоқсаннан бүгінге дейін'],['Тәуелсіздік','1991 жылғы 16 желтоқсан — тәуелсіздік туралы заң қабылданды'],['Мемлекеттік нышандар','Ту, Елтаңба, Әнұран'],['Даму кезеңдері','Конституция, ұлттық валюта, елорданың ауысуы және жаңғыру үдерістері']])
-  ];
-  schDraft.theme='green';schRenderForm();
+  if(schDraft.title&&!confirm('Қазіргі схема мазмұны тарихтың кезеңдеріне арналған шолу схемасымен ауыстырылады. Жалғастыру керек пе?'))return;
+  const i=HIST.findIndex(h=>h[0]==='Қазақстан тарихының кезеңдері');
+  schDraft={...schDraft,...histBuild(i),id:schDraft.id||'',request:schDraft.request||false};
+  schDraft.title='Қазақстан тарихы: кезеңдерге шолу';
+  schRenderForm();
 }
 function schAddKid(){schDraft.kids.push({tab:'',...schBlankCard()});schRenderForm()}
 function schDelKid(i){schDraft.kids.splice(i,1);schRenderForm()}
 function schAddChild(i){const k=schDraft.kids[i];if(!k)return;k.children=Array.isArray(k.children)?k.children:[];if(k.children.length<20){k.children.push({tab:'',...schBlankCard()});schRenderForm()}}
 function schDelChild(i,j){const k=schDraft.kids[i];if(k&&Array.isArray(k.children)){k.children.splice(j,1);schRenderForm()}}
+function schAddGrand(i,j){const c=schDraft.kids[i]?.children?.[j];if(!c)return;c.children=Array.isArray(c.children)?c.children:[];if(c.children.length<20){c.children.push({tab:'',...schBlankCard()});schRenderForm()}}
+function schDelGrand(i,j,n){const c=schDraft.kids[i]?.children?.[j];if(c&&Array.isArray(c.children)){c.children.splice(n,1);schRenderForm()}}
 function schAddField(path){const c=schGet(path);if(c.fields.length<SCH_MAX_FIELDS){c.fields.push({k:'',v:''});schRenderForm()}}
 function schDelField(path,i){schGet(path).fields.splice(i,1);schRenderForm()}
 function schClrImg(path){const parts=path.split('.'),last=parts.pop();parts.reduce((x,k)=>x[k],schDraft)[last]='';schRenderForm()}
@@ -3412,7 +3402,7 @@ function schClean(d){
     fields:(c.fields||[]).map(f=>({k:String(f.k||'').trim().slice(0,30),v:String(f.v||'').trim().slice(0,120)})).filter(f=>f.k||f.v).slice(0,SCH_MAX_FIELDS)});
   return {subject:d.subject,title:String(d.title||'').trim().slice(0,100),tabMain:String(d.tabMain||'').trim().slice(0,40),
     subs:(d.subs||[]).map(x=>String(x).trim().slice(0,40)).filter(Boolean).slice(0,4),theme:SCH_THEMES[d.theme]?d.theme:'blue',
-    root:{...cc(d.root),head:String((d.root||{}).head||'').trim().slice(0,60)},kids:d.kids.map(k=>({tab:String(k.tab||'').trim().slice(0,40),...cc(k),children:(Array.isArray(k.children)?k.children:[]).slice(0,20).map(c=>({tab:String(c.tab||'').trim().slice(0,40),...cc(c)}))})).slice(0,SCH_MAX_KIDS)};
+    root:{...cc(d.root),head:String((d.root||{}).head||'').trim().slice(0,60)},kids:d.kids.map(k=>({tab:String(k.tab||'').trim().slice(0,40),...cc(k),children:(Array.isArray(k.children)?k.children:[]).slice(0,20).map(c=>({tab:String(c.tab||'').trim().slice(0,40),...cc(c),children:(Array.isArray(c.children)?c.children:[]).slice(0,20).map(g=>({tab:String(g.tab||'').trim().slice(0,40),...cc(g)}))}))})).slice(0,SCH_MAX_KIDS)};
 }
 function schPreview(){
   const c=schClean(schDraft);
@@ -3452,10 +3442,9 @@ function schSave(){
 // ================= Қазақстан тарихы: тақырыптар схемасы (тек админ панелі) =================
 // [дәуір, түс, тақырып, жаңа?, [негізгі карточка жолдары], [[белгі, атауы, [жолдар]], ...]]
 const HIST=[
-['Ежелгі дәуір','blue','Тас дәуірі мен энеолит',0,
- [['Палеолит','Б.з.д. 2,5 млн – 12 мың жыл бұрын; Қаратау тұрақтары'],['Мезолит','Шамамен б.з.д. 12–6 мың жыл; садақ пен микролит құралдар'],['Неолит','Б.з.д. 6–3 мың жыл; қыштан ыдыс жасау, егіншіліктің бастамасы'],['Энеолит','Б.з.д. IV–III мың жыл; мыс пен тас қатар қолданылды']],
- [['Қаратау','Палеолит тұрақтары',[['Мысал','Бөріқазған, Тәңірқазған'],['Аймағы','Оңтүстік Қазақстан']]],
-  ['Ботай','Ботай мәдениеті',[['Мекені','Солтүстік Қазақстан'],['Мерзімі','Б.з.д. IV–III мың жыл'],['Ерекшелігі','Жылқыны алғаш қолға үйрету']]]]],
+['Ежелгі дәуір','blue','Палеолит: Қаратау тұрақтары',0,
+ [['Дәуір','Палеолит — ежелгі тас дәуірі'],['Кезеңдері','Ерте, орта және кейінгі палеолит'],['Аймағы','Қаратау өңірі, Оңтүстік Қазақстан']],
+ [['Қаратау','Палеолит тұрақтары',[['Мысалдар','Бөріқазған, Тәңірқазған'],['Аймағы','Оңтүстік Қазақстан']]]]],
 ['Ежелгі дәуір','blue','Қола дәуірі',0,
  [['Мерзімі','Б.з.д. III мың жылдықтың соңы – I мың жылдықтың басы'],['Негізгі металл','Қола (мыс пен қалайы қорытпасы)'],['Шаруашылық','Мал шаруашылығы мен егіншілік, металл өндіру'],['Мәдениеттер','Андронов, Бегазы-Дәндібай']],
  [['Андронов','Андронов мәдениеті',[['Мерзімі','Б.з.д. II мың жылдық'],['Нұсқалары','Федоров, Алакөл'],['Мекені','Қазақстан даласы, Оңтүстік Сібір']]],
@@ -3659,22 +3648,34 @@ const HIST=[
   ['Кеңестік кезең','1917/1920–1991 жылдар',[['Саяси кезеңдер','Алаш қозғалысы; Қазақ АКСР (1920); Қазақ КСР (1936); қайта құру кезеңі'],['Қасіретті оқиғалар','Ұжымдастыру мен ашаршылық (1931–1933); саяси қуғын-сүргін (әсіресе 1937–1938)'],['Соғыс және даму','Екінші дүниежүзілік соғыс (1941–1945); тың игеру (1954 жылдан); индустрияландыру'],['Мәдениет','Мұхтар Әуезов, Сәкен Сейфуллин, Қаныш Сәтбаев; әдебиет, ғылым, театр мен кино дамуы'],['Тәуелсіздікке жол','1986 ж. Желтоқсан оқиғасы; 1990 ж. 25 қазан — Мемлекеттік егемендік туралы декларация']]],
   ['Тәуелсіз Қазақстан','1991 жылдан бүгінге дейін',[['Тәуелсіздік','1991 ж. 16 желтоқсан — тәуелсіздік жарияланды'],['Мемлекеттік нышандар','1992 ж. 4 маусым — Ту мен Елтаңба қабылданды; Әнұранның қазіргі нұсқасы 2006 ж.'],['Конституциялар','1993 ж. 28 қаңтар; 1995 ж. 30 тамыз — Конституция қабылданды'],['Астана','1997 ж. астана Ақмолаға көшті; 1998 ж. Астана аталды; 2019 ж. Нұр-Сұлтан; 2022 ж. Астана атауы қайтарылды'],['Қоғам және мәдениет','Тәуелсіз мемлекеттің институттары, ұлттық мәдениетті жаңғырту, халықаралық байланыстар']]]]],
 ['Ежелгі дәуір','blue','Ежелгі дәуірдің бөлінуі',1,
- [['Бөлінуі','Тас дәуірі → қола дәуірі → ерте темір дәуірі'],['Тас дәуірі','Палеолит, мезолит, неолит; кейін мыс-тас дәуірі — энеолит'],['Маңыздысы','Мәдениеттер бір-бірінің ұрпағы деп берілмейді; әрқайсысы өз дәуірінің жеке тармағы']],
- [['Палеолит','Ежелгі тас дәуірі',[['Кезеңдері','Ерте, орта, кейінгі палеолит'],['Тұрақтары','Бөріқазған мен Тәңірқазған — Қаратау өңірі; Батпақ, Шүлбі']]],
+ [['Бөлінуі','Тас дәуірі → қола дәуірі → ерте темір дәуірі'],['Тас дәуірі','Палеолит, мезолит, неолит; кейін мыс-тас дәуірі — энеолит'],['Оқу реті','Әр кезеңнің деректері жеке тақырыптық схемада берілген']],
+ [['Палеолит','Ежелгі тас дәуірі',[['Кезеңдері','Ерте, орта, кейінгі палеолит']]],
   ['Мезолит','Орта тас дәуірі',[['Ерекшелігі','Микролит, садақ пен жебе; аңшылық пен балық аулау']]],
   ['Неолит','Жаңа тас дәуірі',[['Ерекшелігі','Қыш ыдыс, тас өңдеу және шаруашылықтағы өзгерістер']]],
-  ['Энеолит','Мыс-тас дәуірі',[['Мәдениет','Ботай — Солтүстік Қазақстан, жылқы шаруашылығының ерте белгілері']]],
-  ['Қола дәуірі','Металлургия мен мал шаруашылығы',[['Мәдениеттер','Андронов; кейінгі қола — Беғазы-Дәндібай']]],
-  ['Ерте темір дәуірі','Көшпелі мәдениеттер',[['Тайпалар','Сақ, сармат, үйсін, қаңлы, ғұн'],['Ескерткіштер','Есік, Бесшатыр, Шілікті, Берел']]]]],
-['Ежелгі дәуір','blue','Археологиялық мәдениеттер: дәуірлер бойынша',1,
- [['Оқу тәртібі','Әр дәуір мен мәдениет негізгі тақырыптан жеке тармақ болып шығады'],['Туыстық','Уақыт бойынша қатар не кейін орналасуы тікелей ұрпақтық байланыс дегенді білдірмейді']],
- [['Палеолит','Қаратау тұрақтары',[['Мысалдар','Бөріқазған, Тәңірқазған'],['Аймақ','Оңтүстік Қазақстан']]],
-  ['Энеолит','Ботай мәдениеті',[['Аймақ','Солтүстік Қазақстан'],['Ерекшелік','Жылқы сүйектері мол табылған']]],
-  ['Қола дәуірі','Андронов мәдени қауымдастығы',[['Аймақ','Қазақстан және көршілес далалық аймақтар'],['Белгі','Металлургия, мал шаруашылығы; Федоров пен Алакөл топтары']]],
-  ['Кейінгі қола','Беғазы-Дәндібай мәдениеті',[['Аймақ','Орталық Қазақстан'],['Белгі','Ірі тас кесенелер мен жерлеу ескерткіштері']]],
-  ['Ерте темір','Сақ мәдениеті',[['Белгі','Аң стилі, қорғандар'],['Ескерткіштер','Есік, Бесшатыр, Шілікті, Берел']]],
-  ['Ерте темір','Сармат ескерткіштері',[['Аймақ','Батыс Қазақстан'],['Ескерткіш','Аралтөбе']]],
-  ['Қаңлы кезеңі','Сырдария өңірінің мәдениеттері',[['Топтары','Қауыншы, Отырар-Қаратау, Жетіасар']]]]]
+  ['Энеолит','Мыс-тас дәуірі',[['Ерекшелігі','Тас пен мыс құралдары қатар қолданылды']]],
+  ['Қола дәуірі','Металлургия мен мал шаруашылығы',[['Ерекшелігі','Қола бұйымдар жасалды']]],
+  ['Ерте темір дәуірі','Көшпелі мәдениеттер',[['Ерекшелігі','Темірді өңдеу кең тарады']]]]],
+['Ежелгі дәуір','blue','Энеолит: Ботай мәдениеті',1,
+ [['Дәуір','Энеолит — мыс-тас дәуірі'],['Мерзімі','Б.з.д. IV–III мыңжылдықтар шамасы'],['Ерекшелігі','Мыс пен тас құралдары қатар қолданылды']],
+ [['Ботай мәдениеті','Ботай қонысы',[['Аймағы','Солтүстік Қазақстан'],['Мерзімі','Б.з.д. IV мыңжылдықтың соңы – III мыңжылдықтың басы шамасы'],['Дерек','Жылқы сүйектері мол табылған; жылқы шаруашылығының ерте белгілері']]]]],
+['Ежелгі дәуір','blue','Мезолит',1,
+ [['Дәуір','Орта тас дәуірі'],['Мерзімі','Шамамен б.з.д. XII–VI мыңжылдықтар'],['Ерекшелігі','Садақ пен жебе, ұсақ тас құралдар — микролиттер']],
+ [['Құралдар','Микролиттер мен садақ',[['Қолданылуы','Аңшылық құралдары жетілді']]],['Тіршілік','Аңшылық және балық аулау',[['Кәсіптер','Аңшылық, балық аулау, терімшілік']]]]],
+['Ежелгі дәуір','blue','Неолит',1,
+ [['Дәуір','Жаңа тас дәуірі'],['Ерекшелігі','Тасты өңдеу әдістері жетілді, қыш ыдыстар кең тарады']],
+ [['Тас өңдеу','Тегістеу, бұрғылау',[['Маңызы','Тас құралдарды жасау тәсілдері дамыды']]],['Қыш ыдыс','Керамика',[['Маңызы','Күнделікті тұрмысқа арналған ыдыстар жасалды']]]]],
+['Ежелгі дәуір','blue','Ерте темір дәуірі',1,
+ [['Мерзімі','Шамамен б.з.д. VIII ғ. – б.з. V ғ.'],['Ерекшелігі','Көшпелі мал шаруашылығы және темірді игеру']],
+ [['Қорғандар','Жерлеу ескерткіштері',[['Дерек','Археологтар жерлеу ғұрпын қорғандардан зерттейді']]],['Қару-жарақ','Темір бұйымдар',[['Дерек','Темір құралдар мен қару жасау дамыды']]]]],
+['Ежелгі дәуір','blue','Андронов мәдениеті',1,
+ [['Дәуір','Қола дәуірі'],['Аймағы','Қазақстан және көршілес далалық өңірлер'],['Белгісі','Қола металлургиясы, мал шаруашылығы және егіншілік']],
+ [['Федоров','Андронов қауымдастығындағы топ',[['Дерек','Жерлеу ескерткіштерімен белгілі']]],['Алакөл','Андронов қауымдастығындағы топ',[['Дерек','Қоныстар мен қорымдар зерттелген']]]]],
+['Ежелгі дәуір','blue','Беғазы-Дәндібай мәдениеті',1,
+ [['Дәуір','Кейінгі қола дәуірі'],['Аймағы','Орталық Қазақстан'],['Ескерткіштері','Беғазы, Дәндібай']],
+ [['Кесенелер','Ірі тас құрылыстар',[['Белгісі','Күрделі жерлеу орындары']]],['Шаруашылық','Мал шаруашылығы және металл өңдеу',[['Аймағы','Орталық Қазақстан']]]]],
+['Ежелгі дәуір','blue','Сармат мәдениеті',1,
+ [['Дәуір','Ерте темір дәуірі'],['Аймағы','Батыс Қазақстан, Жайық-Каспий өңірі']],
+ [['Аралтөбе','Сармат ескерткіші',[['Аймағы','Батыс Қазақстан']]],['Көшпелі тіршілік','Мал шаруашылығы',[['Белгісі','Жылқы, қару-жарақ және әшекей бұйымдар']]]]]
 ];
 function histId(i){return 'hist_'+String(i+1).padStart(2,'0')}
 function histCopyMine(i,openAfter){
@@ -3687,26 +3688,11 @@ function histCopyMine(i,openAfter){
   if(openAfter){const preview=document.getElementById('ovl-prev');if(preview)preview.remove();schOpen(id)}
 }
 function histBuild(i){
-  const h=HIST[i],card=(title,f)=>({title:title,img:'',img2:'',fields:f.map(x=>({k:x[0],v:x[1]}))});
-  const kids=h[5].map(k=>({tab:k[0],...card(k[1],k[2])}));
-  if(h[0]==='Қазақстан тарихының кезеңдері'){
-    const prehistory=HIST.find(entry=>entry[2]==='Ежелгі дәуірдің бөлінуі');
-    const cultures=HIST.find(entry=>entry[2]==='Археологиялық мәдениеттер: дәуірлер бойынша');
-    const ancient={
-      'Тас дәуірі':[...(prehistory?prehistory[5].slice(0,4):[]),...(cultures?cultures[5].slice(0,2):[])],
-      'Қола дәуірі':cultures?cultures[5].slice(2,4):[],
-      'Ерте темір дәуірі':cultures?cultures[5].slice(4):[]
-    };
-    const group={'Орта ғасырлар':['Ортағасыр','Қазақ хандығы'],'Жаңа заман':['Отарлау дәуірі'],
-      'Кеңестік кезең':['Кеңес кезеңі'],'Тәуелсіз Қазақстан':['Тәуелсіздік']};
-    kids.forEach(k=>{
-      const stages=group[k.tab]||[];
-      k.children=ancient[k.tab]?ancient[k.tab].map(entry=>({tab:entry[0],...card(entry[1],entry[2])})):
-        HIST.filter((entry,index)=>index!==i&&stages.includes(entry[0])).map(entry=>({tab:entry[2],...card(entry[2],entry[4])}));
-    });
-  }
+  const h=HIST[i],card=(title,f)=>({title,img:'',img2:'',fields:f.map(x=>({k:x[0],v:x[1]}))});
+  const overview=h[0]==='Қазақстан тарихының кезеңдері';
+  const kids=h[5].map(k=>({tab:k[0],...card(k[1],overview?[['Бөлім','Толық мәліметі бөлек тақырыптық схемада көрсетіледі']]:k[2])}));
   return {subject:'history',subjectName:'Қазақстан тарихы',title:(i+1)+'. '+h[2],tabMain:h[0],subs:['Қазақстан тарихы'],theme:h[1],
-    root:{...card(h[2],h[4]),head:h[0]},kids};
+    root:{...card(h[2],h[4]),head:overview?'Қазақстан тарихы':h[2]},kids};
 }
 function histPreview(i){
   const old=document.getElementById('ovl-prev');if(old)old.remove();
@@ -3723,6 +3709,18 @@ function histAddAll(){
   });
   saveSchemes(all);renderHist();
   alert(n?('✅ '+n+' схема қосылды (тек админге көрінеді)'):'Барлық схема бұрын қосылған');
+}
+function histRefreshBuiltins(){
+  if(!user||!user.isAdmin||!confirm('Админнің дайын тарих схемаларын жаңа үлгілермен ауыстыру керек пе? Сіз өңдеген дайын схемалар да жаңарады. Өзге адамдардың схемалары сақталады.'))return;
+  const all=allSchemes();let count=0;
+  HIST.forEach((h,i)=>{
+    const id=histId(i),j=all.findIndex(t=>t.id===id);
+    if(j<0)return;
+    const old=all[j];
+    all[j]={...old,...histBuild(i),id,authorId:old.authorId,authorName:old.authorName,
+      isPublic:old.isPublic,status:old.status};count++;
+  });
+  saveSchemes(all);renderHist();alert('✅ '+count+' дайын схема жаңартылды');
 }
 function histResetOne(i){
   if(!user||!user.isAdmin||!confirm('Бұл схеманы бастапқы күйіне келтіру керек пе?'))return;
@@ -3744,7 +3742,7 @@ function renderHist(){
   const have=new Map(allSchemes().map(x=>[x.id,x]));
   let added=0;HIST.forEach((h,i)=>{if(have.has(histId(i)))added++});
   let out='<p class="sub" style="margin-bottom:10px">Барлығы: <b>'+HIST.length+'</b> тақырып · схема ретінде қосылған: <b>'+added+'</b> · 🆕 жаңадан қосылған: '+HIST.filter(h=>h[3]).length+'</p>'
-    +'<div class="row" style="margin-bottom:12px;justify-content:flex-start"><button class="btn btn-p btn-sm" onclick="histAddAll()">➕ Барлық тақырыпты схема ретінде қосу</button></div>';
+    +'<div class="row" style="margin-bottom:12px;justify-content:flex-start"><button class="btn btn-p btn-sm" onclick="histAddAll()">➕ Барлық тақырыпты схема ретінде қосу</button><button class="btn btn-s btn-sm" onclick="histRefreshBuiltins()">↺ Дайын схемаларды жаңарту</button></div>';
   let cur='';
   HIST.forEach((h,i)=>{
     if(h[0]!==cur){cur=h[0];out+='<h4 style="margin:14px 0 6px">'+esc(cur)+'</h4>'}
