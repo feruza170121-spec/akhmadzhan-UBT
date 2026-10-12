@@ -554,9 +554,39 @@ def _handle_req(state, sid, rq):
             if a.get("used", 0) >= a.get("limit", 0):
                 return {"ok": False, "msg": "Тапсыру лимиті аяқталды"}
             a["used"] += 1
+            attempt_token = secrets.token_urlsafe(24)
+            a["pendingToken"] = attempt_token
             _put(state, "ubt_assigned_tests", _jdump(assignments))
             _commit(state)
-        return {"ok": True, "testId": t["id"], "used": a["used"]}
+        return {"ok": True, "testId": t["id"], "used": a["used"], "attemptToken": attempt_token}
+
+    if typ == "submit_assigned_score":
+        if not sess:
+            return {"ok": False, "msg": "Алдымен кіріңіз"}
+        aid = str(d.get("id") or "")
+        token = str(d.get("attemptToken") or "")
+        answers = d.get("answers")
+        if not isinstance(answers, dict) or len(answers) > 250 or not token:
+            return {"ok": False, "msg": "Нәтиже жарамсыз"}
+        with state["lock"]:
+            assignments = _jload(state["db"].get("ubt_assigned_tests", "[]"), list, [])
+            a = next((x for x in assignments if isinstance(x, dict) and x.get("id") == aid and x.get("uid") == sess["uid"]), None)
+            tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
+            t = next((x for x in tests if isinstance(x, dict) and a and x.get("id") == a.get("testId")), None)
+            if not a or not t or not secrets.compare_digest(str(a.get("pendingToken") or ""), token):
+                return {"ok": False, "msg": "Бұл тапсыру есептелген немесе мерзімі өткен"}
+            qs = t.get("questions", [])
+            if not isinstance(qs, list) or not qs:
+                return {"ok": False, "msg": "Тест табылмады"}
+            score = sum(isinstance(q, dict) and isinstance(q.get("options"), list) and
+                        type(q.get("correct")) is int and 0 <= q["correct"] < len(q["options"]) and
+                        answers.get(str(q.get("id"))) == q["options"][q["correct"]]
+                        for q in qs)
+            a.setdefault("results", []).append({"score": score, "max": len(qs), "at": int(time.time())})
+            a.pop("pendingToken", None)
+            _put(state, "ubt_assigned_tests", _jdump(assignments))
+            _commit(state)
+        return {"ok": True, "score": score, "max": len(qs)}
 
     if typ == "login":
         name = str(d.get("name") or "").strip()[:60]
@@ -629,9 +659,13 @@ def _handle_req(state, sid, rq):
             uid = _new_uid(state, key)
             prof = {"name": name, "id": uid, "isAdmin": False, "ph": ph_new}
             if d.get("teacher"):
+                subject = str(d.get("subject") or "")[:40]
+                if subject not in ("history", "reading", "mathlit", "math", "physics", "chemistry", "biology", "geography", "informatics", "english", "kazakh", "worldhistory", "law", "other"):
+                    return {"ok": False, "msg": "Мұғалім пәнін таңдаңыз"}
                 prof["role"] = "teacher"
                 prof["teacherApproved"] = False
                 prof["teacherInfo"] = str(d.get("info") or "")[:200]
+                prof["teacherSubject"] = subject
             profs[key] = prof
             _put(state, "ubt_profiles", _jdump(profs))
             stats = _jload(state["db"].get("ubt_user_stats", "{}"), dict, {})
@@ -909,7 +943,7 @@ def _merge_profiles(state, sess, v):
             n["password"] = s["password"]
         if not admin:
             if s.get("teacherApproved"):
-                for f in ("role", "teacherApproved", "teacherInfo"):
+                for f in ("role", "teacherApproved", "teacherInfo", "teacherSubject"):
                     if f in s:
                         n[f] = s[f]
                     else:
@@ -917,9 +951,12 @@ def _merge_profiles(state, sess, v):
             elif n.get("role") == "teacher":
                 n["teacherApproved"] = False
                 n["teacherInfo"] = str(n.get("teacherInfo") or "")[:200]
+                if n.get("teacherSubject") not in ("history", "reading", "mathlit", "math", "physics", "chemistry", "biology", "geography", "informatics", "english", "kazakh", "worldhistory", "law", "other"):
+                    n.pop("teacherSubject", None)
             else:
                 n.pop("role", None)
                 n.pop("teacherApproved", None)
+                n.pop("teacherSubject", None)
         out[k] = n
     return _jdump(out)
 
@@ -1356,6 +1393,11 @@ def _snapshot(tok="", claim=""):
                 (c.get("teacherId") == sess["uid"] or sess["uid"] in c.get("students", []))]
         managed = {c.get("id") for c in mine if teacher and c.get("teacherId") == sess["uid"]}
         joined = {c.get("id") for c in mine}
+        if managed:
+            own = [a for a in assignments if isinstance(a, dict) and a.get("uid") == sess["uid"]]
+            scores = [{k: a.get(k) for k in ("id", "classId", "uid", "login", "title", "limit", "used", "results")}
+                      for a in assignments if isinstance(a, dict) and a.get("classId") in managed and a.get("uid") != sess["uid"]]
+            db["ubt_assigned_tests"] = _jdump(own + scores)
         db["ubt_classes"] = _jdump([c if c.get("id") in managed else
             {**c, "code": "", "students": [sess["uid"]] if sess["uid"] in c.get("students", []) else []} for c in mine])
         reqs = _jload(db.get("ubt_class_reqs", "[]"), list, [])
@@ -1371,9 +1413,7 @@ def _snapshot(tok="", claim=""):
              t.get("id") in assigned_ids or
              (t.get("classId") in joined if t.get("classId") else (t.get("isPublic") or t.get("status") == "approved")))])
         for k in list(db.keys()):
-            if k.startswith(_PRIVATE_PREFIXES) and not (any(k == p + sess["uid"] for p in _PRIVATE_PREFIXES) or
-                (teacher and any(k == p + uid for c in mine if c.get("id") in managed for uid in c.get("students", [])
-                                 for p in ("ubt_hist_", "ubt_prog_", "ubt_mistakes_")))):
+            if k.startswith(_PRIVATE_PREFIXES) and not any(k == p + sess["uid"] for p in _PRIVATE_PREFIXES):
                 db.pop(k, None)
                 continue
             if k.startswith(("ubt_att_", "ubt_tres_")):
@@ -1866,6 +1906,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
 
       <div class="fg"><label>Аты-жөніңіз (логин) *</label><input id="tr-name" placeholder="Мыс: Айгүл Серікқызы" maxlength="30"></div>
       <div class="fg"><label>Мектеп / пән</label><input id="tr-info" placeholder="Мыс: №12 мектеп, математика" maxlength="80"></div>
+      <div class="fg"><label>Қай пәннен сабақ бересіз? *</label><select id="tr-subject"></select></div>
       <div class="fg"><label>Пароль *</label><input id="tr-pass" type="password" placeholder="Кемінде 10 таңба"></div>
       <div class="fg"><label>Парольді қайталаңыз *</label><input id="tr-pass2" type="password" placeholder="Қайталаңыз"></div>
       <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doRegisterTeacher()">Өтініш жіберу</button>
@@ -3311,7 +3352,7 @@ function startAssignedTest(id){return guarded(async()=>{
   if(!test){await window.__bridge.refresh()}
   if(!allTests().some(t=>t.id===r.testId)){alert('Тестті ашу мүмкін болмады');return}
   assignedStartPermit=r.testId;
-  try{startUserTest(r.testId)}finally{assignedStartPermit=null}
+  try{startUserTest(r.testId);st.assignedAttempt={id,attemptToken:r.attemptToken}}finally{assignedStartPermit=null}
 })}
 function adminUnpublishTest(id){
   if(!user||!user.isAdmin)return;
@@ -3397,7 +3438,7 @@ function adminViewUser(id){
   const s=getUserStats(id);
   setAv(document.getElementById('uv-avatar'),id,p.name);
   document.getElementById('uv-name').textContent=p.name+(s.verified?' ✓':'');
-  document.getElementById('uv-info').textContent=`⭐ ${s.points||0} · ${s.title||'атақ жоқ'} · ${starStr(s.stars||0)}`;
+  document.getElementById('uv-info').textContent=`⭐ ${s.points||0} · ${s.title||'атақ жоқ'} · ${starStr(s.stars||0)}${p.role==='teacher'&&p.teacherSubject?' · Пәні: '+subjName(p.teacherSubject):''}`;
   const teacherOn=p.role==='teacher'&&p.teacherApproved;
   document.getElementById('uv-actions').innerHTML=`
     <button class="btn ${teacherOn?'btn-s':'btn-ok'}" onclick="adminSetTeacher(${jsq(id)},${!teacherOn})">${teacherOn?'👨‍🏫 Мұғалім мәртебесін алу':'👨‍🏫 Мұғалім ету'}</button>
@@ -3898,7 +3939,7 @@ function aqSave(){
 // ---- Админ (және автор) тесттің сұрақтарын қарай алады
 function previewTest(id){
   const t=allTests().find(x=>x.id===id);if(!t)return;
-  if(!user||!(user.isAdmin||t.authorId===user.id||((t.isPublic||t.status==='approved')&&!t.classId)))return;
+  if(!user||!(user.isAdmin||t.authorId===user.id))return;
   const L=['A','B','C','D','E'];
   const old=document.getElementById('ovl-prev');if(old)old.remove();
   const o=document.createElement('div');o.className='ovl';o.id='ovl-prev';
@@ -4712,6 +4753,12 @@ function finishTest(force){
   stopTimer();lockEnd();
   let score=0,max=st.questions.length,wrong=[];
   st.questions.forEach(q=>{if(st.answers[q.id]===q.correct)score++;else wrong.push({...q,userAnswer:st.answers[q.id]})});
+  if(st.assignedAttempt){
+    const attempt=st.assignedAttempt;st.assignedAttempt=null;
+    const chosen={};st.questions.forEach(q=>{const i=st.answers[q.id];if(Number.isInteger(i)&&i>=0&&i<q.options.length)chosen[q.id]=q.options[i]});
+    authCall('submit_assigned_score',{id:attempt.id,attemptToken:attempt.attemptToken,answers:chosen})
+      .then(r=>{if(!r.ok)alert('Баллыңызды серверге сақтау мүмкін болмады: '+(r.msg||'Қате'))}).catch(()=>alert('Баллыңызды серверге сақтау мүмкін болмады'));
+  }
   if(!st.isMistakes&&wrong.length){let m=LS.get('ubt_mistakes_'+user.id,[]);const ids=new Set(m.map(x=>x.id));wrong.forEach(q=>{if(!ids.has(q.id))m.push(q)});LS.set('ubt_mistakes_'+user.id,m)}
   {let pg=getProg(user.id);pg.push({t:Date.now(),score,max,topic:st.subjectName,viol:lock.viol});if(pg.length>200)pg=pg.slice(-200);LS.set('ubt_prog_'+user.id,pg)}
   let hist=LS.get('ubt_hist_'+user.id,[]);hist.unshift({date:new Date().toLocaleString('kk-KZ'),score,max,topic:st.subjectName,viol:lock.viol,answers:{...st.answers},questions:st.questions.map(q=>({id:q.id,text:q.text,options:q.options,correct:q.correct}))});
@@ -5078,7 +5125,8 @@ function downloadText(name,text){
 }
 function exportTest(id){
   const t=allTests().find(x=>x.id===id);
-  if(!t||!t.questions.length){alert('Сұрақ жоқ');return}
+  if(!t||!user||!(user.isAdmin||t.authorId===user.id)){alert('Басқаның тестін тек админ жүктей алады');return}
+  if(!t.questions.length){alert('Сұрақ жоқ');return}
   downloadText(safeName(t.topic)+'.txt',testToText(t.topic,t.subjectName,t.questions));
 }
 function exportJsonTest(id){
@@ -6202,7 +6250,7 @@ function studentStats(id){
   const avg=n?Math.round(pg.map(pctOf).reduce((a,b)=>a+b,0)/n):0;
   return{n,avg,last:n?pg[n-1]:null,mist:LS.get('ubt_mistakes_'+id,[]).length,points:getUserStats(id).points||0};
 }
-function showTeacher(){tchOpen=null;document.getElementById('tch-detail').innerHTML='';document.getElementById('teacher-send-actions').style.display=isTeacherUser()?'flex':'none';renderTeacher();showScr('s-teacher')}
+function showTeacher(){tchOpen=null;document.getElementById('tch-detail').innerHTML='';document.getElementById('teacher-send-actions').style.display=isTeacherUser()?'flex':'none';renderTeacher();showScr('s-teacher');if(isTeacherUser())window.__bridge.refresh().then(()=>{if(document.getElementById('s-teacher').classList.contains('active'))renderTeacher()}).catch(()=>{})}
 function showClassSend(selectedId){
   if(!isTeacherUser())return;
   const classes=getClasses().filter(c=>c.teacherId===user.id);
@@ -6276,19 +6324,19 @@ function leaveClass(cid){
   c.students=c.students.filter(x=>x!==user.id);saveClasses(a);renderTeacher();
 }
 function classCardHTML(c){
+  const assigned=LS.get('ubt_assigned_tests',[]).filter(a=>a.classId===c.id);
   const rows=c.students.map(id=>{
-    const p=profileById(id),s=studentStats(id);
-    return `<tr><td><b>${esc(p?p.name:'?')}</b></td><td>${s.n}</td><td>${s.n?s.avg+'%':'—'}</td><td>${s.mist}</td><td>⭐ ${s.points}</td><td style="white-space:nowrap"><button class="btn btn-s btn-sm" onclick="showStudent('${c.id}','${id}')">Қарау</button> <button class="btn btn-d btn-sm" onclick="removeStudent('${c.id}','${id}')">✕</button></td></tr>`;
+    const p=profileById(id),scores=assigned.filter(a=>a.uid===id).flatMap(a=>a.results||[]);
+    const latest=scores.length?scores[scores.length-1]:null;
+    return `<tr><td><b>${esc(p?p.name:'?')}</b></td><td>${latest?latest.score+' / '+latest.max:'—'}</td><td style="white-space:nowrap"><button class="btn btn-s btn-sm" onclick="showStudent('${c.id}','${id}')">Балдарын қарау</button> <button class="btn btn-d btn-sm" onclick="removeStudent('${c.id}','${id}')">✕</button></td></tr>`;
   }).join('');
-  const withT=c.students.map(id=>studentStats(id)).filter(s=>s.n);
-  const avg=withT.length?Math.round(withT.reduce((a,s)=>a+s.avg,0)/withT.length)+'%':'—';
   return `<div class="card">
     <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
       <h3>${esc(c.name)} <span class="badge badge-pub">Код: ${esc(c.code)}</span> <span class="sub">· ${esc(c.teacherName||'')}</span></h3>
       <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-s btn-sm" onclick="openTchChat('${threadOfClass(c)}')">💬 Админмен чат</button><button class="btn btn-d btn-sm" onclick="delClass('${c.id}')">Сыныпты өшіру</button></div>
     </div>
-    <div class="sub" style="margin-bottom:10px">Оқушылар: <b>${c.students.length}</b> · сыныптың орташа балы: <b>${avg}</b></div>
-    ${c.students.length?`<div class="tscroll"><table class="ttable"><tr><th>Оқушы</th><th>Тест</th><th>Орташа</th><th>Қате</th><th>Ұпай</th><th></th></tr>${rows}</table></div>`:'<div class="sub">Оқушы жоқ. Төмендегі өріс арқылы логин бойынша қосыңыз немесе кодты оқушыларға беріңіз.</div>'}
+    <div class="sub" style="margin-bottom:10px">Сыныптағы адамдар: <b>${c.students.length}</b> · тек сіз жіберген тесттердің балдары көрсетіледі</div>
+    ${c.students.length?`<div class="tscroll"><table class="ttable"><tr><th>Адам</th><th>Соңғы балл</th><th></th></tr>${rows}</table></div>`:'<div class="sub">Оқушы жоқ. Төмендегі өріс арқылы логин бойынша қосыңыз немесе кодты оқушыларға беріңіз.</div>'}
     <div style="display:flex;gap:8px;margin-top:12px"><input id="tch-add-${c.id}" placeholder="Оқушы логині" style="flex:1;padding:9px 12px;border:1px solid var(--b);border-radius:20px;background:var(--bg);color:var(--t);font-family:inherit"><button class="btn btn-ok btn-sm" onclick="addStudent('${c.id}')">➕ Қосу</button></div>
     <div style="display:flex;gap:8px;margin-top:8px"><input id="tch-ncode-${c.id}" placeholder="Жаңа код (бос = кездейсоқ)" maxlength="8" style="flex:1;padding:9px 12px;border:1px solid var(--b);border-radius:20px;background:var(--bg);color:var(--t);font-family:inherit;text-transform:uppercase"><button class="btn btn-w btn-sm" onclick="changeClassCode('${c.id}')">🔄 Кодты өзгерту</button></div>
   </div>`;
@@ -6299,22 +6347,13 @@ function renderTeacher(){
   document.getElementById('tch-joined').innerHTML=joined.length?joined.map(c=>`<div class="item" style="margin-bottom:6px"><div class="info"><h4>${esc(c.name)}</h4><p>Мұғалім: ${esc(c.teacherName||'')}</p></div><button class="btn btn-s btn-sm" onclick="leaveClass('${c.id}')">Шығу</button></div>`).join(''):'';
 }
 function showStudent(cid,sid){
-  if(!isTeacherUser())return;
-  const p=profileById(sid),s=studentStats(sid);
-  const hist=LS.get('ubt_hist_'+sid,[]).slice(0,10),pg=getProg(sid),mist=LS.get('ubt_mistakes_'+sid,[]);
-  const topics={};pg.forEach(x=>{const k=x.topic||'Тест';(topics[k]=topics[k]||[]).push(pctOf(x))});
-  const tl=Object.keys(topics).map(k=>({k,avg:Math.round(topics[k].reduce((a,b)=>a+b,0)/topics[k].length),n:topics[k].length})).sort((a,b)=>a.avg-b.avg);
+  if(!isTeacherUser()||!getClasses().some(c=>c.id===cid&&c.teacherId===user.id&&c.students.includes(sid)))return;
+  const p=profileById(sid),assigned=LS.get('ubt_assigned_tests',[]).filter(a=>a.classId===cid&&a.uid===sid);
+  const scores=assigned.flatMap(a=>(a.results||[]).map(r=>({title:a.title,score:r.score,max:r.max,at:r.at})));
   document.getElementById('tch-detail').innerHTML=`<div class="card" style="border-color:var(--p)">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h3>👤 ${esc(p?p.name:'?')}</h3><button class="btn btn-s btn-sm" onclick="document.getElementById('tch-detail').innerHTML=''">Жабу</button></div>
-    <div class="stat-grid"><div class="stat"><b>${s.n}</b><span>Тест</span></div><div class="stat"><b>${s.n?s.avg+'%':'—'}</b><span>Орташа бал</span></div><div class="stat"><b>${s.mist}</b><span>Қате сұрақ</span></div><div class="stat"><b>${s.points}</b><span>Ұпай</span></div></div>
-    <h4 style="margin:10px 0 6px">📊 Тақырыптар бойынша (әлсізден күштіге)</h4>
-    ${tl.length?tl.map(t=>`<div class="tbar"><div class="tn">${esc(t.k)}</div><div class="tb"><i style="width:${t.avg}%"></i></div><div class="tv">${t.avg}%</div></div>`).join(''):'<div class="sub">Нәтиже жоқ</div>'}
-    <h4 style="margin:14px 0 6px">📋 Соңғы тесттер</h4>
-    ${hist.length?hist.map(h=>`<div class="res-row"><span>${esc(h.topic||'Тест')} <span class="sub">· ${esc(h.date)}</span></span><b>${h.score}/${h.max}</b></div>`).join(''):'<div class="sub">Тарих бос</div>'}
-    <h4 style="margin:14px 0 6px">❌ Қателері</h4>
-    ${mist.length?mist.slice(0,10).map(q=>`<div class="res-row" style="font-size:13px"><span>${esc(q.text)}</span><span class="sub" style="margin-left:8px">✓ ${esc(q.options[q.correct])}</span></div>`).join(''):'<div class="sub">Қате жоқ 🎉</div>'}
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h3>👤 ${esc(p?p.name:'?')} · Балдары</h3><button class="btn btn-s btn-sm" onclick="document.getElementById('tch-detail').innerHTML=''">Жабу</button></div>
+    ${scores.length?scores.map(r=>`<div class="res-row"><span>${esc(r.title)} · ${new Date(r.at*1000).toLocaleString('kk-KZ')}</span><b>${r.score} / ${r.max}</b></div>`).join(''):'<p class="sub">Жіберілген тест әлі тапсырылмаған</p>'}
   </div>`;
-  mathIn(document.getElementById('tch-detail'));
   document.getElementById('tch-detail').scrollIntoView({behavior:'smooth',block:'start'});
 }
 
@@ -6419,18 +6458,22 @@ function isTeacherPending(){
 }
 function showTeacherReg(){
   ['login-box','register-box','forgot-box','contact-box'].forEach(i=>document.getElementById(i).style.display='none');
+  const sel=document.getElementById('tr-subject');
+  if(!sel.options.length)sel.innerHTML='<option value="">Пәнді таңдаңыз</option>'+Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value).map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('');
   document.getElementById('teacher-reg-box').style.display='block';
 }
 function doRegisterTeacher(){return guarded(async()=>{
   const name=document.getElementById('tr-name').value.trim();
   const info=document.getElementById('tr-info').value.trim();
+  const subject=document.getElementById('tr-subject').value;
   const pass=document.getElementById('tr-pass').value,pass2=document.getElementById('tr-pass2').value;
   if(!name||name.length<2){alert('Аты-жөніңізді жазыңыз');return}
   if(!pass||pass.length<10){alert('Пароль кемінде 10 таңба');return}
   if(pass!==pass2){alert('Парольдер сәйкес емес');return}
-  const r=await authCall('register',{name:name,pass:pass,teacher:true,info:info});
+  if(!subject){alert('Қай пәннен сабақ беретініңізді таңдаңыз');return}
+  const r=await authCall('register',{name:name,pass:pass,teacher:true,info:info,subject});
   if(!r.ok){alert(r.msg||'Қате');return}
-  ['tr-name','tr-info','tr-pass','tr-pass2'].forEach(i=>document.getElementById(i).value='');
+  ['tr-name','tr-info','tr-pass','tr-pass2','tr-subject'].forEach(i=>document.getElementById(i).value='');
   alert('✅ Өтініш админге жіберілді. Қазір оқушы ретінде кіре аласыз; админ рұқсат бергесін мұғалім кабинеті ашылады.');
   showLoginBox();document.getElementById('login-name').value=name;
 })}
@@ -6451,20 +6494,22 @@ function adminSetTeacher(id,on){
 function renderTeacherReq(){
   const el=document.getElementById('admin-teacher-req');if(!el)return;
   const pend=Object.values(LS.get('ubt_profiles',{})).filter(p=>p.role==='teacher'&&!p.teacherApproved);
-  el.innerHTML=pend.length?pend.map(p=>`<div class="item"><div class="info"><h4>${esc(p.name)}</h4><p>${esc(p.teacherInfo||'—')}</p></div><div class="acts"><button class="btn btn-ok btn-sm" onclick="adminSetTeacher(${jsq(p.id)},true)">✓ Мұғалім ету</button><button class="btn btn-d btn-sm" onclick="adminRejectTeacher(${jsq(p.id)})">✕ Бас тарту</button></div></div>`).join(''):'<p class="sub">Жаңа өтініш жоқ</p>';
+  el.innerHTML=pend.length?pend.map(p=>`<div class="item"><div class="info"><h4>${esc(p.name)}</h4><p>${esc(subjName(p.teacherSubject)||'Пән көрсетілмеген')} · ${esc(p.teacherInfo||'—')}</p></div><div class="acts"><button class="btn btn-ok btn-sm" onclick="adminSetTeacher(${jsq(p.id)},true)">✓ Мұғалім ету</button><button class="btn btn-d btn-sm" onclick="adminRejectTeacher(${jsq(p.id)})">✕ Бас тарту</button></div></div>`).join(''):'<p class="sub">Жаңа өтініш жоқ</p>';
 }
 function requestTeacher(){
   if(!user||user.isAdmin)return;
   const info=((document.getElementById('tch-want-info')||{}).value||'').trim();
+  const subject=((document.getElementById('tch-want-subject')||{}).value||'');
   if(info.length<2){alert('Мектеп / пәніңізді жазыңыз');return}
-  const ok=mutateProfile((findUserByLogin(user.name)||{}).id,p=>{if(p.role==='teacher'&&p.teacherApproved)return;p.role='teacher';p.teacherApproved=false;p.teacherInfo=info});
+  if(!subject){alert('Қай пәннен сабақ беретініңізді таңдаңыз');return}
+  const ok=mutateProfile((findUserByLogin(user.name)||{}).id,p=>{if(p.role==='teacher'&&p.teacherApproved)return;p.role='teacher';p.teacherApproved=false;p.teacherInfo=info;p.teacherSubject=subject});
   if(!ok){alert('Аккаунт табылмады');return}
   alert('✅ Өтініш админге жіберілді. Админ мақұлдағаннан кейін мұғалім кабинеті мен сынып ашу ашылады.');
   renderTeacher();
 }
 function adminRejectTeacher(id){
   if(!confirm('Өтінішті қабылдамау керек пе? Аккаунт оқушы ретінде қалады.'))return;
-  mutateProfile(id,p=>{delete p.role;delete p.teacherApproved;delete p.teacherInfo});showAdmin();
+  mutateProfile(id,p=>{delete p.role;delete p.teacherApproved;delete p.teacherInfo;delete p.teacherSubject});showAdmin();
 }
 (function(){
   ['showLoginBox','showRegister','showForgot','showContactAdmin'].forEach(n=>{
@@ -6481,7 +6526,7 @@ function adminRejectTeacher(id){
     const n=document.getElementById('tch-notice');
     n.innerHTML=T?'':(isTeacherPending()
       ?'<div class="card"><h3>⏳ Өтініш қаралуда</h3><p class="sub">Админ мұғалім рұқсатын бергенше сынып құру ашылмайды. Қазір сыныпқа кодпен қосыла аласыз.</p></div>'
-      :(user&&!user.isAdmin?'<div class="card"><h3>🔒 Мұғалім кабинеті</h3><p class="sub" style="margin-bottom:10px">Мұғалім болу және сынып ашу тек админ мақұлдағаннан кейін ғана мүмкін. Мұғалім болғыңыз келсе, админге өтініш жіберіңіз. Оқушы болсаңыз, төмендегі кодпен сыныпқа қосыла аласыз.</p><div class="fg"><input id="tch-want-info" placeholder="Мектеп / пән (мыс: №12 мектеп, математика)" maxlength="80"></div><button class="btn btn-p btn-sm" onclick="requestTeacher()">📨 Мұғалім болуға өтініш жіберу</button></div>':''));
+      :(user&&!user.isAdmin?'<div class="card"><h3>🔒 Мұғалім кабинеті</h3><p class="sub" style="margin-bottom:10px">Мұғалім болу және сынып ашу тек админ мақұлдағаннан кейін ғана мүмкін. Мұғалім болғыңыз келсе, админге өтініш жіберіңіз. Оқушы болсаңыз, төмендегі кодпен сыныпқа қосыла аласыз.</p><div class="fg"><label>Қай пәннен сабақ бересіз?</label><select id="tch-want-subject"><option value="">Пәнді таңдаңыз</option>'+Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value).map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('')+'</select></div><div class="fg"><input id="tch-want-info" placeholder="Мектеп (мыс: №12 мектеп)" maxlength="80"></div><button class="btn btn-p btn-sm" onclick="requestTeacher()">📨 Мұғалім болуға өтініш жіберу</button></div>':''));
   };
 })();
 
@@ -6894,6 +6939,7 @@ function renderUbtBank(){
       const canPick=manual&&allowed.has(q.subject);
       return `<div class="ubt-bank-row"><input type="checkbox" aria-label="140 форматқа қосу" ${selected.has(q.id)?'checked':''} ${canPick?'':'disabled'} onchange="toggleUbtQuestion(${jsq(q.id)},this.checked)">
         <div class="info"><strong>${esc(q.text)}</strong><p>${esc(subjName(q.subject))} · ${esc(q.source)} · Дұрыс жауап: ${esc(q.options[q.correct])}</p>${!allowed.has(q.subject)?'<p>Бұл пән таңдалған ҰБТ құрамына кірмейді</p>':''}</div>
+        <select aria-label="Сұрақтың пәнін ауыстыру" title="Сұрақтың пәнін ауыстыру" style="max-width:125px" onchange="moveUbtBankQuestion(${jsq(q.id)},this.value)">${Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value).map(o=>`<option value="${esc(o.value)}" ${o.value===q.subject?'selected':''}>${esc(o.textContent)}</option>`).join('')}</select>
         <button class="btn btn-d btn-sm" onclick="deleteUbtBankQuestion(${jsq(q.id)})">Өшіру</button>
       </div>`;
     }).join('')+'</section>').join(''):'<p class="sub">Бұл сүзгі бойынша сұрақ жоқ. Жаңа сұрақ қосыңыз немесе өз тестіңізді құрыңыз.</p>');
@@ -6907,6 +6953,19 @@ function toggleUbtQuestion(id,on){
   if(on&&bank.filter(x=>x.subject===q.subject&&selected.has(x.id)).length>=section.n){alert('Бұл пәннен '+section.n+' сұрақ таңдалып қойған');renderUbt140();return}
   if(on)selected.add(id);else selected.delete(id);
   LS.set('ubt_ubt140_selection_'+user.id,Array.from(selected));renderUbt140();
+}
+function moveUbtBankQuestion(id,target){
+  if(!user)return;
+  const q=ubtQuestionBank().find(x=>x.id===id);
+  if(!q||!target||q.subject===target)return;
+  const existing=ubtQuestionBank().some(x=>x.subject===target&&ubtBankIdentity(target,x.text)===ubtBankIdentity(target,q.text));
+  if(existing){alert('Бұл сұрақ таңдалған пәнде бұрыннан бар');renderUbt140();return}
+  const hiddenKey='ubt_qbank_hidden_'+user.id,hidden=new Set(LS.get(hiddenKey,[]));
+  hidden.add(ubtBankIdentity(q.subject,q.text));LS.set(hiddenKey,Array.from(hidden));
+  LS.set('ubt_qbank_'+user.id,LS.get('ubt_qbank_'+user.id,[]).filter(x=>ubtBankIdentity(x.subject,x.text)!==ubtBankIdentity(q.subject,q.text)));
+  LS.set('ubt_ubt140_selection_'+user.id,ubtSelectedIDs().filter(x=>x!==id));
+  rememberQuestionsInBank(target,[q],'Пәні ауыстырылды: '+subjName(q.subject),true);
+  renderUbt140();
 }
 function deleteUbtBankQuestion(id){
   const q=ubtQuestionBank().find(x=>x.id===id);
