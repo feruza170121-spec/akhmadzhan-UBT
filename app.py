@@ -1141,6 +1141,7 @@ html,body{overflow-x:hidden}
 .mind-node strong{font-size:15px;line-height:1.4}.mind-main{max-width:420px;align-items:center;text-align:center;background:linear-gradient(135deg,#dff0df,#c8e4c9);border:2px solid #91bd96;border-left:2px solid #91bd96;border-radius:23px;padding:18px 24px;color:#254c30}.mind-main strong{font-size:19px}.mind-main small{font-size:11px;color:#4b7053;margin-top:4px}.mind-dot{display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:#fff;color:#438251;margin-bottom:6px}
 .mind-branches{display:grid;grid-template-columns:1fr;gap:12px;margin:0;position:relative;min-width:0}.mind-branches:before{content:"";position:absolute;left:-12px;top:calc(74px / 2);bottom:calc(74px / 2);width:2px;background:var(--mind-line)}.mind-branch{position:relative;min-width:0}.mind-connector{position:absolute;left:-24px;top:50%;height:2px;width:24px;background:var(--mind-line)}.mind-branch .mind-node{min-height:74px;padding-right:35px}.mind-subtitle{font-size:12px;color:#6b756c;margin-top:3px}.mind-toggle{position:absolute;right:12px;top:12px;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:var(--mind-soft);color:var(--mind);font-weight:800}.mind-details{display:none;width:100%;margin-top:10px;padding-top:8px;border-top:1px solid #e5ece5;text-align:left}.mind-node.expanded .mind-details{display:block;animation:mindFade .25s both}.mind-node.expanded .mind-toggle{transform:rotate(45deg)}.mind-detail{display:grid;grid-template-columns:minmax(65px,.7fr) 1.3fr;gap:8px;padding:5px 0;font-size:12px;line-height:1.45;border-bottom:1px dashed #e6ece6}.mind-detail b{color:var(--mind)}.mind-detail span{overflow-wrap:anywhere}.mind-img{max-width:100%;max-height:150px;object-fit:contain;border-radius:10px;margin-top:8px}
 .mind-add-info{margin-top:8px;font-size:12px;padding:5px 10px}.mind-info-form{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.mind-info-form input{flex:1 1 130px;min-width:0;padding:7px;border:1px solid #b7d9bd;border-radius:8px}.mind-info-form button{padding:6px 10px}
+.mind-branch-row{display:flex;align-items:flex-start;gap:9px}.mind-branch-row>.mind-node{flex:1;min-width:0}.mind-arrow{flex:none;border:1px solid var(--mind-line);border-radius:12px;background:var(--mind-soft);color:var(--mind);font-size:19px;font-weight:800;min-width:38px;height:40px;cursor:pointer}.mind-arrow[aria-expanded="true"]{background:var(--mind);color:#fff}.mind-children{display:none;margin:10px 0 8px 25px;padding-left:16px;border-left:2px solid var(--mind-line)}.mind-children.open{display:grid;gap:9px;animation:mindFade .3s both}.mind-child{position:relative;border:1px solid var(--mind-line);border-radius:13px;background:#fff;padding:11px 13px;min-width:0}.mind-child:before{content:"";position:absolute;left:-16px;top:22px;width:16px;height:2px;background:var(--mind-line)}.mind-child summary{cursor:pointer;font-weight:700;color:#254c30}.mind-child .mind-detail:first-of-type{margin-top:9px}
 @keyframes mindFade{from{opacity:0}to{opacity:1}}@keyframes mindPop{from{opacity:0;transform:translateY(-8px) scale(.96)}to{opacity:1;transform:translateY(0) scale(1)}}@keyframes mindSlide{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
 @media(max-width:640px){.sch-bg.mindmap{padding:20px 10px}.mind-layout{grid-template-columns:1fr;gap:22px}.mind-layout:before{display:none}.mind-branches{grid-template-columns:1fr;gap:10px}.mind-branches:before{display:none}.mind-connector{display:none}.mind-branch .mind-node{margin-left:0;width:100%}.mind-main{max-width:100%}.mind-detail{grid-template-columns:1fr;gap:2px}}
 
@@ -3198,8 +3199,13 @@ function schRender(t){
     ${t.tabMain?`<div class="mind-top">${esc(t.tabMain)}</div>`:''}
     ${subs.length?`<div class="mind-tags">${subs.map((x,i)=>`<span style="--delay:${i*100}ms">${esc(x)}</span>`).join('')}</div>`:''}
     <div class="mind-layout"><div class="mind-center"><button class="mind-node mind-main" type="button" onclick="this.classList.toggle('expanded')"><span class="mind-dot">✦</span><strong>${esc(root.head||root.title||t.title||'Қазақстан тарихы')}</strong><small>Барлық тарихи кезеңдер</small><div class="mind-details">${details(root)}${schImgOk(root.img)?`<img class="mind-img" src="${root.img}" alt="">`:''}</div></button></div>
-    ${kids.length?`<div class="mind-branches">${kids.map((k,i)=>`<article class="mind-branch" style="--delay:${i*120}ms;--branch:${['#d8a94e','#7a9fc4','#76ad8a','#c98b83','#a694cf'][i%5]}"><div class="mind-connector"></div><div class="mind-node" role="button" tabindex="0" onclick="if(event.target.closest('.mind-info-form,.mind-add-info'))return;this.classList.toggle('expanded')" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();this.classList.toggle('expanded')}"><strong>${esc(k.tab||k.title||('Тақырып '+(i+1)))}</strong>${k.title&&k.tab?`<span class="mind-subtitle">${esc(k.title)}</span>`:''}<div class="mind-details">${details(k)}${schImgOk(k.img)?`<img class="mind-img" src="${k.img}" alt="">`:''}${schImgOk(k.img2)?`<img class="mind-img" src="${k.img2}" alt="">`:''}${editable?`<button class="btn btn-s btn-sm mind-add-info" type="button" onclick="schInfoForm(this)">＋ Мәлімет қосу</button><form class="mind-info-form" style="display:none" onsubmit="return schSaveInfo(event,${jsq(t.id)},${i})"><input name="label" maxlength="30" placeholder="Атауы (мыс: Дерек)"><input name="value" maxlength="120" placeholder="Мәлімет"><button class="btn btn-p btn-sm" type="submit">Сақтау</button></form>`:''}</div><span class="mind-toggle">＋</span></div></article>`).join('')}</div>`:''}</div>
+    ${kids.length?`<div class="mind-branches">${kids.map((k,i)=>`<article class="mind-branch" style="--delay:${i*120}ms;--branch:${['#d8a94e','#7a9fc4','#76ad8a','#c98b83','#a694cf'][i%5]}"><div class="mind-connector"></div><div class="mind-branch-row"><div class="mind-node" role="button" tabindex="0" onclick="if(event.target.closest('.mind-info-form,.mind-add-info'))return;this.classList.toggle('expanded')" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();this.classList.toggle('expanded')}"><strong>${esc(k.tab||k.title||('Тақырып '+(i+1)))}</strong>${k.title&&k.tab?`<span class="mind-subtitle">${esc(k.title)}</span>`:''}<div class="mind-details">${details(k)}${schImgOk(k.img)?`<img class="mind-img" src="${k.img}" alt="">`:''}${schImgOk(k.img2)?`<img class="mind-img" src="${k.img2}" alt="">`:''}${editable?`<button class="btn btn-s btn-sm mind-add-info" type="button" onclick="schInfoForm(this)">＋ Мәлімет қосу</button><form class="mind-info-form" style="display:none" onsubmit="return schSaveInfo(event,${jsq(t.id)},${i})"><input name="label" maxlength="30" placeholder="Атауы (мыс: Дерек)"><input name="value" maxlength="120" placeholder="Мәлімет"><button class="btn btn-p btn-sm" type="submit">Сақтау</button></form>`:''}</div><span class="mind-toggle">＋</span></div>${Array.isArray(k.children)&&k.children.length?`<button class="mind-arrow" type="button" aria-label="${esc(k.tab||k.title||'Кезең')} ішкі тақырыптарын ашу" aria-expanded="false" onclick="schToggleChildren(this)">→</button>`:''}</div>${Array.isArray(k.children)&&k.children.length?`<div class="mind-children">${k.children.map(child=>`<details class="mind-child"><summary>${esc(child.tab||child.title||'Мәдениет')}</summary>${child.title&&child.tab?`<p class="mind-subtitle">${esc(child.title)}</p>`:''}${details(child)}${schImgOk(child.img)?`<img class="mind-img" src="${child.img}" alt="">`:''}</details>`).join('')}</div>`:''}</article>`).join('')}</div>`:''}</div>
   </div>`;
+}
+function schToggleChildren(btn){
+  const panel=btn.closest('.mind-branch').querySelector('.mind-children');
+  if(!panel)return;
+  const opened=panel.classList.toggle('open');btn.setAttribute('aria-expanded',String(opened));btn.textContent=opened?'←':'→';
 }
 function schInfoForm(btn){
   const form=btn.nextElementSibling;form.style.display='flex';btn.style.display='none';form.elements.label.focus();
@@ -3317,6 +3323,7 @@ function schCardForm(path,c,isKid,idx){
     ${img('img','🖼 Сурет')}${img('img2','🗺 Қосымша сурет (карта, сызба — міндетті емес)')}
     <div class="fg"><label>Мәліметтер (белгі: мән)</label>${(c.fields||[]).map((f,i)=>`<div class="sch-fr"><input placeholder="Дәуір" data-p="${path}.fields.${i}.k" value="${esc(f.k||'')}" oninput="schIn(this)" maxlength="30"><input placeholder="Б.з.д. VIII – VI ғғ." data-p="${path}.fields.${i}.v" value="${esc(f.v||'')}" oninput="schIn(this)" maxlength="120"><button class="btn btn-s btn-sm" onclick="schDelField('${path}',${i})">✕</button></div>`).join('')}
       ${(c.fields||[]).length<SCH_MAX_FIELDS?`<button class="btn btn-s btn-sm" onclick="schAddField('${path}')">➕ Жол қосу</button>`:''}</div>
+    ${isKid?`<div class="card" style="margin-top:10px"><b>→ Ішкі тақырыптар мен мәдениеттер</b>${(c.children||[]).map((child,j)=>`<div class="card" style="margin-top:8px"><div class="row" style="justify-content:space-between"><b>${j+1}. ${esc(child.tab||'Ішкі тақырып')}</b><button class="btn btn-d btn-sm" onclick="schDelChild(${idx},${j})">✕</button></div><div class="fg"><label>Атауы</label><input data-p="${path}.children.${j}.tab" value="${esc(child.tab||'')}" oninput="schIn(this)" maxlength="40"></div><div class="fg"><label>Түсіндірме</label><input data-p="${path}.children.${j}.title" value="${esc(child.title||'')}" oninput="schIn(this)" maxlength="80"></div><div class="fg"><label>Мәліметтер</label>${(child.fields||[]).map((f,n)=>`<div class="sch-fr"><input data-p="${path}.children.${j}.fields.${n}.k" value="${esc(f.k||'')}" oninput="schIn(this)" maxlength="30" placeholder="Атауы"><input data-p="${path}.children.${j}.fields.${n}.v" value="${esc(f.v||'')}" oninput="schIn(this)" maxlength="120" placeholder="Мәлімет"><button class="btn btn-s btn-sm" onclick="schDelField('${path}.children.${j}',${n})">✕</button></div>`).join('')}${(child.fields||[]).length<SCH_MAX_FIELDS?`<button class="btn btn-s btn-sm" onclick="schAddField('${path}.children.${j}')">＋ Мәлімет</button>`:''}</div></div>`).join('')}${(c.children||[]).length<20?`<button class="btn btn-s btn-sm" onclick="schAddChild(${idx})">→ Ішкі тақырып қосу</button>`:''}</div>`:''}
   </div>`;
 }
 function schRenderForm(){
@@ -3367,6 +3374,8 @@ function schHistoryPreset(){
 }
 function schAddKid(){schDraft.kids.push({tab:'',...schBlankCard()});schRenderForm()}
 function schDelKid(i){schDraft.kids.splice(i,1);schRenderForm()}
+function schAddChild(i){const k=schDraft.kids[i];if(!k)return;k.children=Array.isArray(k.children)?k.children:[];if(k.children.length<20){k.children.push({tab:'',...schBlankCard()});schRenderForm()}}
+function schDelChild(i,j){const k=schDraft.kids[i];if(k&&Array.isArray(k.children)){k.children.splice(j,1);schRenderForm()}}
 function schAddField(path){const c=schGet(path);if(c.fields.length<SCH_MAX_FIELDS){c.fields.push({k:'',v:''});schRenderForm()}}
 function schDelField(path,i){schGet(path).fields.splice(i,1);schRenderForm()}
 function schClrImg(path){const parts=path.split('.'),last=parts.pop();parts.reduce((x,k)=>x[k],schDraft)[last]='';schRenderForm()}
@@ -3403,7 +3412,7 @@ function schClean(d){
     fields:(c.fields||[]).map(f=>({k:String(f.k||'').trim().slice(0,30),v:String(f.v||'').trim().slice(0,120)})).filter(f=>f.k||f.v).slice(0,SCH_MAX_FIELDS)});
   return {subject:d.subject,title:String(d.title||'').trim().slice(0,100),tabMain:String(d.tabMain||'').trim().slice(0,40),
     subs:(d.subs||[]).map(x=>String(x).trim().slice(0,40)).filter(Boolean).slice(0,4),theme:SCH_THEMES[d.theme]?d.theme:'blue',
-    root:{...cc(d.root),head:String((d.root||{}).head||'').trim().slice(0,60)},kids:d.kids.map(k=>({tab:String(k.tab||'').trim().slice(0,40),...cc(k)})).slice(0,SCH_MAX_KIDS)};
+    root:{...cc(d.root),head:String((d.root||{}).head||'').trim().slice(0,60)},kids:d.kids.map(k=>({tab:String(k.tab||'').trim().slice(0,40),...cc(k),children:(Array.isArray(k.children)?k.children:[]).slice(0,20).map(c=>({tab:String(c.tab||'').trim().slice(0,40),...cc(c)}))})).slice(0,SCH_MAX_KIDS)};
 }
 function schPreview(){
   const c=schClean(schDraft);
@@ -3679,8 +3688,25 @@ function histCopyMine(i,openAfter){
 }
 function histBuild(i){
   const h=HIST[i],card=(title,f)=>({title:title,img:'',img2:'',fields:f.map(x=>({k:x[0],v:x[1]}))});
+  const kids=h[5].map(k=>({tab:k[0],...card(k[1],k[2])}));
+  if(h[0]==='Қазақстан тарихының кезеңдері'){
+    const prehistory=HIST.find(entry=>entry[2]==='Ежелгі дәуірдің бөлінуі');
+    const cultures=HIST.find(entry=>entry[2]==='Археологиялық мәдениеттер: дәуірлер бойынша');
+    const ancient={
+      'Тас дәуірі':[...(prehistory?prehistory[5].slice(0,4):[]),...(cultures?cultures[5].slice(0,2):[])],
+      'Қола дәуірі':cultures?cultures[5].slice(2,4):[],
+      'Ерте темір дәуірі':cultures?cultures[5].slice(4):[]
+    };
+    const group={'Орта ғасырлар':['Ортағасыр','Қазақ хандығы'],'Жаңа заман':['Отарлау дәуірі'],
+      'Кеңестік кезең':['Кеңес кезеңі'],'Тәуелсіз Қазақстан':['Тәуелсіздік']};
+    kids.forEach(k=>{
+      const stages=group[k.tab]||[];
+      k.children=ancient[k.tab]?ancient[k.tab].map(entry=>({tab:entry[0],...card(entry[1],entry[2])})):
+        HIST.filter((entry,index)=>index!==i&&stages.includes(entry[0])).map(entry=>({tab:entry[2],...card(entry[2],entry[4])}));
+    });
+  }
   return {subject:'history',subjectName:'Қазақстан тарихы',title:(i+1)+'. '+h[2],tabMain:h[0],subs:['Қазақстан тарихы'],theme:h[1],
-    root:{...card(h[2],h[4]),head:h[0]},kids:h[5].map(k=>({tab:k[0],...card(k[1],k[2])}))};
+    root:{...card(h[2],h[4]),head:h[0]},kids};
 }
 function histPreview(i){
   const old=document.getElementById('ovl-prev');if(old)old.remove();
