@@ -776,70 +776,9 @@ def _handle_req(state, sid, rq):
                 return {"ok": False, "msg": "Қолданушы табылмады"}
             for k in names:
                 profs.pop(k, None)
+            # Профиль өшкенмен, автордың тесттері, сыныптары, нәтижелері және
+            # жеке жазбалары админ оларды бөлек өшіргенше сақталады.
             _put(state, "ubt_profiles", _jdump(profs))
-            stats = _jload(state["db"].get("ubt_user_stats", "{}"), dict, {})
-            stats.pop(uid, None)
-            _put(state, "ubt_user_stats", _jdump(stats))
-            classes = _jload(state["db"].get("ubt_classes", "[]"), list, [])
-            owned = {c.get("id") for c in classes if isinstance(c, dict) and isinstance(c.get("id"), str)
-                     and c.get("teacherId") == uid}
-            removed_threads = {c.get("reqId") or "cls_" + str(c.get("id")) for c in classes
-                               if isinstance(c, dict) and c.get("id") in owned}
-            kept_classes = []
-            for c in classes:
-                if not isinstance(c, dict) or c.get("id") in owned:
-                    continue
-                if uid in c.get("students", []):
-                    c = {**c, "students": [student for student in c["students"] if student != uid]}
-                kept_classes.append(c)
-            _put(state, "ubt_classes", _jdump(kept_classes))
-            reqs = _jload(state["db"].get("ubt_class_reqs", "[]"), list, [])
-            removed_threads.update(r.get("id") for r in reqs if isinstance(r, dict) and r.get("teacherId") == uid)
-            _put(state, "ubt_class_reqs", _jdump([r for r in reqs if not (isinstance(r, dict) and r.get("teacherId") == uid)]))
-            chats = _jload(state["db"].get("ubt_class_chat", "{}"), dict, {})
-            _put(state, "ubt_class_chat", _jdump({k: v for k, v in chats.items() if k not in removed_threads}))
-            tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
-            removed_tests = {t.get("id") for t in tests if isinstance(t, dict) and t.get("authorId") == uid}
-            detached_class_tests = {t.get("id") for t in tests if isinstance(t, dict) and
-                                    t.get("classId") in owned and owned}
-            kept_tests = []
-            for t in tests:
-                if not isinstance(t, dict) or t.get("id") in removed_tests:
-                    continue
-                if t.get("classId") in owned and owned:
-                    t = {**t, "status": "private", "isPublic": False}
-                    t.pop("classId", None)
-                    t.pop("className", None)
-                kept_tests.append(t)
-            assignments = _jload(state["db"].get("ubt_assigned_tests", "[]"), list, [])
-            kept_assignments = [a for a in assignments if isinstance(a, dict) and a.get("uid") != uid
-                                and a.get("testId") not in removed_tests and a.get("classId") not in owned]
-            orphaned = {t.get("id") for t in kept_tests if t.get("assignmentId") and
-                        not any(a.get("testId") == t.get("id") for a in kept_assignments)}
-            removed_tests.update(orphaned)
-            kept_tests = [t for t in kept_tests if t.get("id") not in orphaned]
-            _put(state, "ubt_tests", _jdump(kept_tests))
-            _put(state, "ubt_assigned_tests", _jdump(kept_assignments))
-            schs = _jload(state["db"].get("ubt_schemes", "[]"), list, [])
-            _put(state, "ubt_schemes", _jdump([t for t in schs if not (isinstance(t, dict) and t.get("authorId") == uid)]))
-            letters = _jload(state["db"].get("ubt_admin_letters", "[]"), list, [])
-            _put(state, "ubt_admin_letters", _jdump([m for m in letters if not (isinstance(m, dict) and m.get("toUid") == uid)]))
-            for key in list(state["db"]):
-                if any(key == prefix + uid for prefix in _USER_PREFIXES):
-                    _drop(state, key)
-                elif key.startswith(("ubt_att_", "ubt_tres_")):
-                    tid = key[len("ubt_att_"):] if key.startswith("ubt_att_") else key[len("ubt_tres_"):]
-                    if tid in removed_tests or tid in detached_class_tests:
-                        _drop(state, key)
-                    elif key.startswith("ubt_att_"):
-                        attempts = _jload(state["db"][key], dict, {})
-                        if uid in attempts:
-                            attempts.pop(uid, None)
-                            _put(state, key, _jdump(attempts))
-                    else:
-                        results = _jload(state["db"][key], list, [])
-                        if any(isinstance(result, dict) and result.get("uid") == uid for result in results):
-                            _put(state, key, _jdump([result for result in results if not (isinstance(result, dict) and result.get("uid") == uid)]))
             _revoke_uid(state, uid)
             _commit(state)
         return {"ok": True}
@@ -3546,7 +3485,7 @@ function adminDelUser(id){return guarded(async()=>{
   if(!user||!user.isAdmin)return;
   const profiles=LS.get('ubt_profiles',{});
   const pr=Object.values(profiles).find(x=>x.id===id);
-  if(!confirm((pr?pr.name:'')+' профилін өшіру? Оған тиесілі сыныптар, тесттер және нәтижелер де жойылады.'))return;
+  if(!confirm((pr?pr.name:'')+' аккаунтын өшіру? Тесттері, сыныптары және нәтижелері сақталады.'))return;
   const r=await authCall('admin_deluser',{uid:id});
   if(!r.ok){alert(r.msg||'Қате');return}
   try{await window.__bridge.refresh()}catch(e){}
