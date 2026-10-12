@@ -1497,8 +1497,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <div class="fg" id="admin-pass-wrap" style="display:none"><label class="sub">Админ ретінде кіру</label></div>
       <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doLogin()">Кіру</button>
       <button class="btn btn-s" style="width:100%;margin-bottom:10px" onclick="showRegister()">Тіркелу</button>
-      <button class="btn btn-s btn-sm" style="width:100%;margin-bottom:10px" onclick="showTeacherReg()">👨‍🏫 Мұғалім болуға өтініш жіберу</button>
-      <button class="btn btn-w btn-sm" style="width:100%" onclick="showContactAdmin()">💬 Админге жазу</button>
+      <button class="btn btn-s btn-sm" style="width:100%" onclick="showTeacherReg()">👨‍🏫 Мұғалім болуға өтініш жіберу</button>
     </div>
     <div class="card" id="register-box" style="display:none">
       <h3 style="margin-bottom:12px">Тіркелу</h3>
@@ -1633,9 +1632,8 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <button class="mode" onclick="showBookmarks()"><span class="ic">🔖</span><h3>Таңдаулылар</h3><p>Сақталған сұрақтар</p></button>
       <button class="mode" onclick="showPlanner()"><span class="ic">🗓</span><h3>Жоспар</h3><p>Дайындық жоспары</p></button>
       <button class="mode" onclick="showTeacher()"><span class="ic">🏫</span><h3>Сынып / Мұғалім</h3><p>Сыныппен жұмыс</p></button>
-      <button class="mode" onclick="showQuestionBank()"><span class="ic">📚</span><h3>Сұрақтар базасы</h3><p>Пәндер бойынша өз сұрақтарым</p></button>
-      <button class="mode" onclick="openContactFromApp()"><span class="ic">💬</span><h3>Админге</h3><p>Хабарлама жазу</p></button>
-      <button class="mode" id="admin-btn" style="display:none" onclick="showAdmin()"><span class="ic">🛠</span><h3>Админ</h3><p>Басқару панелі</p></button>
+      <button class="mode" onclick="showQuestionBank()" style="grid-column:1/-1"><span class="ic">📚</span><h3>Сұрақтар базасы</h3><p>Пәндер бойынша өз сұрақтарым</p></button>
+      <button class="mode" id="admin-btn" style="display:none;grid-column:1/-1" onclick="showAdmin()"><span class="ic">🛠</span><h3>Админ</h3><p>Басқару панелі</p></button>
     </div>
   </div>
 </div>
@@ -1644,7 +1642,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
   <div class="wrap">
     <div class="hdr"><h2>📩 Админнен</h2><p class="sub">Сізге келген жеке хабарламалар</p></div>
     <div id="admin-inbox-list" class="list"></div>
-    <div class="card" id="admin-inbox-reply" style="padding:18px;display:none"><h3 style="margin-bottom:8px">↩ Админге жауап жазу</h3><textarea id="admin-inbox-text" maxlength="2000" rows="3" placeholder="Жауабыңызды жазыңыз" style="width:100%;padding:10px;border:1px solid var(--b);border-radius:12px;background:var(--bg);color:var(--t);font:inherit"></textarea><button class="btn btn-p btn-sm" id="admin-inbox-send" onclick="sendAdminInboxReply()" style="margin-top:8px">📨 Жауап жіберу</button></div>
+    <div class="card" id="admin-inbox-reply" style="padding:18px;display:none"><h3 style="margin-bottom:8px">↩ Хабарламаға жауап беру</h3><p class="sub" id="admin-inbox-target" style="margin-bottom:8px"></p><textarea id="admin-inbox-text" maxlength="2000" rows="3" placeholder="Жауабыңызды жазыңыз" style="width:100%;padding:10px;border:1px solid var(--b);border-radius:12px;background:var(--bg);color:var(--t);font:inherit"></textarea><button class="btn btn-p btn-sm" id="admin-inbox-send" onclick="sendAdminInboxReply()" style="margin-top:8px">📨 Жауап жіберу</button></div>
     <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
 </div>
@@ -2573,9 +2571,22 @@ function updateAdminInboxBadge(){
 }
 function renderAdminInbox(){
   const el=document.getElementById('admin-inbox-list');if(!el)return;
-  const list=ownAdminLetters().slice().reverse();
-  el.innerHTML=list.length?list.map((m,i)=>`<div class="card" style="padding:16px;margin-bottom:10px;border-left:4px solid ${m.role==='user'?'#89b695':m.read?'#dce8dc':'#ef4444'}"><div class="row" style="justify-content:space-between"><b>${m.role==='user'?'↩ Менің жауабым':'📩 Админнен'} · ${list.length-i}</b><span class="sub">${esc(new Date(m.time*1000).toLocaleString('kk-KZ'))}</span></div><p style="white-space:pre-wrap;overflow-wrap:anywhere;margin-top:10px">${esc(m.text)}</p></div>`).join(''):'<div class="card"><p class="sub">Әзірге админнен хабарлама келген жоқ.</p></div>';
-  document.getElementById('admin-inbox-reply').style.display=list.some(m=>m.role!=='user')?'block':'none';
+  const all=ownAdminLetters(),list=all.filter(m=>m.role!=='user').slice().reverse();
+  const form=document.getElementById('admin-inbox-reply');
+  if(list.length&&!list.some(m=>m.id===form.dataset.letterId))form.dataset.letterId=list[0].id;
+  el.innerHTML=list.length?list.map((m,i)=>{
+    const replies=all.filter(r=>r.role==='user'&&r.replyTo===m.id);
+    return `<div class="card" style="padding:16px;margin-bottom:10px;border-left:4px solid ${m.read?'#dce8dc':'#ef4444'}"><div class="row" style="justify-content:space-between"><b>📩 Админнен · ${list.length-i}</b><span class="sub">${esc(new Date(m.time*1000).toLocaleString('kk-KZ'))}</span></div><p style="white-space:pre-wrap;overflow-wrap:anywhere;margin-top:10px">${esc(m.text)}</p>${replies.map(r=>`<div style="margin:10px 0 0 auto;padding:10px;border-radius:12px;background:#e1f3e5;max-width:85%;white-space:pre-wrap;overflow-wrap:anywhere"><b>↩ Менің жауабым</b> · <small>${esc(new Date(r.time*1000).toLocaleString('kk-KZ'))}</small><div>${esc(r.text)}</div></div>`).join('')}<button class="btn btn-s btn-sm" style="margin-top:12px" onclick="selectAdminInboxLetter(${jsq(m.id)})">↩ Осы хабарламаға жауап беру</button></div>`
+  }).join(''):'<div class="card"><p class="sub">Әзірге админнен хабарлама келген жоқ.</p></div>';
+  form.style.display=list.length?'block':'none';
+  const selected=list.find(m=>m.id===form.dataset.letterId);
+  document.getElementById('admin-inbox-target').textContent=selected?'Хабарлама '+(list.length-list.indexOf(selected))+'-ге жауап жазасыз':'';
+}
+function selectAdminInboxLetter(id){
+  const form=document.getElementById('admin-inbox-reply');
+  if(!ownAdminLetters().some(m=>m.id===id&&m.role!=='user'))return;
+  form.dataset.letterId=id;renderAdminInbox();form.scrollIntoView({behavior:'smooth',block:'center'});
+  document.getElementById('admin-inbox-text').focus();
 }
 async function showAdminInbox(){
   if(!user||user.isAdmin)return;
@@ -2586,7 +2597,7 @@ async function showAdminInbox(){
 }
 async function sendAdminInboxReply(){
   if(!user||user.isAdmin)return;
-  const original=ownAdminLetters().slice().reverse().find(m=>m.role!=='user');
+  const original=ownAdminLetters().find(m=>m.id===document.getElementById('admin-inbox-reply').dataset.letterId&&m.role!=='user');
   const inp=document.getElementById('admin-inbox-text'),msg=inp.value.trim();
   if(!original||!msg){alert('Алдымен хабарламаға жауап жазыңыз');return}
   const btn=document.getElementById('admin-inbox-send');btn.disabled=true;
@@ -2602,7 +2613,7 @@ function renderAdminLetterHistory(){
   const all=LS.get('ubt_admin_letters',[]),list=all.slice(-30).reverse();
   const count=all.filter(m=>m.role==='user'&&!m.read).length, badge=document.getElementById('admin-letter-unread');
   badge.style.display=count?'inline-block':'none';badge.textContent=count+' жаңа жауап';
-  el.innerHTML=list.length?'<h4 style="margin:10px 0">Соңғы хабарламалар мен жауаптар</h4>'+list.map(m=>`<div class="item"><div class="info"><h4>${esc(m.toName||'Қолданушы')} · ${m.role==='user'?'↩ Жауабы':'📨 Админнен'} ${m.role==='user'?(m.read?'✓ Оқылды':'🔴 Жаңа'):(m.read?'✓ Оқылды':'· Жаңа')}</h4><p>${esc(new Date(m.time*1000).toLocaleString('kk-KZ'))}</p><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(m.text)}</p></div><div class="acts"><button class="btn btn-s btn-sm" onclick="adminChooseLetterRecipient(${jsq(m.toName)})">↩ Жауап жазу</button></div></div>`).join(''):'<p class="sub">Әзірге хабарлама жіберілмеген.</p>';
+  el.innerHTML=list.length?'<h4 style="margin:10px 0">Соңғы хабарламалар мен жауаптар</h4>'+list.map(m=>`<div class="item"><div class="info"><h4>${esc(m.toName||'Қолданушы')} · ${m.role==='user'?'↩ Жауабы':'📨 Админнен'} ${m.role==='user'?(m.read?'✓ Оқылды':'🔴 Жаңа'):(m.read?'✓ Оқылды':'· Жаңа')}</h4>${m.replyTo?`<p class="sub">Хатқа жауап: ${esc((all.find(x=>x.id===m.replyTo)||{}).text||'').slice(0,100)}</p>`:''}<p>${esc(new Date(m.time*1000).toLocaleString('kk-KZ'))}</p><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(m.text)}</p></div><div class="acts"><button class="btn btn-s btn-sm" onclick="adminChooseLetterRecipient(${jsq(m.toName)})">↩ Жауап жазу</button></div></div>`).join(''):'<p class="sub">Әзірге хабарлама жіберілмеген.</p>';
 }
 async function adminSendLetter(){
   if(!user||!user.isAdmin)return;
