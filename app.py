@@ -870,6 +870,14 @@ def _authorize(state, sess, k, v, chat_token=""):
         return _merge_tests(state, sess, v)
     if k == "ubt_schemes":
         return _merge_schemes(state, sess, v)
+    if k == "ubt_lessons":
+        if not sess["admin"]:
+            return None
+        lst = _jload(v, list, None)
+        if lst is None:
+            return None
+        res = _jdump([t for t in lst if isinstance(t, dict) and isinstance(t.get("id"), str)])
+        return res if len(res) < 6_000_000 else None
     if k != "ubt_qotd_day" and any(k.startswith(p) for p in _USER_PREFIXES):
         if sess["admin"] or any(k == p + sess["uid"] for p in _USER_PREFIXES):
             return v
@@ -1124,6 +1132,13 @@ html,body{overflow-x:hidden}
 .sch-fr{display:flex;gap:8px;margin-bottom:6px}
 .sch-fr input{flex:1;min-width:0;padding:8px 10px;border:1px solid var(--b);border-radius:14px;font-size:13px;font-family:inherit;background:var(--bg)}
 .sch-fr input:first-child{max-width:150px}
+
+
+.les-grid{display:grid;grid-template-columns:1.25fr 1fr;gap:14px;align-items:start}
+@media(max-width:820px){.les-grid{grid-template-columns:1fr}}
+.les-frame{width:100%;border:1px solid var(--b);border-radius:16px;background:#fff;display:block}
+.les-code{background:#0f172a;color:#e2e8f0;border-radius:16px;padding:14px;font:12.5px/1.55 ui-monospace,Menlo,Consolas,monospace;max-height:520px;overflow:auto;white-space:pre;tab-size:2}
+.les-ta{width:100%;min-height:200px;padding:10px 12px;border:1px solid var(--b);border-radius:16px;font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace;background:var(--bg);white-space:pre;overflow:auto;resize:vertical}
 
 .ovl{position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:9999;overflow:auto;padding:20px 12px}
 .ovl .box{max-width:760px;margin:0 auto;background:var(--c);border-radius:22px;padding:20px}
@@ -1488,6 +1503,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <div class="mode" onclick="showCreate()"><div class="ic">➕</div><h3>Тест құру</h3><p>Атауы + сұрақтар</p></div>
       <div class="mode" onclick="showAddQ()"><div class="ic">🖼</div><h3>Сұрақ қосу</h3><p>Сурет · кесте · барлық пән</p></div>
       <div class="mode" onclick="showSchemes()"><div class="ic">🗺</div><h3>Схема құру</h3><p>Кезеңдер · карточка · фото</p></div>
+      <div class="mode" onclick="showLessons()"><div class="ic">🎬</div><h3>Анимациялық сабақтар</h3><p>Анимация + код</p></div>
       <div class="mode" onclick="showRanking()"><div class="ic">🏆</div><h3>Рейтинг</h3><p>Ортақ көшбасшылар</p></div>
     </div>
     <div class="grid2 home-tools">
@@ -1701,6 +1717,51 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
   <div class="wrap wide">
     <div id="sch-view"></div>
     <div class="row" style="margin-top:16px"><button class="btn btn-s" onclick="showSchemes()">Артқа</button></div>
+  </div>
+</div>
+
+<div id="s-lessons" class="screen">
+  <div class="wrap">
+    <div class="hdr"><h2>🎬 Анимациялық сабақтар</h2><p class="sub">Тақырыпты анимация арқылы түсіндіретін сабақтар</p></div>
+    <div class="fg"><select id="les-f-subj" onchange="renderLessons()"></select></div>
+    <div id="les-list" class="list"></div>
+    <div class="row" style="margin-top:20px"><button class="btn btn-p" id="les-add" style="display:none" onclick="lesNew()">➕ Сабақ қосу</button><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+  </div>
+</div>
+
+<div id="s-lesson" class="screen">
+  <div class="wrap wide">
+    <div id="les-view"></div>
+    <div class="row" style="margin-top:16px"><button class="btn btn-s" onclick="showLessons()">Артқа</button></div>
+  </div>
+</div>
+
+<div id="s-lessonedit" class="screen">
+  <div class="wrap wide">
+    <div class="hdr"><h2 id="les-ed-h">🎬 Сабақ қосу</h2><p class="sub">Анимацияның кодын қойыңыз: ол жанында іске қосылады, ал код оқушыға көрінеді</p></div>
+    <div class="card">
+      <div class="fg"><label>Пән *</label><select id="le-subj"></select></div>
+      <div class="fg"><label>Сабақ атауы *</label><input id="le-title" maxlength="100" placeholder="Мыс: Еркін түсу"></div>
+      <div class="fg"><label>Түсіндірме мәтін (формула: $x^2$)</label><textarea id="le-text" style="min-height:110px" maxlength="4000" placeholder="Тақырыпты қысқаша түсіндіріңіз"></textarea></div>
+    </div>
+    <div class="card">
+      <h3 style="margin-bottom:8px">▶ Анимация коды (HTML + CSS + JS, бір файл)</h3>
+      <div class="row" style="justify-content:flex-start;margin-bottom:8px">
+        <button class="btn btn-s btn-sm" onclick="lesTpl('canvas')">🧩 Үлгі: Canvas допты</button>
+        <button class="btn btn-s btn-sm" onclick="lesTpl('svg')">🧩 Үлгі: SVG орбита</button>
+        <button class="btn btn-s btn-sm" onclick="lesCopyPrompt()">🤖 ЖИ-ге сұрау мәтінін көшіру</button>
+      </div>
+      <textarea id="le-code" class="les-ta" style="min-height:260px" spellcheck="false" placeholder="Анимацияның HTML/JS кодын осында қойыңыз"></textarea>
+      <div class="row" style="justify-content:flex-start;margin-top:8px;align-items:center"><button class="btn btn-ok btn-sm" onclick="lesTest()">▶ Тексеру</button><span class="sub">Биіктік (px):</span><input id="le-h" type="number" min="200" max="800" value="420" style="width:90px;padding:7px;border:1px solid var(--b);border-radius:12px"></div>
+      <div id="le-prev" style="margin-top:10px"></div>
+    </div>
+    <div class="card">
+      <h3 style="margin-bottom:8px">💻 Анимацияның жанында көрсетілетін код (міндетті емес)</h3>
+      <p class="sub" style="margin-bottom:8px">Бос қалдырсаңыз, жоғарыдағы анимация коды көрсетіледі. Мыс: Python немесе формула түсіндірмесі</p>
+      <div class="fg"><label>Тіл белгісі</label><input id="le-lang" maxlength="20" placeholder="HTML / Python / JS"></div>
+      <textarea id="le-show" class="les-ta" spellcheck="false"></textarea>
+    </div>
+    <div class="row"><button class="btn btn-p" onclick="lesSave()">💾 Сақтау</button><button class="btn btn-s" onclick="showLessons()">Артқа</button></div>
   </div>
 </div>
 
@@ -3281,6 +3342,117 @@ function schSave(){
   alert(user.isAdmin&&t.isPublic?'✅ Схема жарияланды':(t.status==='pending'?'✅ Схема сақталды. Админ мақұлдаған соң жарияланады.':'✅ Схема сақталды (тек өзіңізге көрінеді)'));
   schTabCur='mine';showSchemes();
 }
+
+// ================= Анимациялық сабақтар =================
+const LES_CSP="default-src 'none'; script-src 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; img-src data: blob:; media-src data: blob:; connect-src 'none'; frame-src 'none'; form-action 'none'";
+const LES_TPL={
+canvas:'<canvas id="c" width="600" height="320" style="width:100%;background:#f8fafc;border-radius:12px"></canvas>\n<div style="padding:8px;font:14px sans-serif">Ауырлық күші: <input id="g" type="range" min="1" max="30" value="10"> <button id="b">⏸</button></div>\n<script>\nconst c=document.getElementById("c"),x=c.getContext("2d");let y=40,v=0,run=true;\ndocument.getElementById("b").onclick=e=>{run=!run;e.target.textContent=run?"⏸":"▶"};\nfunction f(){\n  if(run){const g=+document.getElementById("g").value/60;v+=g;y+=v;if(y>300){y=300;v=-v*.85}}\n  x.clearRect(0,0,600,320);x.fillStyle="#2563eb";x.beginPath();x.arc(300,y,18,0,7);x.fill();\n  requestAnimationFrame(f)\n}\nf();\n<\/script>',
+svg:'<svg viewBox="0 0 400 300" style="width:100%;background:#0f172a;border-radius:12px">\n  <circle cx="200" cy="150" r="22" fill="#fbbf24"/>\n  <circle cx="200" cy="150" r="100" fill="none" stroke="#334155"/>\n  <g><circle cx="300" cy="150" r="9" fill="#38bdf8"/>\n    <animateTransform attributeName="transform" type="rotate" from="0 200 150" to="360 200 150" dur="6s" repeatCount="indefinite"/>\n  </g>\n  <text x="200" y="285" fill="#cbd5e1" font-size="14" text-anchor="middle">Жер Күнді айнала қозғалады</text>\n</svg>'
+};
+function allLessons(){return LS.get('ubt_lessons',[])}
+function saveLessons(a){LS.set('ubt_lessons',a)}
+function lesDoc(code){
+  const meta='<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="'+LES_CSP+'"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;padding:6px;font-family:system-ui,sans-serif;color:#111;background:#fff}</style>';
+  const m=String(code).match(/^\s*(<!doctype[^>]*>)/i);
+  return (m?m[1]:'<!doctype html>')+meta+(m?String(code).slice(m[0].length):String(code));
+}
+function lesFrame(code,h){
+  const f=document.createElement('iframe');
+  f.className='les-frame';f.setAttribute('sandbox','allow-scripts');f.setAttribute('referrerpolicy','no-referrer');
+  f.style.height=Math.max(200,Math.min(800,parseInt(h,10)||420))+'px';
+  f.srcdoc=lesDoc(code);return f;
+}
+function lesCopy(txt,btn){
+  const done=()=>{if(btn){const o=btn.textContent;btn.textContent='✓ Көшірілді';setTimeout(()=>btn.textContent=o,1400)}};
+  try{if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(done,()=>lesCopyOld(txt,done));return}}catch(e){}
+  lesCopyOld(txt,done);
+}
+function lesCopyOld(txt,done){
+  const t=document.createElement('textarea');t.value=txt;t.style.position='fixed';t.style.opacity='0';document.body.appendChild(t);t.select();
+  try{document.execCommand('copy');done()}catch(e){alert('Көшіру мүмкін болмады')}t.remove();
+}
+function showLessons(){
+  const sel=document.getElementById('les-f-subj');
+  sel.innerHTML=schSubjOptions('Барлық пәндер');
+  document.getElementById('les-add').style.display=(user&&user.isAdmin)?'':'none';
+  renderLessons();showScr('s-lessons');
+}
+function renderLessons(){
+  const subj=document.getElementById('les-f-subj').value;
+  let a=allLessons();if(subj)a=a.filter(t=>t.subject===subj);
+  const el=document.getElementById('les-list'),adm=user&&user.isAdmin;
+  if(!a.length){el.innerHTML='<div class="empty"><div class="ic">🎬</div><p>Әзірге сабақ жоқ</p></div>';return}
+  el.innerHTML=a.map(t=>`<div class="item"><div class="info"><h4>${esc(t.title||'Атаусыз')}</h4><p>${esc(t.subjectName||'')}</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="lesOpen(${jsq(t.id)})">▶ Ашу</button>${adm?`<button class="btn btn-s btn-sm" onclick="lesEdit(${jsq(t.id)})">✎</button><button class="btn btn-d btn-sm" onclick="lesDel(${jsq(t.id)})">🗑</button>`:''}</div></div>`).join('');
+}
+function lesOpen(id){
+  const t=allLessons().find(x=>x.id===id);if(!t)return;
+  const code=t.show&&t.show.trim()?t.show:t.code;
+  const v=document.getElementById('les-view');
+  v.innerHTML=`<div class="hdr"><h2>${esc(t.title||'')}</h2><p class="sub">${esc(t.subjectName||'')}</p></div>
+    ${t.text?`<div class="card" id="les-txt" style="line-height:1.7">${esc(t.text).replace(/\n/g,'<br>')}</div>`:''}
+    <div class="les-grid"><div id="les-anim"></div>
+      <div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b>💻 ${esc(t.lang||'Код')}</b><button class="btn btn-s btn-sm" id="les-cp">📋 Көшіру</button></div><pre class="les-code" id="les-pre"></pre></div></div>
+    <div class="row" style="margin-top:12px;justify-content:flex-start"><button class="btn btn-s btn-sm" id="les-rr">🔄 Қайта іске қосу</button></div>`;
+  const host=document.getElementById('les-anim');
+  const run=()=>{host.innerHTML='';host.appendChild(lesFrame(t.code,t.h))};
+  run();
+  document.getElementById('les-pre').textContent=code;
+  document.getElementById('les-cp').onclick=e=>lesCopy(code,e.target);
+  document.getElementById('les-rr').onclick=run;
+  showScr('s-lesson');mathIn(document.getElementById('les-txt'));
+}
+let lesEditId='';
+function lesNew(){
+  if(!user||!user.isAdmin)return;
+  lesEditId='';document.getElementById('les-ed-h').textContent='🎬 Сабақ қосу';
+  document.getElementById('le-subj').innerHTML=schSubjOptions('— Пәнді таңдаңыз —');
+  ['le-title','le-text','le-code','le-lang','le-show'].forEach(i=>document.getElementById(i).value='');
+  document.getElementById('le-h').value=420;document.getElementById('le-prev').innerHTML='';
+  showScr('s-lessonedit');
+}
+function lesEdit(id){
+  if(!user||!user.isAdmin)return;
+  const t=allLessons().find(x=>x.id===id);if(!t)return;
+  lesEditId=id;document.getElementById('les-ed-h').textContent='✎ Сабақты өңдеу';
+  const sel=document.getElementById('le-subj');sel.innerHTML=schSubjOptions('— Пәнді таңдаңыз —');sel.value=t.subject||'';
+  document.getElementById('le-title').value=t.title||'';document.getElementById('le-text').value=t.text||'';
+  document.getElementById('le-code').value=t.code||'';document.getElementById('le-lang').value=t.lang||'';
+  document.getElementById('le-show').value=t.show||'';document.getElementById('le-h').value=t.h||420;
+  document.getElementById('le-prev').innerHTML='';showScr('s-lessonedit');
+}
+function lesTpl(k){
+  const ta=document.getElementById('le-code');
+  if(ta.value.trim()&&!confirm('Қазіргі код үлгімен ауыстырылады. Жалғастыру керек пе?'))return;
+  ta.value=LES_TPL[k]||'';lesTest();
+}
+function lesTest(){
+  const host=document.getElementById('le-prev');host.innerHTML='';
+  const code=document.getElementById('le-code').value;
+  if(!code.trim()){alert('Алдымен анимация кодын қойыңыз');return}
+  host.appendChild(lesFrame(code,document.getElementById('le-h').value));
+}
+function lesCopyPrompt(){
+  const topic=(document.getElementById('le-title').value||'ТАҚЫРЫП').trim();
+  const txt='Мына тақырыпқа анимация жаз: «'+topic+'».\nТалаптар:\n- Тек БІР HTML файл (HTML + CSS + JS), сыртқы сурет немесе файл болмасын.\n- Canvas немесе SVG қолдан. requestAnimationFrame немесе SVG анимациясы.\n- Ойнату/тоқтату түймесі және құбылысты өзгертетін 1-2 слайдер болсын.\n- Барлық жазу қазақша. Ені 100%, биіктігі 420px-тен аспасын.\n- eval және fetch қолданба.\nТек кодты қайтар, түсіндірмесіз.';
+  lesCopy(txt,null);alert('Сұрау мәтіні көшірілді. Оны Claude, Gemini немесе ChatGPT-ге қойыңыз да, шыққан кодты осында қойыңыз.');
+}
+function lesSave(){
+  if(!user||!user.isAdmin){alert('Тек админ сабақ қоса алады');return}
+  const subj=document.getElementById('le-subj'),subject=subj.value;
+  const title=document.getElementById('le-title').value.trim(),code=document.getElementById('le-code').value;
+  if(!subject){alert('Пәнді таңдаңыз!');return}
+  if(!title){alert('Сабақ атауын жазыңыз!');return}
+  if(!code.trim()){alert('Анимация кодын қойыңыз!');return}
+  const show=document.getElementById('le-show').value;
+  if(code.length>200000||show.length>100000){alert('Код тым үлкен (анимация ≤ 200 мың таңба)');return}
+  const a=allLessons();
+  let t=lesEditId?a.find(x=>x.id===lesEditId):null;
+  if(!t){t={id:'ls_'+Date.now().toString(36)+Math.random().toString(36).slice(2,5),authorId:user.id,authorName:user.name,createdAt:new Date().toISOString()};a.unshift(t)}
+  Object.assign(t,{subject,subjectName:subj.options[subj.selectedIndex].text,title:title.slice(0,100),text:document.getElementById('le-text').value.trim().slice(0,4000),code,show,
+    lang:document.getElementById('le-lang').value.trim().slice(0,20),h:Math.max(200,Math.min(800,parseInt(document.getElementById('le-h').value,10)||420)),updatedAt:new Date().toISOString()});
+  saveLessons(a);alert('✅ Сабақ сақталды');showLessons();
+}
+function lesDel(id){if(!user||!user.isAdmin)return;if(!confirm('Сабақты өшіру керек пе?'))return;saveLessons(allLessons().filter(x=>x.id!==id));renderLessons()}
 
 function selOpt(i){st.answers[st.questions[st.currentIndex].id]=i;renderQ()}
 function togFlag(){const q=st.questions[st.currentIndex];st.flags[q.id]=!st.flags[q.id];renderQ()}
