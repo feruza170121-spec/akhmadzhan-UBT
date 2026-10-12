@@ -447,6 +447,74 @@ def _handle_req(state, sid, rq):
     d = rq.get("data") if isinstance(rq.get("data"), dict) else {}
     sess = _session(state, rq.get("tok"))
 
+    if typ == "admin_assign_test":
+        if not (sess and sess["admin"]):
+            return {"ok": False, "msg": "Рұқсат жоқ"}
+        login = str(d.get("login") or "").strip().lower()
+        tid = str(d.get("testId") or "")
+        limit = d.get("limit")
+        if type(limit) is not int or not 1 <= limit <= 100:
+            return {"ok": False, "msg": "Лимит 1–100 аралығында болуы керек"}
+        with state["lock"]:
+            person = _profiles(state).get(login)
+            tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
+            test = next((t for t in tests if isinstance(t, dict) and t.get("id") == tid), None)
+            if not person or person.get("id") == "admin":
+                return {"ok": False, "msg": "Мұндай логин табылмады"}
+            if not test or not isinstance(test.get("questions"), list) or not test["questions"]:
+                return {"ok": False, "msg": "Тест табылмады немесе сұрағы жоқ"}
+            assignments = _jload(state["db"].get("ubt_assigned_tests", "[]"), list, [])
+            aid = "as_" + secrets.token_hex(12)
+            private_id = "sent_" + secrets.token_hex(12)
+            private_test = dict(test)
+            private_test.update({"id": private_id, "authorId": "admin", "authorName": "Админ",
+                                 "status": "private", "isPublic": False, "adminApproved": False,
+                                 "assignmentId": aid})
+            private_test.pop("classId", None)
+            private_test.pop("className", None)
+            assignment = {"id": aid, "uid": person["id"],
+                          "login": login, "testId": private_id, "title": str(test.get("topic") or "Тест")[:150],
+                          "limit": limit, "used": 0, "created": int(time.time())}
+            assignments.append(assignment)
+            tests.append(private_test)
+            _put(state, "ubt_tests", _jdump(tests))
+            _put(state, "ubt_assigned_tests", _jdump(assignments))
+            _commit(state)
+        return {"ok": True, "assignment": assignment}
+
+    if typ == "admin_remove_assignment":
+        if not (sess and sess["admin"]):
+            return {"ok": False, "msg": "Рұқсат жоқ"}
+        aid = str(d.get("id") or "")
+        with state["lock"]:
+            old = _jload(state["db"].get("ubt_assigned_tests", "[]"), list, [])
+            kept = [a for a in old if a.get("id") != aid] if isinstance(old, list) else []
+            if len(kept) == len(old):
+                return {"ok": False, "msg": "Жіберілген тест табылмады"}
+            tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
+            _put(state, "ubt_tests", _jdump([t for t in tests if not (isinstance(t, dict) and t.get("assignmentId") == aid)]))
+            _put(state, "ubt_assigned_tests", _jdump(kept))
+            _commit(state)
+        return {"ok": True}
+
+    if typ == "start_assigned_test":
+        if not sess:
+            return {"ok": False, "msg": "Алдымен кіріңіз"}
+        aid = str(d.get("id") or "")
+        with state["lock"]:
+            assignments = _jload(state["db"].get("ubt_assigned_tests", "[]"), list, [])
+            a = next((x for x in assignments if isinstance(x, dict) and x.get("id") == aid and x.get("uid") == sess["uid"]), None)
+            tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
+            t = next((x for x in tests if isinstance(x, dict) and a and x.get("id") == a.get("testId")), None)
+            if not a or not t or not t.get("questions"):
+                return {"ok": False, "msg": "Тест қолжетімсіз"}
+            if a.get("used", 0) >= a.get("limit", 0):
+                return {"ok": False, "msg": "Тапсыру лимиті аяқталды"}
+            a["used"] += 1
+            _put(state, "ubt_assigned_tests", _jdump(assignments))
+            _commit(state)
+        return {"ok": True, "testId": t["id"], "used": a["used"]}
+
     if typ == "login":
         name = str(d.get("name") or "").strip()[:60]
         pw = str(d.get("pass") or "")[:200]
@@ -1102,6 +1170,8 @@ def _authorize(state, sess, k, v, chat_token=""):
         return _merge_stats(state, sess, v)
     if k == "ubt_tests":
         return _merge_tests(state, sess, v)
+    if k == "ubt_assigned_tests":
+        return None  # тек тексерілген сервер сұраныстары өзгертеді
     if k == "ubt_schemes":
         return _merge_schemes(state, sess, v)
     if k == "ubt_classes":
@@ -1226,6 +1296,8 @@ def _snapshot(tok="", claim=""):
     if not sess:
         return {"ubt_chat": chat}
     db["ubt_chat"] = chat
+    assignments = _jload(db.get("ubt_assigned_tests", "[]"), list, [])
+    db["ubt_assigned_tests"] = _jdump(assignments if sess["admin"] else [a for a in assignments if isinstance(a, dict) and a.get("uid") == sess["uid"]])
     letters = _jload(db.get("ubt_admin_letters", "[]"), list, [])
     db["ubt_admin_letters"] = _jdump(letters if sess["admin"] else [
         m for m in letters if isinstance(m, dict) and m.get("toUid") == sess["uid"]])
@@ -1250,8 +1322,10 @@ def _snapshot(tok="", claim=""):
         threads.update(c.get("reqId") or "cls_" + str(c.get("id")) for c in mine if c.get("id") in managed)
         db["ubt_class_chat"] = _jdump({k: v for k, v in cc.items() if k in threads})
         tests = _jload(db.get("ubt_tests", "[]"), list, [])
+        assigned_ids = {a.get("testId") for a in assignments if isinstance(a, dict) and a.get("uid") == sess["uid"] and a.get("used", 0) < a.get("limit", 0)}
         db["ubt_tests"] = _jdump([t for t in tests if isinstance(t, dict) and
             (t.get("authorId") == sess["uid"] or
+             t.get("id") in assigned_ids or
              (t.get("classId") in joined if t.get("classId") else (t.get("isPublic") or t.get("status") == "approved")))])
         for k in list(db.keys()):
             if k.startswith(_PRIVATE_PREFIXES) and not (any(k == p + sess["uid"] for p in _PRIVATE_PREFIXES) or
@@ -1847,6 +1921,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
     <div id="home-extras"></div>
     <div class="grid2" style="margin-bottom:20px">
       <div class="mode" onclick="showPublicTests()"><div class="ic">🌐</div><h3>Жария тесттер</h3><p>Админ мақұлдаған</p></div>
+      <div class="mode" onclick="showAssignedTests()"><div class="ic">📨</div><h3>Маған жіберілген тесттер</h3><p>Жеке тапсырмалар мен лимит</p></div>
       <div class="mode" onclick="showMyTests()"><div class="ic">📚</div><h3>Менің тесттерім</h3><p>Өз тесттеріңіз</p></div>
       <div class="mode" onclick="showCreate()"><div class="ic">➕</div><h3>Тест құру</h3><p>Атауы + сұрақтар</p></div>
       <div class="mode" onclick="showAddQ()"><div class="ic">🖼</div><h3>Сұрақ қосу</h3><p>Сурет · кесте · барлық пән</p></div>
@@ -1933,10 +2008,32 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
 
 <div id="s-public" class="screen">
   <div class="wrap">
-    <div class="hdr"><h2>🌐 Жария тесттер</h2><p class="sub">Әкімші рұқсат еткен тесттердің сұрақтарын өз базаңызға жүктей аласыз</p></div>
+    <div class="hdr"><h2>🌐 Жария тесттер</h2><p class="sub">Тест тапсырыңыз. Сұрақтарды өз базасына тек админ жүктей алады.</p></div>
     <div id="public-subj" class="row" style="justify-content:flex-start;margin-bottom:12px"></div>
     <div id="public-list" class="list"></div>
-    <div class="row" style="margin-top:20px"><button class="btn btn-s" onclick="showQuestionBank()">📚 Сұрақтар базасы</button><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+    <div class="row" style="margin-top:20px"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+  </div>
+</div>
+
+<div id="s-assigned" class="screen">
+  <div class="wrap">
+    <div class="hdr"><h2>📨 Маған жіберілген тесттер</h2><p class="sub">Админ сізге арнайы жіберген тесттер</p></div>
+    <div id="assigned-list" class="list"></div>
+    <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+  </div>
+</div>
+
+<div id="s-send-tests" class="screen">
+  <div class="wrap">
+    <div class="hdr"><h2>📨 Тест жіберу</h2><p class="sub">Логинді жазып, тест пен тапсыру лимитін таңдаңыз</p></div>
+    <div class="card">
+      <div class="fg"><label>Алушының логині</label><input id="send-test-login" list="send-test-logins" autocomplete="off" placeholder="Тіркелген қолданушының логині"><datalist id="send-test-logins"></datalist></div>
+      <div class="fg"><label>Жіберілетін тест</label><select id="send-test-choice"></select></div>
+      <div class="fg"><label>Тапсыру лимиті</label><input id="send-test-limit" type="number" min="1" max="100" value="1"></div>
+      <button class="btn btn-p" onclick="sendAssignedTest()">📨 Тестті жіберу</button>
+    </div>
+    <div class="card"><h3>Жіберілген тесттер</h3><div id="sent-test-list" class="list"></div></div>
+    <div class="row"><button class="btn btn-s" onclick="showAdmin()">Админ панеліне оралу</button></div>
   </div>
 </div>
 
@@ -2434,6 +2531,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
     </div>
     <div class="card" style="padding:20px">
       <h3 style="margin-bottom:12px">📚 Барлық тесттер</h3>
+      <button class="btn btn-p btn-sm" style="margin-bottom:12px" onclick="showSendTests()">📨 Тест жіберу</button>
       <button class="btn btn-p btn-sm" style="margin-bottom:12px" onclick="showFileTest()">📂 JSON файлдан тест ашу</button>
       <p class="sub" style="margin-bottom:12px">Басқа қолданушылардың жеке және жария тесттерін көріп, өзіңізге көшіре аласыз.</p>
       <div id="admin-tests" class="list"></div>
@@ -3020,7 +3118,7 @@ function renderAdminUsers(){
 }
 function showAdmin(){
   if(!user||!user.isAdmin){alert('Қолжетімсіз');return}
-  const tests=allTests();
+  const tests=allTests().filter(t=>!t.assignmentId);
   const profiles=LS.get('ubt_profiles',{});
   const formulas=LS.get('ubt_formulas',[]);
   const pending=tests.filter(t=>t.status==='pending');
@@ -3079,6 +3177,51 @@ function showAdmin(){
   }
 }
 function adminDelTest(id){if(!confirm('Тестті өшіру?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showAdmin()}
+function showSendTests(){
+  if(!user||!user.isAdmin)return;
+  const profiles=LS.get('ubt_profiles',{});
+  document.getElementById('send-test-logins').innerHTML=Object.keys(profiles).map(k=>`<option value="${esc(k)}"></option>`).join('');
+  const tests=allTests().filter(t=>!t.assignmentId&&Array.isArray(t.questions)&&t.questions.length);
+  document.getElementById('send-test-choice').innerHTML=tests.map(t=>`<option value="${esc(t.id)}">${esc(t.topic||'Тест')} · ${esc(t.authorName||'')} (${t.questions.length} сұрақ)</option>`).join('');
+  renderSentTests();showScr('s-send-tests');
+}
+function renderSentTests(){
+  const el=document.getElementById('sent-test-list');if(!el||!user||!user.isAdmin)return;
+  const assignments=LS.get('ubt_assigned_tests',[]);
+  el.innerHTML=assignments.length?assignments.slice().reverse().map(a=>`<div class="item"><div class="info"><h4>${esc(a.title)}</h4><p>👤 ${esc(a.login)} · ${a.used||0}/${a.limit} рет</p></div><button class="btn btn-d btn-sm" onclick="removeAssignedTest(${jsq(a.id)})">Өшіру</button></div>`).join(''):'<p class="sub">Әлі тест жіберілген жоқ</p>';
+}
+function sendAssignedTest(){return guarded(async()=>{
+  if(!user||!user.isAdmin)return;
+  const login=document.getElementById('send-test-login').value.trim();
+  const testId=document.getElementById('send-test-choice').value;
+  const limit=Number(document.getElementById('send-test-limit').value);
+  if(!login||!testId||!Number.isInteger(limit)||limit<1||limit>100){alert('Логин, тест және 1–100 арасындағы лимитті таңдаңыз');return}
+  const r=await authCall('admin_assign_test',{login,testId,limit});
+  if(!r.ok){alert(r.msg||'Жіберу мүмкін болмады');return}
+  await window.__bridge.refresh();renderSentTests();alert('✅ Тест '+login+' логиніне жіберілді');
+})}
+function removeAssignedTest(id){return guarded(async()=>{
+  if(!user||!user.isAdmin||!confirm('Жіберілген тестті алып тастау керек пе?'))return;
+  const r=await authCall('admin_remove_assignment',{id});
+  if(!r.ok){alert(r.msg||'Өшіру мүмкін болмады');return}
+  await window.__bridge.refresh();renderSentTests();
+})}
+function showAssignedTests(){
+  if(!user)return;
+  const el=document.getElementById('assigned-list');
+  const assignments=LS.get('ubt_assigned_tests',[]).filter(a=>a.uid===user.id);
+  el.innerHTML=assignments.length?assignments.map(a=>`<div class="item"><div class="info"><h4>${esc(a.title)}</h4><p>Қолданылғаны: ${a.used||0}/${a.limit} рет</p></div><button class="btn btn-p btn-sm" ${(a.used||0)>=a.limit?'disabled':''} onclick="startAssignedTest(${jsq(a.id)})">Тапсыру</button></div>`).join(''):'<p class="sub">Сізге әзірге тест жіберілген жоқ</p>';
+  showScr('s-assigned');
+}
+function startAssignedTest(id){return guarded(async()=>{
+  const r=await authCall('start_assigned_test',{id});
+  if(!r.ok){alert(r.msg||'Тест қолжетімсіз');await window.__bridge.refresh();showAssignedTests();return}
+  const test=allTests().find(t=>t.id===r.testId);
+  if(!test){await window.__bridge.refresh()}
+  if(!allTests().some(t=>t.id===r.testId)){alert('Тестті ашу мүмкін болмады');return}
+  assignedStartPermit=r.testId;
+  try{startUserTest(r.testId)}finally{assignedStartPermit=null}
+})}
 function adminUnpublishTest(id){
   if(!user||!user.isAdmin)return;
   const all=allTests(),t=all.find(x=>x.id===id);if(!t)return;
@@ -3214,7 +3357,7 @@ function saveAllTests(a){
   LS.set('ubt_tests',a);
   if(user) a.filter(t=>t.authorId===user.id&&t.subject).forEach(t=>rememberQuestionsInBank(t.subject,t.questions||[],'Тест: '+(t.topic||'')));
 }
-function myTests(){return allTests().filter(t=>t.authorId===user.id)}
+function myTests(){return allTests().filter(t=>t.authorId===user.id&&!t.assignmentId)}
 function publicTests(){return allTests().filter(t=>(t.isPublic||t.status==='approved')&&!t.classId&&t.questions.length>0)}
 function showFormulas(){
   renderFormulas();showScr('s-formulas');
@@ -3375,8 +3518,12 @@ function addBankToMyTest(random){
 function baseState(){return{questions:[],currentIndex:0,answers:{},flags:{},timerSeconds:0,timerInterval:null,subjectName:'',isMistakes:false,testId:null,lastWrong:null}}
 let st=baseState();
 
+let assignedStartPermit=null;
 function startUserTest(id){
   const t=allTests().find(x=>x.id===id);if(!t||!t.questions.length){alert('Сұрақ жоқ!');return}
+  if(user&&!user.isAdmin&&t.authorId!==user.id&&!t.isPublic&&t.status!=='approved'&&!t.classId&&assignedStartPermit!==id){
+    alert('Бұл жеке тестті «Маған жіберілген тесттер» бөлімінен бастаңыз');return;
+  }
   const label=(t.subjectName?t.subjectName+' · ':'')+(t.topic||'Тест');
   st=baseState();st.questions=t.questions.map(q=>({...q,subjectName:label}));st.subjectName=label;st.testId=id;
   st.timerSeconds=Math.max(t.questions.length*90,600);shuf(st.questions);beginTest();
@@ -6439,7 +6586,7 @@ function showPublicTests(subj){
     h+=`<div class="card"><h3>🎲 ${esc(nm)}: аралас тест</h3><p class="sub" style="margin:4px 0 10px">Осы пәннің барлық жария тесттерінен кездейсоқ ${Math.min(20,n)} сұрақ (қолжетімді: ${n})</p><button class="btn btn-p btn-sm" onclick="startSubjectMix(${jsq(pubSubj)})">▶ Бастау</button></div>`;
   }
   if(!tests.length)h+='<div class="empty"><div class="ic">🌐</div><p>Әзірге жария тест жоқ.<br>Тест құрып, «Жариялауға жіберу» белгілеңіз — админ мақұлдаған соң осында шығады.</p></div>';
-  else h+=tests.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic)}</h4><p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ${t.timerMin?' · ⏱ '+t.timerMin+' мин':''}${t.limit?' · лимит: '+t.limit:''} · Автор: ${esc(t.authorName||'Аноним')}${t.desc?' · '+esc(t.desc):''}</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest(${jsq(t.id)})">Тапсыру</button>${t.isPublic===true&&t.status==='approved'&&t.adminApproved===true?`<button class="btn btn-s btn-sm" onclick="importPublicTestToBank(${jsq(t.id)})">📥 Сұрақтарды базаға жүктеу</button>`:''}${user&&user.isAdmin?`<button class="btn btn-d btn-sm" onclick="adminDelPublished(${jsq(t.id)})">🗑 Өшіру</button>`:''}</div></div>`).join('');
+  else h+=tests.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic)}</h4><p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ${t.timerMin?' · ⏱ '+t.timerMin+' мин':''}${t.limit?' · лимит: '+t.limit:''} · Автор: ${esc(t.authorName||'Аноним')}${t.desc?' · '+esc(t.desc):''}</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest(${jsq(t.id)})">Тапсыру</button>${user&&user.isAdmin&&t.isPublic===true&&t.status==='approved'&&t.adminApproved===true?`<button class="btn btn-s btn-sm" onclick="importPublicTestToBank(${jsq(t.id)})">📥 Сұрақтарды базаға жүктеу</button>`:''}${user&&user.isAdmin?`<button class="btn btn-d btn-sm" onclick="adminDelPublished(${jsq(t.id)})">🗑 Өшіру</button>`:''}</div></div>`).join('');
   list.innerHTML=h;
   showScr('s-public');
 }
@@ -6450,7 +6597,7 @@ function adminDelPublished(id){
   showPublicTests(pubSubj);
 }
 function importPublicTestToBank(id){
-  if(!user){alert('Сұрақтарды базаңызға жүктеу үшін жүйеге кіріңіз.');return}
+  if(!user||!user.isAdmin){alert('Басқалардың тестін тек админ жүктей алады.');return}
   const t=publicTests().find(x=>x.id===id&&x.isPublic===true&&x.status==='approved'&&x.adminApproved===true);
   if(!t||!t.subject||!Array.isArray(t.questions)||!t.questions.length){alert('Бұл тестті жүктеуге рұқсат жоқ.');return}
   const before=ubtQuestionBank().length;
