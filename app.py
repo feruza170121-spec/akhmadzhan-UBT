@@ -1003,6 +1003,18 @@ html,body{overflow-x:hidden}
 .flag{background:none;border:1px solid var(--b);border-radius:17px;padding:4px 8px;cursor:pointer;font-size:14px}
 .flag.on{background:#fef3c7;border-color:#fcd34d}
 .qt{font-size:15px;margin-bottom:16px;line-height:1.6}
+.qimg{display:block;max-width:100%;max-height:340px;margin:0 auto 14px;border-radius:14px;border:1px solid var(--b);object-fit:contain;background:#fff}
+.qtbl-w{overflow-x:auto;margin:0 0 14px}
+.qtbl{border-collapse:collapse;margin:0 auto;font-size:14px}
+.qtbl td,.qtbl th{border:1px solid var(--b);padding:6px 12px;text-align:center;min-width:48px}
+.qtbl tr:first-child td{background:#eff6ff;font-weight:600}
+.tbed{overflow-x:auto;margin:8px 0}
+.tbed table{border-collapse:collapse}
+.tbed td{padding:2px}
+.tbed input{width:90px;padding:6px 8px;border:1px solid var(--b);border-radius:10px;font-size:13px;font-family:inherit;background:var(--bg)}
+.aq-prev{max-width:240px;max-height:180px;border-radius:12px;border:1px solid var(--b);display:block;margin-top:8px}
+.ovl{position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:9999;overflow:auto;padding:20px 12px}
+.ovl .box{max-width:760px;margin:0 auto;background:var(--c);border-radius:22px;padding:20px}
 .opts{display:flex;flex-direction:column;gap:7px}
 .op{display:flex;align-items:flex-start;gap:10px;padding:11px 12px;border:2px solid var(--b);border-radius:22px;cursor:pointer;transition:.15s}
 .op:hover{border-color:#93c5fd;background:#f8fafc}
@@ -1362,6 +1374,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <div class="mode" onclick="showPublicTests()"><div class="ic">🌐</div><h3>Жария тесттер</h3><p>Админ мақұлдаған</p></div>
       <div class="mode" onclick="showMyTests()"><div class="ic">📚</div><h3>Менің тесттерім</h3><p>Өз тесттеріңіз</p></div>
       <div class="mode" onclick="showCreate()"><div class="ic">➕</div><h3>Тест құру</h3><p>Атауы + сұрақтар</p></div>
+      <div class="mode" onclick="showAddQ()"><div class="ic">🖼</div><h3>Сұрақ қосу</h3><p>Сурет · кесте · барлық пән</p></div>
       <div class="mode" onclick="showRanking()"><div class="ic">🏆</div><h3>Рейтинг</h3><p>Ортақ көшбасшылар</p></div>
     </div>
     <div class="grid2 home-tools">
@@ -1502,6 +1515,49 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
   </div>
 </div>
 
+<div id="s-addq" class="screen">
+  <div class="wrap">
+    <div class="hdr"><h2>🖼 Сұрақ қосу</h2><p class="sub">Кез келген пән бойынша сұрақ жазыңыз: мәтін, сурет, кесте. Өзіңізге сақтауға немесе жариялауға жіберуге болады</p></div>
+    <div class="card">
+      <div class="fg"><label>Пән *</label><select id="aq-subject" onchange="aqFillTests()"></select></div>
+      <div class="fg"><label>Қай тестке қосылады?</label><select id="aq-target" onchange="aqTargetChange()"></select></div>
+      <div id="aq-new-fields">
+        <div class="fg"><label>Жаңа тест атауы *</label><input id="aq-topic" placeholder="Мыс: «Функция», «Ньютон заңдары»"></div>
+        <div class="fg"><label>Сипаттама (міндетті емес)</label><input id="aq-desc" placeholder="Қысқаша сипаттама"></div>
+        <div class="fg"><label class="switch"><input type="checkbox" id="aq-request"> 🌐 Жариялауға жіберу (админ мақұлдаған соң барлығына шығады)</label></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3 style="margin-bottom:10px">✍️ Жаңа сұрақ</h3>
+      <div class="fg"><label>Сұрақ мәтіні</label><textarea id="aq-text" placeholder="Сұрақты жазыңыз (формула үшін: $x^2+1$)"></textarea></div>
+      <div class="fg"><label>🖼 Сурет (міндетті емес)</label>
+        <div class="row" style="justify-content:flex-start"><label class="btn btn-s btn-sm" style="cursor:pointer">📷 Сурет таңдау<input type="file" accept="image/*" style="display:none" onchange="aqPickImg(this)"></label><button class="btn btn-s btn-sm" id="aq-img-del" style="display:none" onclick="aqClearImg()">🗑 Суретті алып тастау</button></div>
+        <img id="aq-img-prev" class="aq-prev" style="display:none" alt="">
+      </div>
+      <div class="fg"><label>📊 Кесте (міндетті емес)</label>
+        <div class="row" style="justify-content:flex-start;align-items:center">
+          <span class="sub">Жол:</span><input id="aq-rows" type="number" min="1" max="12" value="3" style="width:70px;padding:7px;border:1px solid var(--b);border-radius:12px">
+          <span class="sub">Баған:</span><input id="aq-cols" type="number" min="1" max="8" value="3" style="width:70px;padding:7px;border:1px solid var(--b);border-radius:12px">
+          <button class="btn btn-s btn-sm" onclick="aqMakeTable()">Кесте жасау</button>
+          <button class="btn btn-s btn-sm" id="aq-tbl-del" style="display:none" onclick="aqClearTable()">🗑 Кестені алып тастау</button>
+        </div>
+        <div id="aq-tbl" class="tbed"></div>
+        <p class="sub" style="font-size:11px">Бірінші жол — тақырып жолы болып көрсетіледі</p>
+      </div>
+      <div class="fg"><label>Жауап нұсқалары <span class="sub">(дұрыс жауаптың жанындағы дөңгелекті басыңыз)</span></label>
+        <div id="aq-opts"></div>
+      </div>
+      <div class="row" style="justify-content:flex-start"><button class="btn btn-ok" onclick="aqAddQ()">➕ Сұрақ қосу</button></div>
+    </div>
+    <div id="aq-list" style="margin-bottom:14px"></div>
+    <div class="row">
+      <button class="btn btn-p" onclick="aqSave()">💾 Сақтау</button>
+      <button class="btn btn-s" onclick="showMyTests()">📚 Менің тесттерім</button>
+      <button class="btn btn-s" onclick="aqLeave()">Артқа</button>
+    </div>
+  </div>
+</div>
+
 <div id="s-edit" class="screen">
   <div class="wrap">
     <div class="hdr"><h2 id="edit-title">Тестті өңдеу</h2><p class="sub">Жаңа сұрақтарды қолмен қосыңыз</p></div>
@@ -1567,6 +1623,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <div class="qc">
         <div class="qh"><span class="qnum" id="qnum">Сұрақ 1</span><span style="display:flex;gap:6px"><button class="flag" id="bm" onclick="togBm()" title="Таңдаулыға сақтау">☆</button><button class="flag" id="flag" onclick="togFlag()">🚩</button></span></div>
         <div class="qt" id="qtext"></div>
+        <div id="qmedia"></div>
         <div class="opts" id="opts"></div>
       </div>
       <div class="navb">
@@ -2310,6 +2367,7 @@ function showAdmin(){
     <div class="item"><div class="info"><h4>${esc(t.topic)}</h4>
       <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · ${esc(t.authorName||'')}</p></div>
       <div class="acts">
+        <button class="btn btn-s btn-sm" onclick="previewTest('${t.id}')">👁 Қарау</button>
         <button class="btn btn-ok btn-sm" onclick="approveTest('${t.id}')">✓ Мақұлдау</button>
         <button class="btn btn-d btn-sm" onclick="rejectTest('${t.id}')">✕ Бас тарту</button>
       </div></div>`).join(''):'<p class="sub">Күтіп тұрған тест жоқ</p>';
@@ -2332,7 +2390,7 @@ function showAdmin(){
   document.getElementById('admin-tests').innerHTML=tests.length?tests.map(t=>`
     <div class="item"><div class="info"><h4>${esc(t.topic)}</h4>
       <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · ${esc(t.authorName||'')} · ${t.isPublic||t.status==='approved'?'🌐 Жария':t.status==='pending'?'⏳ Күту':'🔒 Жеке'}${t.adminApproved&&((t.isPublic||t.status==='approved')&&!t.classId)?' · ✅ Базаға импортқа рұқсат':''}</p></div>
-    <div class="acts">${(t.isPublic||t.status==='approved')&&!t.classId&&t.questions.length&&!t.adminApproved?`<button class="btn btn-ok btn-sm" onclick="adminApproveBankImport(${jsq(t.id)})">✓ Базаға импортқа рұқсат</button>`:''}<button class="btn btn-d btn-sm" onclick="adminDelTest('${t.id}')">Өшіру</button></div></div>`).join(''):'<p class="sub">Тест жоқ</p>';
+    <div class="acts"><button class="btn btn-s btn-sm" onclick="previewTest('${t.id}')">👁 Қарау</button>${(t.isPublic||t.status==='approved')&&!t.classId&&t.questions.length&&!t.adminApproved?`<button class="btn btn-ok btn-sm" onclick="adminApproveBankImport(${jsq(t.id)})">✓ Базаға импортқа рұқсат</button>`:''}<button class="btn btn-d btn-sm" onclick="adminDelTest('${t.id}')">Өшіру</button></div></div>`).join(''):'<p class="sub">Тест жоқ</p>';
 
   document.getElementById('admin-formulas').innerHTML=formulas.length?formulas.map((f,i)=>`
     <div class="item"><div class="info"><h4>${esc(f.title)}</h4><p>${esc(f.subject)} · ${esc(f.authorName||'')} · ${esc(f.body)}</p></div>
@@ -2532,6 +2590,7 @@ function showMyTests(){
     <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · ${badge}</p></div>
     <div class="acts">
       <button class="btn btn-p btn-sm" onclick="startUserTest('${t.id}')">Бастау</button>
+      <button class="btn btn-s btn-sm" onclick="previewTest('${t.id}')">👁</button>
       <button class="btn btn-s btn-sm" onclick="editTest('${t.id}')">+ Сұрақ қосу</button>
       <button class="btn btn-s btn-sm" onclick="exportTest('${t.id}')">⬇ Файл</button>
       ${t.status!=='pending'&&t.status!=='approved'&&!t.isPublic&&!t.classId?`<button class="btn btn-w btn-sm" onclick="requestPub('${t.id}')">Жариялауға</button>`:''}
@@ -2563,7 +2622,7 @@ function editTest(id){
   clearManual('e');renderEditList(t);showScr('s-edit');
 }
 function renderEditList(t){
-  document.getElementById('edit-qlist').innerHTML=t.questions.map((q,i)=>`<div class="item"><div class="info"><h4>${i+1}. ${esc(q.text)}</h4></div>
+  document.getElementById('edit-qlist').innerHTML=t.questions.map((q,i)=>`<div class="item"><div class="info"><h4>${i+1}. ${esc(q.text)}${q.img?' 🖼':''}${q.tbl?' 📊':''}</h4></div>
     <div class="acts"><button class="btn btn-d btn-sm" onclick="removeQFromTest('${t.id}',${i})">✕</button></div></div>`).join('');
   renderEditBank(t);
 }
@@ -2693,6 +2752,7 @@ function renderQ(){
   document.getElementById('t-subj').textContent=q.subjectName||st.subjectName;
   document.getElementById('qnum').textContent='Сұрақ '+(st.currentIndex+1);
   document.getElementById('qtext').textContent=q.text;
+  document.getElementById('qmedia').innerHTML=qMedia(q);
   document.getElementById('flag').classList.toggle('on',!!st.flags[q.id]);
   const L=['A','B','C','D','E'];
   document.getElementById('opts').innerHTML=q.options.map((o,i)=>`<div class="op${st.answers[q.id]===i?' sel':''}" onclick="selOpt(${i})"><span class="ol">${L[i]}</span><span class="ot">${esc(o)}</span></div>`).join('');
@@ -2700,6 +2760,178 @@ function renderQ(){
   document.getElementById('next').textContent=st.currentIndex===st.questions.length-1?'Аяқтау':'Келесі →';
   updNav();updateProg();
 }
+
+// ================= Сұрақ қосу беті: сурет + кесте =================
+function qMedia(q){
+  if(!q)return '';
+  let h='';
+  if(typeof q.img==='string'&&/^data:image\/(jpeg|png|webp);base64,/.test(q.img))h+='<img class="qimg" alt="" src="'+q.img+'">';
+  if(Array.isArray(q.tbl)&&q.tbl.length)h+='<div class="qtbl-w"><table class="qtbl">'+q.tbl.map(r=>'<tr>'+(Array.isArray(r)?r:[]).map(c=>'<td>'+esc(c)+'</td>').join('')+'</tr>').join('')+'</table></div>';
+  return h;
+}
+const AQ_MAX_IMG=12;           // бір тестке ең көп сурет саны
+const AQ_MAX_IMG_BYTES=60000;  // бір сурет (сығылған) шамамен 60 КБ
+let aqQs=[],aqImg='',aqTbl=null,aqTargetId='';
+function aqOptsInit(){
+  const L=['A','B','C','D','E'];
+  document.getElementById('aq-opts').innerHTML=L.map((l,i)=>`<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><input type="radio" name="aq-ok" value="${i}" style="width:20px;height:20px;flex:none;accent-color:var(--p)"><b style="width:18px;flex:none">${l}</b><input id="aq-o${i}" placeholder="${l} нұсқасы${i===4?' (міндетті емес)':''}" style="flex:1;padding:10px 12px;border:1px solid var(--b);border-radius:20px;font-size:14px;font-family:inherit;background:var(--bg)"></div>`).join('');
+}
+function showAddQ(){
+  const src=document.querySelector('#c-subject');
+  const opts=Array.from(src.options).filter(o=>o.value).map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('');
+  document.getElementById('aq-subject').innerHTML='<option value="">— Пәнді таңдаңыз —</option>'+opts;
+  aqQs=[];aqImg='';aqTbl=null;aqTargetId='';
+  ['aq-topic','aq-desc','aq-text'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('aq-request').checked=false;
+  aqOptsInit();aqClearImg();aqClearTable();aqFillTests();aqRenderList();
+  showScr('s-addq');
+}
+function aqFillTests(){
+  const subj=document.getElementById('aq-subject').value;
+  const mine=user?myTests().filter(t=>t.subject===subj&&!t.classId):[];
+  document.getElementById('aq-target').innerHTML='<option value="">➕ Жаңа тест құру</option>'+mine.map(t=>`<option value="${esc(t.id)}">${esc(t.topic)} (${t.questions.length} сұрақ)</option>`).join('');
+  aqTargetChange();
+}
+function aqTargetChange(){
+  const v=document.getElementById('aq-target').value;
+  document.getElementById('aq-new-fields').style.display=v?'none':'';
+}
+function aqPickImg(inp){
+  const f=inp.files&&inp.files[0];inp.value='';
+  if(!f)return;
+  if(!/^image\//.test(f.type)){alert('Сурет файлын таңдаңыз (JPG, PNG...)');return}
+  const r=new FileReader();
+  r.onload=()=>{
+    const img=new Image();
+    img.onload=()=>{
+      let maxSide=720,q=0.72,out='';
+      for(let k=0;k<6;k++){
+        const sc=Math.min(1,maxSide/Math.max(img.width,img.height));
+        const w=Math.max(1,Math.round(img.width*sc)),h=Math.max(1,Math.round(img.height*sc));
+        const c=document.createElement('canvas');c.width=w;c.height=h;
+        const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,w,h);x.drawImage(img,0,0,w,h);
+        out=c.toDataURL('image/jpeg',q);
+        if(out.length*0.75<=AQ_MAX_IMG_BYTES)break;
+        maxSide=Math.round(maxSide*0.8);q=Math.max(0.45,q-0.06);
+      }
+      if(out.length*0.75>AQ_MAX_IMG_BYTES*1.5){alert('Сурет тым үлкен. Кішірек сурет таңдаңыз');return}
+      aqImg=out;
+      const pv=document.getElementById('aq-img-prev');pv.src=out;pv.style.display='block';
+      document.getElementById('aq-img-del').style.display='';
+    };
+    img.onerror=()=>alert('Сурет оқылмады. Басқа файл таңдаңыз');
+    img.src=r.result;
+  };
+  r.readAsDataURL(f);
+}
+function aqClearImg(){
+  aqImg='';
+  const pv=document.getElementById('aq-img-prev');if(pv){pv.removeAttribute('src');pv.style.display='none'}
+  const d=document.getElementById('aq-img-del');if(d)d.style.display='none';
+}
+function aqMakeTable(){
+  const R=Math.max(1,Math.min(12,parseInt(document.getElementById('aq-rows').value,10)||3));
+  const C=Math.max(1,Math.min(8,parseInt(document.getElementById('aq-cols').value,10)||3));
+  const old=aqReadTable()||[];
+  let h='<table>';
+  for(let i=0;i<R;i++){h+='<tr>';for(let j=0;j<C;j++)h+=`<td><input data-r="${i}" data-c="${j}" maxlength="60" value="${esc((old[i]||[])[j]||'')}"></td>`;h+='</tr>'}
+  document.getElementById('aq-tbl').innerHTML=h+'</table>';
+  document.getElementById('aq-tbl-del').style.display='';
+  aqTbl=true;
+}
+function aqReadTable(){
+  const inps=document.querySelectorAll('#aq-tbl input');if(!inps.length)return null;
+  const rows=[];
+  inps.forEach(i=>{const r=+i.dataset.r,c=+i.dataset.c;(rows[r]=rows[r]||[])[c]=i.value.trim()});
+  const filled=rows.some(r=>r.some(c=>c));
+  return filled?rows:null;
+}
+function aqClearTable(){
+  aqTbl=null;
+  const t=document.getElementById('aq-tbl');if(t)t.innerHTML='';
+  const d=document.getElementById('aq-tbl-del');if(d)d.style.display='none';
+}
+function aqAddQ(){
+  if(!document.getElementById('aq-subject').value){alert('Алдымен пәнді таңдаңыз');return}
+  const text=document.getElementById('aq-text').value.trim();
+  if(!text){alert('Сұрақ мәтінін жазыңыз');return}
+  const sel=document.querySelector('input[name="aq-ok"]:checked');
+  const selIdx=sel?+sel.value:-1;
+  const opts=[];let correct=-1;
+  for(let i=0;i<5;i++){
+    const v=document.getElementById('aq-o'+i).value.trim();
+    if(v){if(i===selIdx)correct=opts.length;opts.push(v)}
+  }
+  if(opts.length<2){alert('Кемінде 2 жауап нұсқасын жазыңыз');return}
+  if(selIdx<0){alert('Дұрыс жауапты белгілеңіз');return}
+  if(correct<0){alert('Дұрыс жауап ретінде бос нұсқа белгіленген');return}
+  const q={id:'q_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,6),text,options:opts,correct,points:1};
+  if(aqImg)q.img=aqImg;
+  const tb=aqReadTable();if(tb)q.tbl=tb;
+  const withImg=aqQs.filter(x=>x.img).length+(q.img?1:0);
+  if(withImg>AQ_MAX_IMG){alert('Бір рет сақтағанда ең көбі '+AQ_MAX_IMG+' суретті сұрақ қосуға болады. Алдымен «Сақтау» басыңыз');return}
+  if(aqQs.length>=MAX_Q){alert('Бір тестте '+MAX_Q+' сұрақтан аспауы керек');return}
+  aqQs.push(q);
+  document.getElementById('aq-text').value='';
+  for(let i=0;i<5;i++)document.getElementById('aq-o'+i).value='';
+  document.querySelectorAll('input[name="aq-ok"]').forEach(r=>r.checked=false);
+  aqClearImg();aqClearTable();aqRenderList();
+  document.getElementById('aq-text').focus();
+}
+function aqRenderList(){
+  const el=document.getElementById('aq-list');if(!el)return;
+  if(!aqQs.length){el.innerHTML='';return}
+  el.innerHTML='<div class="sub" style="margin-bottom:8px">Қосылған сұрақтар: <b>'+aqQs.length+'</b></div><div class="list">'
+    +aqQs.map((q,i)=>`<div class="item"><div class="info"><h4>${i+1}. ${esc(q.text)}${q.img?' 🖼':''}${q.tbl?' 📊':''}</h4><p>✓ ${esc(q.options[q.correct])}</p></div><div class="acts"><button class="btn btn-d btn-sm" onclick="aqRemove(${i})">✕</button></div></div>`).join('')+'</div>';
+  mathIn(el);
+}
+function aqRemove(i){aqQs.splice(i,1);aqRenderList()}
+function aqLeave(){
+  if(aqQs.length&&!confirm('Сақталмаған сұрақтар жоғалады. Шығу керек пе?'))return;
+  aqQs=[];goHome();
+}
+function aqSave(){
+  if(!user){alert('Алдымен жүйеге кіріңіз');return}
+  if(!aqQs.length){alert('Кемінде 1 сұрақ қосыңыз!');return}
+  const subjEl=document.getElementById('aq-subject');
+  const subject=subjEl.value;
+  if(!subject){alert('Пәнді таңдаңыз!');return}
+  const subjectName=subjEl.options[subjEl.selectedIndex].text;
+  const target=document.getElementById('aq-target').value;
+  const all=allTests();
+  const bytesBefore=JSON.stringify(all).length;
+  const addBytes=JSON.stringify(aqQs).length;
+  if(bytesBefore+addBytes>6000000){alert('Ортақ база толып барады. Суретті сұрақтарды азайтыңыз немесе ескі тесттерді өшіріңіз');return}
+  if(target){
+    const t=all.find(x=>x.id===target&&x.authorId===user.id);
+    if(!t){alert('Тест табылмады');return}
+    if(t.questions.length+aqQs.length>MAX_Q){alert('Бір тестте '+MAX_Q+' сұрақтан аспауы керек');return}
+    t.questions=t.questions.concat(aqQs);
+    saveAllTests(all);
+    alert('✅ '+aqQs.length+' сұрақ тестке қосылды');
+  }else{
+    const topic=document.getElementById('aq-topic').value.trim();
+    if(!topic){alert('Тест атауын жазыңыз!');return}
+    const requestPub=document.getElementById('aq-request').checked;
+    const test={id:'t_'+Date.now(),subject,subjectName,topic,desc:document.getElementById('aq-desc').value.trim(),isPublic:false,status:requestPub?'pending':'private',authorId:user.id,authorName:user.name,questions:aqQs.slice(),createdAt:new Date().toISOString()};
+    if((user.isAdmin||isTeacherUser())&&requestPub){test.isPublic=true;test.status='approved';if(user.isAdmin)test.adminApproved=true}
+    all.unshift(test);saveAllTests(all);
+    alert(requestPub&&!(user.isAdmin||isTeacherUser())?'✅ Тест сақталды ('+aqQs.length+' сұрақ). Админ мақұлдаған соң жарияланады.':'✅ Тест сақталды: '+aqQs.length+' сұрақ');
+  }
+  aqQs=[];showMyTests();
+}
+// ---- Админ (және автор) тесттің сұрақтарын қарай алады
+function previewTest(id){
+  const t=allTests().find(x=>x.id===id);if(!t)return;
+  if(!user||!(user.isAdmin||t.authorId===user.id||((t.isPublic||t.status==='approved')&&!t.classId)))return;
+  const L=['A','B','C','D','E'];
+  const old=document.getElementById('ovl-prev');if(old)old.remove();
+  const o=document.createElement('div');o.className='ovl';o.id='ovl-prev';
+  o.innerHTML='<div class="box"><div class="item" style="border:none;padding:0;margin-bottom:10px"><div class="info"><h3>'+esc(t.topic)+'</h3><p class="sub">'+esc(t.subjectName||'')+' · '+t.questions.length+' сұрақ · '+esc(t.authorName||'')+'</p></div><button class="btn btn-s btn-sm" onclick="document.getElementById(\'ovl-prev\').remove()">✕ Жабу</button></div>'
+   +t.questions.map((q,i)=>`<div class="card"><div class="qt"><b>${i+1}.</b> ${esc(q.text)}</div>${qMedia(q)}${q.options.map((op,j)=>`<div style="padding:4px 0;${j===q.correct?'color:var(--ok);font-weight:600':''}">${L[j]}) ${esc(op)}${j===q.correct?' ✓':''}</div>`).join('')}</div>`).join('')+'</div>';
+  document.body.appendChild(o);mathIn(o);
+}
+
 function selOpt(i){st.answers[st.questions[st.currentIndex].id]=i;renderQ()}
 function togFlag(){const q=st.questions[st.currentIndex];st.flags[q.id]=!st.flags[q.id];renderQ()}
 function nextQ(){if(st.currentIndex<st.questions.length-1){st.currentIndex++;renderQ()}else finishTest()}
@@ -2746,7 +2978,7 @@ function reviewAns(){
   const L=['A','B','C','D'];
   document.getElementById('rev-list').innerHTML=st.questions.map((q,i)=>{const ua=st.answers[q.id],ok=ua===q.correct;
     return `<div class="rev ${ok?'ok':'bad'}"><div class="rh"><span>Сұрақ ${i+1}</span><span>${ok?'✓ Дұрыс':'✗ Қате'}</span></div>
-      <div class="rq">${esc(q.text)}</div>${ua!==undefined?`<div class="ra u">Сіз: <b>${L[ua]}) ${esc(q.options[ua])}</b></div>`:'<div class="ra u">Жауап жоқ</div>'}
+      <div class="rq">${esc(q.text)}</div>${qMedia(q)}${ua!==undefined?`<div class="ra u">Сіз: <b>${L[ua]}) ${esc(q.options[ua])}</b></div>`:'<div class="ra u">Жауап жоқ</div>'}
       ${!ok?`<div class="ra c">Дұрыс: <b>${L[q.correct]}) ${esc(q.options[q.correct])}</b></div>`:''}</div>`}).join('');
   showScr('s-rev');
 }
@@ -4773,6 +5005,7 @@ function rememberQuestionsInBank(subject,questions,origin,restore=false){
   for(const q of questions){
     if(bank.length>=10000)break;
     if(!q||typeof q.text!=='string'||!q.text.trim()||!Array.isArray(q.options)||q.options.length<2)continue;
+    if(q.img)continue;
     const correct=Number(q.correct);
     if(!Number.isInteger(correct)||correct<0||correct>=q.options.length)continue;
     const identity=ubtBankIdentity(subject,q.text);
@@ -4784,6 +5017,7 @@ function rememberQuestionsInBank(subject,questions,origin,restore=false){
     seen.add(identity);
     bank.push({id:'q_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,10),subject,
       text:q.text,options:q.options.slice(),correct,origin:origin||'Өз сұрағым'});
+    if(Array.isArray(q.tbl))bank[bank.length-1].tbl=q.tbl;
     added++;
   }
   if(restored)LS.set(hiddenKey,Array.from(hidden));
