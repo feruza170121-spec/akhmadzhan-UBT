@@ -1939,8 +1939,8 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <button class="mode" onclick="showGloss()"><span class="ic">📖</span><h3>Глоссарий</h3><p>Терминдер мен ұғымдар</p></button>
       <button class="mode" onclick="showBookmarks()"><span class="ic">🔖</span><h3>Таңдаулылар</h3><p>Сақталған сұрақтар</p></button>
       <button class="mode" onclick="showPlanner()"><span class="ic">🗓</span><h3>Жоспар</h3><p>Дайындық жоспары</p></button>
-      <button class="mode" onclick="showTeacher()"><span class="ic">🏫</span><h3>Сынып / Мұғалім</h3><p>Сыныппен жұмыс</p></button>
-      <button class="mode" id="admin-copied-card" style="display:none" onclick="showCopiedTests()"><span class="ic">📥</span><h3>Жүктелген тесттер</h3><p>Басқалардан алынған тесттер · жіберу</p></button>
+      <button class="mode" id="teacher-home-card" onclick="showTeacher()"><span class="ic">🏫</span><h3>Сынып / Мұғалім</h3><p>Сыныппен жұмыс</p></button>
+      <button class="mode" id="admin-copied-card" style="display:none" onclick="showCopiedTests()"><span class="ic">📥</span><h3>Жүктелген тесттер</h3><p>Тестті бір адамға жіберу</p></button>
       <button class="mode" onclick="showQuestionBank()" style="grid-column:1/-1"><span class="ic">📚</span><h3>Сұрақтар базасы</h3><p>Пәндер бойынша өз сұрақтарым</p></button>
       <button class="mode" id="admin-btn" style="display:none;grid-column:1/-1" onclick="showAdmin()"><span class="ic">🛠</span><h3>Админ</h3><p>Басқару панелі</p></button>
     </div>
@@ -2040,7 +2040,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
 
 <div id="s-copied-tests" class="screen">
   <div class="wrap">
-    <div class="hdr"><h2>📥 Жүктелген тесттер</h2><p class="sub">Басқа қолданушылардан көшірген тесттеріңіз осы жерде сақталады</p></div>
+    <div class="hdr"><h2>📥 Жүктелген тесттер</h2><p class="sub">JSON файлдан сақталған және басқа қолданушылардан көшірілген тесттер</p></div>
     <div id="copied-tests-list" class="list"></div>
     <div class="row"><button class="btn btn-p" onclick="showSendTests()">📨 Тест жіберу</button><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
@@ -2898,6 +2898,7 @@ function refreshProfileBar(){
   document.getElementById('admin-btn').style.display=user.isAdmin?'block':'none';
   document.getElementById('admin-json-card').style.display=user.isAdmin?'block':'none';
   document.getElementById('admin-copied-card').style.display=user.isAdmin?'block':'none';
+  document.getElementById('teacher-home-card').style.gridColumn=user.isAdmin?'':'1/-1';
 }
 function enterApp(){
   refreshProfileBar();
@@ -3194,16 +3195,16 @@ function showSendTests(selectedId){
   sendTestsFromCopies=typeof selectedId==='string';
   const profiles=LS.get('ubt_profiles',{});
   document.getElementById('send-test-logins').innerHTML=Object.keys(profiles).map(k=>`<option value="${esc(k)}"></option>`).join('');
-  const tests=allTests().filter(t=>!t.assignmentId&&Array.isArray(t.questions)&&t.questions.length);
+  const tests=allTests().filter(t=>t.authorId===user.id&&!t.assignmentId&&Array.isArray(t.questions)&&t.questions.length);
   document.getElementById('send-test-choice').innerHTML=tests.map(t=>`<option value="${esc(t.id)}">${esc(t.topic||'Тест')} · ${esc(t.authorName||'')} (${t.questions.length} сұрақ)</option>`).join('');
   if(typeof selectedId==='string'&&tests.some(t=>t.id===selectedId))document.getElementById('send-test-choice').value=selectedId;
   renderSentTests();showScr('s-send-tests');
 }
-function isCopiedTest(t){return !!(t&&t.authorId==='admin'&&(t.copiedFromId||String(t.id||'').startsWith('t_admin_copy_')))}
+function isCopiedTest(t){return !!(t&&!t.assignmentId&&t.authorId==='admin'&&(t.adminUploaded||t.copiedFromId||String(t.id||'').startsWith('t_admin_copy_')))}
 function showCopiedTests(){
   if(!user||!user.isAdmin)return;
   const tests=allTests().filter(isCopiedTest),el=document.getElementById('copied-tests-list');
-  el.innerHTML=tests.length?tests.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic||'Тест')}</h4><p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ${t.copiedFromName?' · Бастапқы автор: '+esc(t.copiedFromName):''}</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="showSendTests(${jsq(t.id)})">📨 Адамға жіберу</button><button class="btn btn-s btn-sm" onclick="previewTest(${jsq(t.id)})">👁 Қарау</button><button class="btn btn-s btn-sm" onclick="exportTest(${jsq(t.id)})">⬇ Файл</button><button class="btn btn-d btn-sm" onclick="removeCopiedTest(${jsq(t.id)})">Өшіру</button></div></div>`).join(''):'<div class="empty"><p>Әлі тест жүктелмеді. Админ панелінен басқа қолданушының тестін «Өзіме көшіру» арқылы алыңыз.</p></div>';
+  el.innerHTML=tests.length?tests.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic||'Тест')}</h4><p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ${t.copiedFromName?' · Бастапқы автор: '+esc(t.copiedFromName):t.adminUploaded?' · JSON файлдан':''}</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="showSendTests(${jsq(t.id)})">📨 Адамға жіберу</button><button class="btn btn-s btn-sm" onclick="previewTest(${jsq(t.id)})">👁 Қарау</button><button class="btn btn-s btn-sm" onclick="exportTest(${jsq(t.id)})">⬇ Файл</button><button class="btn btn-d btn-sm" onclick="removeCopiedTest(${jsq(t.id)})">Өшіру</button></div></div>`).join(''):'<div class="empty"><p>Әлі тест жүктелмеді. JSON файлды сақтаңыз немесе админ панелінен тестті «Өзіме көшіру» арқылы алыңыз.</p></div>';
   showScr('s-copied-tests');
 }
 function removeCopiedTest(id){
@@ -4945,15 +4946,14 @@ function startFromFile(){
 function saveFromFile(){
   if(!user||!user.isAdmin)return;
   const r=takeBulkQs('f');if(!r)return;
-  const subject=document.getElementById('f-question-subject').value;
-  if(!subject){alert('Сұрақтарды базаға сақтау үшін пәнді таңдаңыз');return}
+  const subject=document.getElementById('f-question-subject').value||'other';
   let topic=prompt('Тест тақырыбы:',r.meta.topic||(bulkName.f||'').replace(/\.[^.]+$/,'')||'');
   if(topic===null)return;
   topic=topic.trim();
   if(!topic){alert('Тақырыпты жазыңыз');return}
-  const test={id:'t_'+Date.now(),subject,subjectName:subjName(subject),topic,desc:'',isPublic:false,status:'private',authorId:user.id,authorName:user.name,questions:r.qs,createdAt:new Date().toISOString()};
+  const test={id:'t_'+Date.now(),subject,subjectName:subjName(subject),topic,desc:'',isPublic:false,status:'private',authorId:user.id,authorName:user.name,questions:r.qs,adminUploaded:true,createdAt:new Date().toISOString()};
   const all=allTests();all.unshift(test);saveAllTests(all);
-  clearBulk('f');alert('✅ Тест сақталды: '+r.qs.length+' сұрақ');showMyTests();
+  clearBulk('f');alert('✅ Тест сақталды: '+r.qs.length+' сұрақ');showCopiedTests();
 }
 function testToText(topic,subjectName,qs){
   let o='Тақырып: '+topic+'\n'+(subjectName?'Пән: '+subjectName+'\n':'')+'\n';
