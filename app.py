@@ -610,6 +610,46 @@ def _handle_req(state, sid, rq):
             _commit(state)
         return {"ok": True}
 
+    if typ == "admin_send_letter":
+        if not (sess and sess["admin"]):
+            return {"ok": False, "msg": "Рұқсат жоқ"}
+        login = str(d.get("login") or "").strip().lower()
+        body = str(d.get("text") or "").strip()
+        if not body or len(body) > 2000:
+            return {"ok": False, "msg": "Хабарлама 1–2000 таңба болуы керек"}
+        with state["lock"]:
+            person = _profiles(state).get(login)
+            if not isinstance(person, dict) or not person.get("id"):
+                return {"ok": False, "msg": "Бұл логин табылмады"}
+            letters = _jload(state["db"].get("ubt_admin_letters", "[]"), list, [])
+            if len(letters) >= 3000:
+                return {"ok": False, "msg": "Хабарламалар саны шегіне жетті"}
+            letters.append({"id": secrets.token_hex(12), "toUid": person["id"],
+                            "toName": person.get("name", login), "text": body,
+                            "time": int(time.time()), "read": False})
+            _put(state, "ubt_admin_letters", _jdump(letters))
+            _commit(state)
+        return {"ok": True}
+
+    if typ == "admin_read_letters":
+        if not sess or sess["admin"]:
+            return {"ok": False, "msg": "Рұқсат жоқ"}
+        ids = d.get("ids")
+        if not isinstance(ids, list) or len(ids) > 100 or any(not isinstance(i, str) for i in ids):
+            return {"ok": False, "msg": "Қате сұраныс"}
+        with state["lock"]:
+            letters = _jload(state["db"].get("ubt_admin_letters", "[]"), list, [])
+            targets = set(ids)
+            changed = False
+            for letter in letters:
+                if isinstance(letter, dict) and letter.get("toUid") == sess["uid"] and letter.get("id") in targets and not letter.get("read"):
+                    letter["read"] = True
+                    changed = True
+            if changed:
+                _put(state, "ubt_admin_letters", _jdump(letters))
+                _commit(state)
+        return {"ok": True}
+
     return {"ok": False, "msg": "Белгісіз сұраныс"}
 
 
@@ -860,6 +900,8 @@ def _authorize(state, sess, k, v, chat_token=""):
     """Жаңа мәнді қайтарады (түзетілген болуы мүмкін) немесе None (жазуға рұқсат жоқ)."""
     if k == "ubt_chat":
         return _merge_chat(state, sess, v, chat_token)
+    if k == "ubt_admin_letters":
+        return None  # тек сервердегі тексерілген сұраныстар арқылы өзгертіледі
     if not sess:
         return None
     if k == "ubt_profiles":
@@ -975,6 +1017,9 @@ def _snapshot(tok="", claim=""):
     if not sess:
         return {"ubt_chat": chat}
     db["ubt_chat"] = chat
+    letters = _jload(db.get("ubt_admin_letters", "[]"), list, [])
+    db["ubt_admin_letters"] = _jdump(letters if sess["admin"] else [
+        m for m in letters if isinstance(m, dict) and m.get("toUid") == sess["uid"]])
     if "ubt_profiles" in db:
         db["ubt_profiles"] = _jdump({k: _pub_user(p) for k, p in profs.items() if isinstance(p, dict)})
     if not sess["admin"] and "ubt_schemes" in db:
@@ -1525,6 +1570,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
   </div>
   <div class="wrap">
     <div class="hdr"><h2>Басты бет</h2><p class="sub">Тест тапсырыңыз немесе өз тестіңізді құрыңыз</p></div>
+    <button class="mode" id="admin-inbox-card" style="display:none;width:100%;margin-bottom:18px;text-align:left" onclick="showAdminInbox()"><span class="ic">📩</span><h3>Админнен <span id="admin-inbox-badge" class="badge" style="background:#ef4444;color:white;display:none">0</span></h3><p id="admin-inbox-sub">Келген хабарламалар</p></button>
     <div class="grid2 exam-entry">
       <button class="mode" onclick="showUbt140()"><span class="ic">🎓</span><h3>140 форматтағы тест</h3><p>120 сұрақ · өз базаңыздан таңдаңыз немесе кездейсоқ алыңыз</p></button>
       <button class="mode" onclick="startQuickSubject()"><span class="ic">📘</span><h3>Пән тесттерім</h3><p>Әр пәнді бөлек тапсырыңыз · қолмен немесе кездейсоқ</p></button>
@@ -1554,6 +1600,14 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <button class="mode" onclick="openContactFromApp()"><span class="ic">💬</span><h3>Админге</h3><p>Хабарлама жазу</p></button>
       <button class="mode" id="admin-btn" style="display:none" onclick="showAdmin()"><span class="ic">🛠</span><h3>Админ</h3><p>Басқару панелі</p></button>
     </div>
+  </div>
+</div>
+
+<div id="s-admin-inbox" class="screen">
+  <div class="wrap">
+    <div class="hdr"><h2>📩 Админнен</h2><p class="sub">Сізге келген жеке хабарламалар</p></div>
+    <div id="admin-inbox-list" class="list"></div>
+    <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
 </div>
 
@@ -2063,6 +2117,13 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
 <div id="s-admin" class="screen">
   <div class="wrap wide">
     <div class="hdr"><h2>🛠 Админ панелі</h2><p class="sub">Толық басқару</p></div>
+    <div class="card" style="padding:20px">
+      <h3 style="margin-bottom:12px">📩 Оқушыға немесе мұғалімге хабарлама жіберу</h3>
+      <div class="fg"><label>Алушының логині</label><input id="admin-letter-login" list="admin-letter-logins" placeholder="Логинді жазыңыз немесе тізімнен таңдаңыз" autocomplete="off"><datalist id="admin-letter-logins"></datalist></div>
+      <div class="fg"><label>Хабарлама</label><textarea id="admin-letter-text" rows="4" maxlength="2000" placeholder="Хабарламаңызды жазыңыз"></textarea></div>
+      <button class="btn btn-p btn-sm" id="admin-letter-send" onclick="adminSendLetter()">📨 Жіберу</button>
+      <div id="admin-letter-history" class="list" style="margin-top:14px"></div>
+    </div>
     <div class="grid2" id="admin-stats-grid" style="margin-bottom:16px"></div>
     <div class="card" style="padding:20px">
       <h3 style="margin-bottom:12px">⏳ Жариялау күтіп тұрған тесттер</h3>
@@ -2137,9 +2198,12 @@ function setSyncInd(ok){
 }
 function syncRefresh(){
   try{
+    updateAdminInboxBadge();
     const a=document.querySelector('.screen.active');if(!a)return;
     const id=a.id;
     if(id==='s-home')renderHomeExtras();
+    else if(id==='s-admin-inbox')renderAdminInbox();
+    else if(id==='s-admin'&&user&&user.isAdmin)renderAdminLetterHistory();
     else if(id==='s-public')showPublicTests(pubSubj);
     else if(id==='s-mytests')showMyTests();
     else if(id==='s-ranking')showRanking();
@@ -2456,7 +2520,53 @@ function refreshProfileBar(){
 }
 function enterApp(){
   refreshProfileBar();
+  updateAdminInboxBadge();
   showScr('s-home');
+}
+function ownAdminLetters(){return user&&!user.isAdmin?LS.get('ubt_admin_letters',[]).filter(m=>m&&m.toUid===user.id):[]}
+function updateAdminInboxBadge(){
+  const card=document.getElementById('admin-inbox-card');if(!card)return;
+  card.style.display=user&&!user.isAdmin?'block':'none';
+  if(!user||user.isAdmin)return;
+  const list=ownAdminLetters(),count=list.filter(m=>!m.read).length;
+  const badge=document.getElementById('admin-inbox-badge');badge.style.display=count?'inline-block':'none';badge.textContent=count>99?'99+':String(count);
+  document.getElementById('admin-inbox-sub').textContent=count?count+' жаңа хабарлама':list.length+' хабарлама';
+}
+function renderAdminInbox(){
+  const el=document.getElementById('admin-inbox-list');if(!el)return;
+  const list=ownAdminLetters().slice().reverse();
+  el.innerHTML=list.length?list.map((m,i)=>`<div class="card" style="padding:16px;margin-bottom:10px;border-left:4px solid ${m.read?'#dce8dc':'#ef4444'}"><div class="row" style="justify-content:space-between"><b>📩 Хабарлама ${list.length-i}</b><span class="sub">${esc(new Date(m.time*1000).toLocaleString('kk-KZ'))}</span></div><p style="white-space:pre-wrap;overflow-wrap:anywhere;margin-top:10px">${esc(m.text)}</p></div>`).join(''):'<div class="card"><p class="sub">Әзірге админнен хабарлама келген жоқ.</p></div>';
+}
+async function showAdminInbox(){
+  if(!user||user.isAdmin)return;
+  renderAdminInbox();showScr('s-admin-inbox');
+  const ids=ownAdminLetters().filter(m=>!m.read).map(m=>m.id);
+  for(let i=0;i<ids.length;i+=100){const r=await authCall('admin_read_letters',{ids:ids.slice(i,i+100)});if(!r.ok)break}
+  if(ids.length){try{await window.__bridge.refresh()}catch(e){}updateAdminInboxBadge();renderAdminInbox()}
+}
+function renderAdminLetterHistory(){
+  if(!user||!user.isAdmin)return;
+  const el=document.getElementById('admin-letter-history');if(!el)return;
+  const list=LS.get('ubt_admin_letters',[]).slice(-30).reverse();
+  el.innerHTML=list.length?'<h4 style="margin:10px 0">Соңғы жіберілген хабарламалар</h4>'+list.map(m=>`<div class="item"><div class="info"><h4>${esc(m.toName||'Қолданушы')} ${m.read?'✓ Оқылды':'· Жаңа'}</h4><p>${esc(new Date(m.time*1000).toLocaleString('kk-KZ'))}</p><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(m.text)}</p></div></div>`).join(''):'<p class="sub">Әзірге хабарлама жіберілмеген.</p>';
+}
+async function adminSendLetter(){
+  if(!user||!user.isAdmin)return;
+  const login=document.getElementById('admin-letter-login').value.trim();
+  const inp=document.getElementById('admin-letter-text'),msg=inp.value.trim();
+  if(!login||!msg){alert('Логин мен хабарламаны толтырыңыз');return}
+  const btn=document.getElementById('admin-letter-send');btn.disabled=true;
+  try{
+    const r=await authCall('admin_send_letter',{login:login,text:msg});
+    if(!r.ok){alert(r.msg||'Хабарлама жіберілмеді');return}
+    inp.value='';await window.__bridge.refresh();renderAdminLetterHistory();alert('Хабарлама жіберілді');
+  }finally{btn.disabled=false}
+}
+function adminChooseLetterRecipient(login){
+  if(!user||!user.isAdmin)return;
+  const inp=document.getElementById('admin-letter-login');inp.value=login;
+  inp.closest('.card').scrollIntoView({behavior:'smooth',block:'start'});
+  document.getElementById('admin-letter-text').focus();
 }
 function showMyProfile(){
   const s=user.isAdmin?{points:0,title:'👑 Админ',stars:5,verified:true}:getUserStats(user.id);
@@ -2597,7 +2707,7 @@ function renderAdminUsers(){
         <p>🔒 пароль хэштелген (көрінбейді)</p>
         <p>⭐ ${s.points||0} · ${esc(s.title||'Атақ жоқ')} · <span style="color:#f59e0b">${starStr(s.stars||0)}</span></p>
         <p>🌐 Жариялаған тест: <b>${u.pub.length}</b>${u.pub.length?' — '+esc(u.pub.slice(0,3).map(t=>t.topic).join(', '))+(u.pub.length>3?'…':''):''}</p></div>
-      <div class="acts"><button class="btn btn-p btn-sm" onclick="adminViewUser(${jsq(p.id)})">👤 Профильді ашу</button></div>
+      <div class="acts"><button class="btn btn-p btn-sm" onclick="adminViewUser(${jsq(p.id)})">👤 Профильді ашу</button><button class="btn btn-s btn-sm" onclick="adminChooseLetterRecipient(${jsq(p.name)})">📩 Жазу</button></div>
     </div>`}).join(''):'<p class="sub">Ешкім табылмады</p>';
 }
 function showAdmin(){
@@ -2608,6 +2718,8 @@ function showAdmin(){
   const pending=tests.filter(t=>t.status==='pending');
   const approved=tests.filter(t=>t.isPublic||t.status==='approved');
   const users=Object.values(profiles);
+  document.getElementById('admin-letter-logins').innerHTML=users.filter(p=>p&&p.name).map(p=>`<option value="${esc(p.name)}">${p.role==='teacher'?'Мұғалім':'Оқушы'}</option>`).join('');
+  renderAdminLetterHistory();
 
   document.getElementById('admin-stats-grid').innerHTML=`
     <div class="mode" style="cursor:default"><div class="ic">👥</div><h3>${users.length}</h3><p>Тіркелгендер</p></div>
