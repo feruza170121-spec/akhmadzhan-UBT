@@ -1467,6 +1467,11 @@ body.dark{background:radial-gradient(900px 420px at 0% -5%,rgba(59,130,246,.16),
 .ubt-bank-row .info strong{display:block;font-size:14px;overflow-wrap:anywhere}
 .ubt-bank-row .info p{font-size:12px;color:var(--m);margin-top:3px;overflow-wrap:anywhere}
 .profile-bar{border-radius:0 0 var(--r) var(--r);box-shadow:0 4px 18px rgba(30,41,59,.07);border-bottom:none}
+.profile-bar.app-header{position:sticky;top:0;z-index:160;margin:0 0 16px;gap:12px;flex-wrap:wrap;background:var(--c)}
+.app-header .app-back-slot{display:flex;align-items:center;flex:none}
+.app-header .topback{position:static!important;transform:none!important;background:transparent;padding:0;margin:0;backdrop-filter:none;-webkit-backdrop-filter:none}
+.app-header .app-profile{flex:1;min-width:0}.app-header .app-profile .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:520px){.profile-bar.app-header{gap:7px;padding:9px 10px}.app-header .app-profile{gap:6px!important}.app-header .app-profile .avatar{width:36px!important;height:36px!important}.app-header .app-profile [style*="margin-left:8px"]{margin-left:0!important;padding:3px 6px!important}.app-header .app-back-slot .btn{padding:7px 10px;font-size:12px}}
 .avatar{background:var(--grad);background-size:cover;background-position:center;box-shadow:0 2px 8px rgba(37,99,235,.3);flex-shrink:0;overflow:hidden}
 .item{border-radius:22px;box-shadow:0 2px 8px rgba(30,41,59,.04);transition:.15s}
 .item[onclick]:hover{transform:translateY(-2px);box-shadow:var(--sh);border-color:#93c5fd}
@@ -1605,7 +1610,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
 
 <div id="s-home" class="screen">
   <div class="profile-bar">
-    <div style="display:flex;align-items:center;gap:12px;cursor:pointer" onclick="showMyProfile()">
+    <div class="app-profile" style="display:flex;align-items:center;gap:12px;cursor:pointer" onclick="showMyProfile()">
       <div style="position:relative">
         <div class="avatar" id="avatar" style="width:44px;height:44px;font-size:16px;border:3px solid #93c5fd">?</div>
         <span id="p-verified" style="display:none;position:absolute;bottom:-2px;right:-2px;background:#2563eb;color:#fff;width:18px;height:18px;border-radius:50%;font-size:11px;line-height:18px;text-align:center;border:2px solid #fff">✓</span>
@@ -2610,7 +2615,9 @@ function selectAdminInboxLetter(id){
 }
 async function showAdminInbox(){
   if(!user||user.isAdmin)return;
-  renderAdminInbox();showScr('s-admin-inbox');
+  showScr('s-admin-inbox');
+  try{await window.__bridge.refresh()}catch(e){}
+  updateAdminInboxBadge();renderAdminInbox();
   const ids=ownAdminLetters().filter(m=>m.role!=='user'&&!m.read).map(m=>m.id);
   for(let i=0;i<ids.length;i+=100){const r=await authCall('admin_read_letters',{ids:ids.slice(i,i+100)});if(!r.ok)break}
   if(ids.length){try{await window.__bridge.refresh()}catch(e){}updateAdminInboxBadge();renderAdminInbox()}
@@ -2853,6 +2860,7 @@ function showAdmin(){
   renderAdminChat();
 
   showScr('s-admin');
+  window.__bridge.refresh().then(()=>{if(document.getElementById('s-admin').classList.contains('active')){renderAdminLetterHistory();renderAdminUsers()}}).catch(()=>{});
   if(LS.get('ubt_admin_letters',[]).some(m=>m.role==='user'&&!m.read)){
     authCall('admin_read_replies',{}).then(async r=>{if(r.ok){await window.__bridge.refresh();renderAdminLetterHistory()}});
   }
@@ -6439,8 +6447,14 @@ function startUbt140(){
 try{if(user&&document.getElementById('s-home').classList.contains('active'))renderHomeExtras()}catch(e){}
 </script>
 <script>
-// ===== «Артқа» батырмасын беттің үстіне қою =====
+// ===== Ортақ жоғарғы жолақ: профиль мен «Артқа» =====
 (function(){
+  var header=document.querySelector('#s-home .profile-bar');
+  var slot=document.createElement('div');slot.className='app-back-slot';
+  header.classList.add('app-header');header.insertBefore(slot,header.firstChild);
+  document.body.insertBefore(header,document.getElementById('s-login'));
+  header.style.display='none';
+  var current=null,home={};
   document.querySelectorAll('.screen').forEach(function(scr){
     if(['s-login','s-home','s-test','s-res'].indexOf(scr.id)>=0)return;
     var btn=null;
@@ -6457,7 +6471,20 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
       nb.setAttribute('onclick','goHome()');bar.appendChild(nb);
     }
     host.insertBefore(bar,host.firstChild);
+    home[scr.id]=host;
   });
+  function syncHeader(){
+    var screen=document.querySelector('.screen.active'),id=screen&&screen.id;
+    if(current&&current.parentNode===slot){var old=home[current.dataset.screen];if(old)old.insertBefore(current,old.firstChild)}
+    current=null;
+    header.style.display=id&&id!=='s-login'&&id!=='s-test'?'flex':'none';
+    if(id&&home[id]){
+      current=home[id].querySelector(':scope > .topback');
+      if(current){current.dataset.screen=id;slot.appendChild(current)}
+    }
+  }
+  document.querySelectorAll('.screen').forEach(function(scr){new MutationObserver(syncHeader).observe(scr,{attributes:true,attributeFilter:['class']})});
+  syncHeader();
 })();
 </script>
 <script>
@@ -6564,7 +6591,11 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
   });
   window.__bridge={push:push,call:call,refresh:refresh,clearLocal:clearLocal,connected:function(){return connected}};
   post({type:'streamlit:componentReady',apiVersion:1});height();
-  setInterval(function(){if(connected&&document.visibilityState!=='hidden')send()},5000);
+  // Жаңарту бет ашылған сайын қайталанбайды: дерек әрекетке немесе қойындыға оралғанда алынады.
+  var lastFocusSync=0;
+  function syncOnReturn(){if(!connected||document.visibilityState==='hidden'||!window.__token)return;var now=Date.now();if(now-lastFocusSync<30000)return;lastFocusSync=now;send()}
+  document.addEventListener('visibilitychange',syncOnReturn);
+  window.addEventListener('focus',syncOnReturn);
   setTimeout(boot,2500);
 })();
 </script>
