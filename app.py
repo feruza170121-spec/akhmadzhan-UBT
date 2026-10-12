@@ -1140,6 +1140,7 @@ html,body{overflow-x:hidden}
 .mind-node:hover{transform:translateY(-3px);box-shadow:0 10px 24px #183b1b20}
 .mind-node strong{font-size:15px;line-height:1.4}.mind-main{max-width:420px;align-items:center;text-align:center;background:linear-gradient(135deg,#dff0df,#c8e4c9);border:2px solid #91bd96;border-left:2px solid #91bd96;border-radius:23px;padding:18px 24px;color:#254c30}.mind-main strong{font-size:19px}.mind-main small{font-size:11px;color:#4b7053;margin-top:4px}.mind-dot{display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:#fff;color:#438251;margin-bottom:6px}
 .mind-branches{display:grid;grid-template-columns:1fr;gap:12px;margin:0;position:relative;min-width:0}.mind-branches:before{content:"";position:absolute;left:-12px;top:calc(74px / 2);bottom:calc(74px / 2);width:2px;background:var(--mind-line)}.mind-branch{position:relative;min-width:0}.mind-connector{position:absolute;left:-24px;top:50%;height:2px;width:24px;background:var(--mind-line)}.mind-branch .mind-node{min-height:74px;padding-right:35px}.mind-subtitle{font-size:12px;color:#6b756c;margin-top:3px}.mind-toggle{position:absolute;right:12px;top:12px;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:var(--mind-soft);color:var(--mind);font-weight:800}.mind-details{display:none;width:100%;margin-top:10px;padding-top:8px;border-top:1px solid #e5ece5;text-align:left}.mind-node.expanded .mind-details{display:block;animation:mindFade .25s both}.mind-node.expanded .mind-toggle{transform:rotate(45deg)}.mind-detail{display:grid;grid-template-columns:minmax(65px,.7fr) 1.3fr;gap:8px;padding:5px 0;font-size:12px;line-height:1.45;border-bottom:1px dashed #e6ece6}.mind-detail b{color:var(--mind)}.mind-detail span{overflow-wrap:anywhere}.mind-img{max-width:100%;max-height:150px;object-fit:contain;border-radius:10px;margin-top:8px}
+.mind-add-info{margin-top:8px;font-size:12px;padding:5px 10px}.mind-info-form{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.mind-info-form input{flex:1 1 130px;min-width:0;padding:7px;border:1px solid #b7d9bd;border-radius:8px}.mind-info-form button{padding:6px 10px}
 @keyframes mindFade{from{opacity:0}to{opacity:1}}@keyframes mindPop{from{opacity:0;transform:translateY(-8px) scale(.96)}to{opacity:1;transform:translateY(0) scale(1)}}@keyframes mindSlide{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
 @media(max-width:640px){.sch-bg.mindmap{padding:20px 10px}.mind-layout{grid-template-columns:1fr;gap:22px}.mind-layout:before{display:none}.mind-branches{grid-template-columns:1fr;gap:10px}.mind-branches:before{display:none}.mind-connector{display:none}.mind-branch .mind-node{margin-left:0;width:100%}.mind-main{max-width:100%}.mind-detail{grid-template-columns:1fr;gap:2px}}
 
@@ -3191,13 +3192,31 @@ function schRender(t){
   const root=t.root||{}, kids=(Array.isArray(t.kids)?t.kids:[]).filter(Boolean);
   const subs=(Array.isArray(t.subs)?t.subs:[]).filter(Boolean);
   const details=c=>(Array.isArray(c.fields)?c.fields:[]).filter(f=>f&&(f.k||f.v)).map(f=>`<div class="mind-detail"><b>${esc(f.k||'')}</b>${f.v?`<span>${esc(f.v)}</span>`:''}</div>`).join('');
+  const editable=!!(t.id&&user&&t.authorId===user.id&&allSchemes().some(x=>x.id===t.id));
   return `<div class="sch-bg mindmap" style="--mind:${colors[2]};--mind-soft:${colors[0]};--mind-line:${colors[1]}">
     <h2 class="sch-h">${esc(t.title||'Схема')}</h2>
     ${t.tabMain?`<div class="mind-top">${esc(t.tabMain)}</div>`:''}
     ${subs.length?`<div class="mind-tags">${subs.map((x,i)=>`<span style="--delay:${i*100}ms">${esc(x)}</span>`).join('')}</div>`:''}
     <div class="mind-layout"><div class="mind-center"><button class="mind-node mind-main" type="button" onclick="this.classList.toggle('expanded')"><span class="mind-dot">✦</span><strong>${esc(root.head||root.title||t.title||'Қазақстан тарихы')}</strong><small>Барлық тарихи кезеңдер</small><div class="mind-details">${details(root)}${schImgOk(root.img)?`<img class="mind-img" src="${root.img}" alt="">`:''}</div></button></div>
-    ${kids.length?`<div class="mind-branches">${kids.map((k,i)=>`<article class="mind-branch" style="--delay:${i*120}ms;--branch:${['#d8a94e','#7a9fc4','#76ad8a','#c98b83','#a694cf'][i%5]}"><div class="mind-connector"></div><button class="mind-node" type="button" onclick="this.classList.toggle('expanded')"><strong>${esc(k.tab||k.title||('Тақырып '+(i+1)))}</strong>${k.title&&k.tab?`<span class="mind-subtitle">${esc(k.title)}</span>`:''}<div class="mind-details">${details(k)}${schImgOk(k.img)?`<img class="mind-img" src="${k.img}" alt="">`:''}${schImgOk(k.img2)?`<img class="mind-img" src="${k.img2}" alt="">`:''}</div><span class="mind-toggle">＋</span></button></article>`).join('')}</div>`:''}</div>
+    ${kids.length?`<div class="mind-branches">${kids.map((k,i)=>`<article class="mind-branch" style="--delay:${i*120}ms;--branch:${['#d8a94e','#7a9fc4','#76ad8a','#c98b83','#a694cf'][i%5]}"><div class="mind-connector"></div><div class="mind-node" role="button" tabindex="0" onclick="if(event.target.closest('.mind-info-form,.mind-add-info'))return;this.classList.toggle('expanded')" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();this.classList.toggle('expanded')}"><strong>${esc(k.tab||k.title||('Тақырып '+(i+1)))}</strong>${k.title&&k.tab?`<span class="mind-subtitle">${esc(k.title)}</span>`:''}<div class="mind-details">${details(k)}${schImgOk(k.img)?`<img class="mind-img" src="${k.img}" alt="">`:''}${schImgOk(k.img2)?`<img class="mind-img" src="${k.img2}" alt="">`:''}${editable?`<button class="btn btn-s btn-sm mind-add-info" type="button" onclick="schInfoForm(this)">＋ Мәлімет қосу</button><form class="mind-info-form" style="display:none" onsubmit="return schSaveInfo(event,${jsq(t.id)},${i})"><input name="label" maxlength="30" placeholder="Атауы (мыс: Дерек)"><input name="value" maxlength="120" placeholder="Мәлімет"><button class="btn btn-p btn-sm" type="submit">Сақтау</button></form>`:''}</div><span class="mind-toggle">＋</span></div></article>`).join('')}</div>`:''}</div>
   </div>`;
+}
+function schInfoForm(btn){
+  const form=btn.nextElementSibling;form.style.display='flex';btn.style.display='none';form.elements.label.focus();
+}
+function schSaveInfo(event,id,index){
+  event.preventDefault();event.stopPropagation();
+  const form=event.currentTarget,label=form.elements.label.value.trim(),value=form.elements.value.value.trim();
+  if(!label||!value){alert('Атауын және мәліметін жазыңыз');return false}
+  const all=allSchemes(),t=all.find(x=>x.id===id);
+  if(!user||!t||t.authorId!==user.id||!t.kids[index])return false;
+  t.kids[index].fields=Array.isArray(t.kids[index].fields)?t.kids[index].fields:[];
+  if(t.kids[index].fields.length>=SCH_MAX_FIELDS){alert('Бір карточкаға ең көбі 10 мәлімет қосылады');return false}
+  t.kids[index].fields.push({k:label,v:value});
+  if(schIsPub(t)){t.isPublic=false;t.status='pending'}
+  saveSchemes(all);schOpen(id);
+  const nodes=document.querySelectorAll('#sch-view .mind-branch .mind-node');if(nodes[index])nodes[index].classList.add('expanded');
+  return false;
 }
 let schTabCur='pub',schDraft=null;
 function showSchemes(tab){
@@ -3214,7 +3233,10 @@ function renderSchemes(){
   bulk.style.display=schTabCur==='mine'&&user&&allSchemes().some(t=>t.authorId===user.id)?'flex':'none';
   document.getElementById('sch-f-subj').parentElement.style.display=schTabCur==='history'?'none':'';
   if(schTabCur==='history'){
-    document.getElementById('sch-list').innerHTML=HIST.map((h,i)=>`<div class="item"><div class="info"><h4>${esc(h[2])}</h4><p>${esc(h[0])} · ${h[5].length} жеке тармақ</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="histPreview(${i})">👁 Қарау</button>${user?`<button class="btn btn-s btn-sm" onclick="histCopyMine(${i})">📁 Өзіме қосу</button>`:''}</div></div>`).join('');
+    const groups=new Map();
+    HIST.forEach((h,i)=>{const stage=h[0]==='Қазақстан тарихының кезеңдері'?'Жалпы шолу':h[0];if(!groups.has(stage))groups.set(stage,[]);groups.get(stage).push({h,i})});
+    const order=['Жалпы шолу','Ежелгі дәуір','Ортағасыр','Қазақ хандығы','Отарлау дәуірі','Кеңес кезеңі','Тәуелсіздік'];
+    document.getElementById('sch-list').innerHTML='<h3 style="margin:12px 0">📁 Қазақстан тарихы · кезеңдер бойынша</h3>'+[...groups].sort((a,b)=>order.indexOf(a[0])-order.indexOf(b[0])).map(([stage,items])=>`<details class="card" ${stage==='Жалпы шолу'?'open':''} style="margin:10px 0"><summary style="cursor:pointer;font-weight:700">📁 ${esc(stage)} · ${items.length} тақырып</summary><div style="margin-top:12px">${items.map(({h,i})=>`<div class="item"><div class="info"><h4>${esc(h[2])}</h4><p>${h[5].length} жеке тармақ</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="histPreview(${i})">👁 Қарау</button>${user?`<button class="btn btn-s btn-sm" onclick="histCopyMine(${i})">📁 Өзіме қосу</button>`:''}</div></div>`).join('')}</div></details>`).join('');
     return;
   }
   const subj=document.getElementById('sch-f-subj').value;
@@ -3646,13 +3668,14 @@ const HIST=[
   ['Қаңлы кезеңі','Сырдария өңірінің мәдениеттері',[['Топтары','Қауыншы, Отырар-Қаратау, Жетіасар']]]]]
 ];
 function histId(i){return 'hist_'+String(i+1).padStart(2,'0')}
-function histCopyMine(i){
+function histCopyMine(i,openAfter){
   if(!user||!HIST[i])return;
   const all=allSchemes();
   if(all.filter(t=>t.authorId===user.id).length>=30){alert('Бір адам ең көбі 30 схема құра алады');return}
   const id='sc_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7);
   all.unshift({...histBuild(i),id,authorId:user.id,authorName:user.name,createdAt:new Date().toISOString(),isPublic:false,status:'private'});
   saveSchemes(all);schTabCur='mine';renderSchemes();
+  if(openAfter){const preview=document.getElementById('ovl-prev');if(preview)preview.remove();schOpen(id)}
 }
 function histBuild(i){
   const h=HIST[i],card=(title,f)=>({title:title,img:'',img2:'',fields:f.map(x=>({k:x[0],v:x[1]}))});
@@ -3662,7 +3685,7 @@ function histBuild(i){
 function histPreview(i){
   const old=document.getElementById('ovl-prev');if(old)old.remove();
   const o=document.createElement('div');o.className='ovl';o.id='ovl-prev';
-  o.innerHTML='<div class="box" style="max-width:1000px"><div style="text-align:right;margin-bottom:8px"><button class="btn btn-s btn-sm" onclick="document.getElementById(\'ovl-prev\').remove()">✕ Жабу</button></div>'+schRender(histBuild(i))+'</div>';
+  o.innerHTML='<div class="box" style="max-width:1000px"><div class="row" style="justify-content:flex-end;margin-bottom:8px">'+(user?'<button class="btn btn-p btn-sm" onclick="histCopyMine('+i+',true)">＋ Өзіме қосып, мәлімет жазу</button>':'')+'<button class="btn btn-s btn-sm" onclick="document.getElementById(\'ovl-prev\').remove()">✕ Жабу</button></div>'+schRender(histBuild(i))+'</div>';
   document.body.appendChild(o);
 }
 function histAddAll(){
