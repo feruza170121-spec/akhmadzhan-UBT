@@ -870,6 +870,13 @@ def _authorize(state, sess, k, v, chat_token=""):
         return _merge_tests(state, sess, v)
     if k == "ubt_schemes":
         return _merge_schemes(state, sess, v)
+    if k == "ubt_hist_order":
+        if not sess["admin"]:
+            return None
+        order = _jload(v, list, None)
+        if order is None or len(order) > 200 or any(type(i) is not int or i < 0 or i >= 200 for i in order) or len(set(order)) != len(order):
+            return None
+        return _jdump(order)
     if k == "ubt_lessons":
         if not sess["admin"]:
             return None
@@ -1144,6 +1151,7 @@ html,body{overflow-x:hidden}
 .mind-branch-row{display:flex;align-items:flex-start;gap:9px}.mind-branch-row>.mind-node{flex:1;min-width:0}.mind-arrow{flex:none;border:1px solid var(--mind-line);border-radius:12px;background:var(--mind-soft);color:var(--mind);font-size:19px;font-weight:800;min-width:38px;height:40px;cursor:pointer}.mind-arrow[aria-expanded="true"]{background:var(--mind);color:#fff}.mind-children{display:none;margin:10px 0 8px 25px;padding-left:16px;border-left:2px solid var(--mind-line)}.mind-children.open{display:grid;gap:9px;animation:mindFade .3s both}.mind-child{position:relative;border:1px solid var(--mind-line);border-radius:13px;background:#fff;padding:11px 13px;min-width:0}.mind-child:before{content:"";position:absolute;left:-16px;top:22px;width:16px;height:2px;background:var(--mind-line)}.mind-child summary{cursor:pointer;font-weight:700;color:#254c30}.mind-child .mind-detail:first-of-type{margin-top:9px}
 .mind-child-head{display:flex;justify-content:space-between;gap:8px;align-items:center}.mind-child-title{border:0;background:none;color:#254c30;font-family:inherit;font-size:15px;font-weight:700;text-align:left;cursor:pointer;padding:5px}.mind-child-info{margin-top:6px}.mind-child>.mind-children{margin-left:14px}
 .mind-tools{display:flex;gap:7px;justify-content:flex-end;align-items:center;margin:0 0 12px}.mind-tools button{min-width:34px}.mind-map-shell{overflow-x:auto;padding:4px}.mind-branch .mind-node{cursor:default}.mind-node-head{display:flex;align-items:center;gap:6px;width:100%;min-width:0;padding-right:32px}.mind-title{flex:1;min-width:0;border:0;background:none;color:inherit;text-align:left;font:inherit;cursor:pointer;padding:0}.mind-title strong{display:block}.mind-title .mind-subtitle{display:block}.mind-title:focus-visible,.mind-arrow:focus-visible,.mind-mini:focus-visible{outline:2px solid var(--mind)}.mind-mini{flex:none;border:1px solid var(--mind-line);border-radius:9px;background:#fff;color:#92483e;font-size:18px;line-height:1;min-width:28px;height:28px;cursor:pointer}.mind-controls{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}.mind-controls label{cursor:pointer}.mind-child .mind-node{min-height:0;border:0;box-shadow:none;padding:0;animation:none}.mind-child .mind-node:hover{transform:none;box-shadow:none}.mind-child .mind-node .mind-details{margin-top:6px}.mind-child .mind-children{width:auto}.mind-node .mind-img{cursor:zoom-in}.mind-main-wrap{display:flex;flex-direction:column;gap:8px;align-items:center;width:100%}.mind-photo-box img{max-width:80vw;max-height:70vh;object-fit:contain;display:block;margin:auto}
+.mind-photo-actions{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}.mind-photo-actions .btn[disabled]{opacity:.45;cursor:not-allowed}
 @keyframes mindFade{from{opacity:0}to{opacity:1}}@keyframes mindPop{from{opacity:0;transform:translateY(-8px) scale(.96)}to{opacity:1;transform:translateY(0) scale(1)}}@keyframes mindSlide{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
 @media(max-width:640px){.sch-bg.mindmap{padding:20px 10px}.mind-layout{grid-template-columns:1fr;gap:22px}.mind-layout:before{display:none}.mind-branches{grid-template-columns:1fr;gap:10px}.mind-branches:before{display:none}.mind-connector{display:none}.mind-branch .mind-node{margin-left:0;width:100%}.mind-main{max-width:100%}.mind-detail{grid-template-columns:1fr;gap:2px}}
 
@@ -3208,13 +3216,13 @@ function schRender(t){
   const source=t.id||'',index=Number.isInteger(t.histIndex)?t.histIndex:-1;
   const actions=(node,path)=>{
     const fields=(Array.isArray(node.fields)?node.fields:[]).filter(f=>f&&f.k&&f.v);
-    return `<div class="mind-controls">${source||index>=0?`<button type="button" class="btn btn-p btn-sm" ${fields.length<2?'disabled title="Тест үшін кемінде екі түрлі мәлімет керек"':''} onclick="schTermQuiz(${jsq(source)},${index},${jsq(path)})">📝 Осы тақырыптан тест</button>`:''}${editable?`<button type="button" class="btn btn-s btn-sm" onclick="schAddNode(${jsq(source)},${jsq(path)})">＋ Ішкі тақырып</button><button type="button" class="btn btn-s btn-sm" onclick="schRenameNode(${jsq(source)},${jsq(path)})">✎ Атауын өзгерту</button><button class="btn btn-s btn-sm mind-add-info" type="button" onclick="schInfoForm(this)">＋ Мәлімет</button><form class="mind-info-form" style="display:none" onsubmit="return schSaveInfo(event,${jsq(source)},${jsq(path)})"><input name="label" maxlength="30" placeholder="Термин немесе атау"><input name="value" maxlength="120" placeholder="Мәлімет"><button class="btn btn-p btn-sm" type="submit">Сақтау</button></form><label class="btn btn-s btn-sm">📷 Фото<input type="file" accept="image/jpeg,image/png,image/webp" style="display:none" onchange="schInlinePhoto(this,${jsq(source)},${jsq(path)})"></label>${schImgOk(node.img)?`<button type="button" class="btn btn-s btn-sm" onclick="schRemovePhoto(${jsq(source)},${jsq(path)})">− Фото</button>`:''}`:''}</div>`;
+    return `<div class="mind-controls">${source||index>=0?`<button type="button" class="btn btn-p btn-sm" ${fields.length<2?'disabled title="Тест үшін кемінде екі түрлі мәлімет керек"':''} onclick="schTermQuiz(${jsq(source)},${index},${jsq(path)})">📝 Осы тақырыптан тест</button>`:''}${editable?`<button type="button" class="btn btn-s btn-sm" onclick="schAddNode(${jsq(source)},${jsq(path)})">＋ Ішкі тақырып</button><button type="button" class="btn btn-s btn-sm" onclick="schRenameNode(${jsq(source)},${jsq(path)})">✎ Атауын өзгерту</button><button class="btn btn-s btn-sm mind-add-info" type="button" onclick="schInfoForm(this)">＋ Мәлімет</button><form class="mind-info-form" style="display:none" onsubmit="return schSaveInfo(event,${jsq(source)},${jsq(path)})"><input name="label" maxlength="30" placeholder="Термин немесе атау"><input name="value" maxlength="120" placeholder="Мәлімет"><button class="btn btn-p btn-sm" type="submit">Сақтау</button></form><span class="mind-photo-actions"><label class="btn btn-s btn-sm">📷 Фото қосу<input type="file" accept="image/jpeg,image/png,image/webp" style="display:none" onchange="schInlinePhoto(this,${jsq(source)},${jsq(path)})"></label><button type="button" class="btn btn-d btn-sm" ${schImgOk(node.img)?'':'disabled title="Фото қосылғанда өшіруге болады"'} onclick="schRemovePhoto(${jsq(source)},${jsq(path)})">🗑 Фотоны өшіру</button></span>`:''}</div>`;
   };
   const details=node=>`${(Array.isArray(node.fields)?node.fields:[]).filter(f=>f&&(f.k||f.v)).map(f=>`<div class="mind-detail"><b>${esc(f.k||'')}</b><span>${esc(f.v||'')}</span></div>`).join('')}${['img','img2'].filter(key=>schImgOk(node[key])).map(key=>`<img class="mind-img" src="${node[key]}" alt="${esc(node.tab||node.title||'Тақырып суреті')}" onclick="schPhotoView(this.src)" title="Үлкейтіп қарау">`).join('')}`;
   const nodeHtml=(node,path,depth)=>{
     const name=esc(node.tab||node.title||'Тақырып'),children=depth>=6?[]:(Array.isArray(node.children)?node.children:[]);
     const title=node.title&&node.title!==node.tab?`<span class="mind-subtitle">${esc(node.title)}</span>`:'';
-    return `<article class="${depth===0?'mind-branch':'mind-child'}" data-path="${esc(path)}" style="--branch:${['#d8a94e','#7a9fc4','#76ad8a','#c98b83','#a694cf'][depth%5]}">${depth===0?'<div class="mind-connector"></div>':''}<div class="mind-branch-row"><div class="mind-node"><div class="mind-node-head"><button type="button" class="mind-title" aria-expanded="false" onclick="schToggleNode(this)"><strong>${name}</strong>${title}</button>${editable?`<button type="button" class="mind-mini" aria-label="${name} тармағын өшіру" title="Тармақты өшіру" onclick="schRemoveNode(${jsq(source)},${jsq(path)})">−</button>`:''}<span class="mind-toggle" aria-hidden="true">＋</span></div><div class="mind-details">${details(node)}${actions(node,path)}</div></div>${children.length?`<button class="mind-arrow" type="button" aria-label="${name} ішіндегі тақырыптарды ашу" aria-expanded="false" onclick="schToggleChildren(this)">→</button>`:''}</div>${children.length?`<div class="mind-children">${children.map((c,i)=>nodeHtml(c,path+'.children.'+i,depth+1)).join('')}</div>`:''}</article>`;
+    return `<article class="${depth===0?'mind-branch':'mind-child'}" data-path="${esc(path)}" style="--branch:${['#d8a94e','#7a9fc4','#76ad8a','#c98b83','#a694cf'][depth%5]}">${depth===0?'<div class="mind-connector"></div>':''}<div class="mind-branch-row"><div class="mind-node"><div class="mind-node-head"><button type="button" class="mind-title" aria-expanded="false" onclick="schToggleNode(this)"><strong>${name}</strong>${title}</button>${editable?`<button type="button" class="mind-mini" aria-label="${name} жоғары жылжыту" title="Жоғары" onclick="schMoveNode(${jsq(source)},${jsq(path)},-1)">↑</button><button type="button" class="mind-mini" aria-label="${name} төмен жылжыту" title="Төмен" onclick="schMoveNode(${jsq(source)},${jsq(path)},1)">↓</button><button type="button" class="mind-mini" aria-label="${name} тармағын өшіру" title="Тармақты өшіру" onclick="schRemoveNode(${jsq(source)},${jsq(path)})">−</button>`:''}<span class="mind-toggle" aria-hidden="true">＋</span></div><div class="mind-details">${details(node)}${actions(node,path)}</div></div>${children.length?`<button class="mind-arrow" type="button" aria-label="${name} ішіндегі тақырыптарды ашу" aria-expanded="false" onclick="schToggleChildren(this)">→</button>`:''}</div>${children.length?`<div class="mind-children">${children.map((c,i)=>nodeHtml(c,path+'.children.'+i,depth+1)).join('')}</div>`:''}</article>`;
   };
   return `<div class="mind-map-shell"><div class="mind-tools"><span class="sub">Карта өлшемі</span><button class="btn btn-s btn-sm" type="button" onclick="schMapZoom(this,-0.1)">−</button><button class="btn btn-s btn-sm" type="button" onclick="schMapZoom(this,0.1)">＋</button></div><div class="sch-bg mindmap" style="--mind:${colors[2]};--mind-soft:${colors[0]};--mind-line:${colors[1]}"><h2 class="sch-h">${esc(t.title||'Схема')}</h2>${t.tabMain?`<div class="mind-top">${esc(t.tabMain)}</div>`:''}${subs.length?`<div class="mind-tags">${subs.map(x=>`<span>${esc(x)}</span>`).join('')}</div>`:''}<div class="mind-layout"><div class="mind-center"><div class="mind-main-wrap"><button class="mind-node mind-main" type="button" onclick="this.classList.toggle('expanded')"><span class="mind-dot">✦</span><strong>${esc(root.head||root.title||t.title||'Қазақстан тарихы')}</strong><small>${esc(root.title||'Барлық кезеңдер')}</small><div class="mind-details">${details(root)}</div></button>${actions(root,'root')}</div></div>${kids.length?`<div class="mind-branches">${kids.map((k,i)=>nodeHtml(k,'kids.'+i,0)).join('')}</div>`:''}</div></div></div>`;
 }
@@ -3230,6 +3238,15 @@ function schAddNode(id,path){const all=allSchemes(),t=all.find(x=>x.id===id);if(
 function schRenameNode(id,path){const all=allSchemes(),t=all.find(x=>x.id===id);if(!t||!user||t.authorId!==user.id)return;const node=schNodeAt(t,path);if(!node)return;const name=prompt('Тақырыптың жаңа атауы:',node.tab||node.head||node.title||'');if(!name||!name.trim())return;if(path==='root')node.head=name.trim().slice(0,60);else{node.tab=name.trim().slice(0,40);node.title=name.trim().slice(0,80)}schNodeChanged(all,t);if(path!=='root')schRevealPath(path)}
 function schRemovePhoto(id,path){const all=allSchemes(),t=all.find(x=>x.id===id);if(!t||!user||t.authorId!==user.id)return;const node=schNodeAt(t,path);if(!node||!node.img)return;node.img='';schNodeChanged(all,t);if(path!=='root')schRevealPath(path)}
 function schRemoveNode(id,path){const all=allSchemes(),t=all.find(x=>x.id===id);if(!t||!user||t.authorId!==user.id||path==='root')return;const parts=path.split('.'),at=Number(parts.pop());parts.pop();const parent=parts.length?schNodeAt(t,parts.join('.')):null;const list=parent?parent.children:t.kids;if(!Array.isArray(list)||!Number.isInteger(at)||!list[at]||!confirm('«'+(list[at].tab||list[at].title||'Тармақ')+'» және оның ішіндегі мәліметтерді өшіру керек пе?'))return;list.splice(at,1);schNodeChanged(all,t)}
+function schMoveNode(id,path,direction){
+  const all=allSchemes(),t=all.find(x=>x.id===id);
+  if(!t||!user||t.authorId!==user.id||path==='root'||![1,-1].includes(direction))return;
+  const parts=path.split('.'),at=Number(parts.pop());parts.pop();
+  const parent=parts.length?schNodeAt(t,parts.join('.')):null,list=parent?parent.children:t.kids;
+  if(!Array.isArray(list)||!Number.isInteger(at)||at<0||at>=list.length||at+direction<0||at+direction>=list.length)return;
+  [list[at],list[at+direction]]=[list[at+direction],list[at]];
+  schNodeChanged(all,t);schRevealPath((parts.length?parts.join('.')+'.children.':'kids.')+(at+direction));
+}
 function schSaveInfo(event,id,path){event.preventDefault();const form=event.currentTarget,label=form.elements.label.value.trim(),value=form.elements.value.value.trim();if(!label||!value){alert('Атауын және мәліметін жазыңыз');return false}const all=allSchemes(),t=all.find(x=>x.id===id);if(!t||!user||t.authorId!==user.id)return false;const node=schNodeAt(t,path);if(!node)return false;node.fields=Array.isArray(node.fields)?node.fields:[];if(node.fields.length>=SCH_MAX_FIELDS){alert('Бір карточкаға ең көбі 10 мәлімет қосылады');return false}node.fields.push({k:label.slice(0,30),v:value.slice(0,120)});schNodeChanged(all,t);schRevealPath(path);return false}
 function schInfoForm(btn){const form=btn.nextElementSibling;form.style.display='flex';btn.style.display='none';form.elements.label.focus()}
 function schInlinePhoto(inp,id,path){const file=inp.files&&inp.files[0];inp.value='';if(!file||!/^image\/(jpeg|png|webp)$/.test(file.type))return;const t=schEditable(id),node=t&&schNodeAt(t,path);if(!node)return;const reader=new FileReader();reader.onload=()=>{const img=new Image();img.onload=()=>{let side=520,q=.72,out='';for(let i=0;i<7;i++){const scale=Math.min(1,side/Math.max(img.width,img.height)),canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(img.width*scale));canvas.height=Math.max(1,Math.round(img.height*scale));const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(img,0,0,canvas.width,canvas.height);out=canvas.toDataURL('image/jpeg',q);if(out.length*.75<=SCH_IMG_BYTES)break;side=Math.round(side*.82);q=Math.max(.42,q-.06)}if(out.length*.75>SCH_IMG_BYTES*1.5){alert('Сурет тым үлкен');return}const all=allSchemes(),stored=all.find(x=>x.id===id),target=stored&&schNodeAt(stored,path);if(!target||!user||stored.authorId!==user.id)return;target.img=out;schNodeChanged(all,stored);schRevealPath(path)};img.onerror=()=>alert('Сурет оқылмады');img.src=reader.result};reader.readAsDataURL(file)}
@@ -3252,8 +3269,8 @@ function renderSchemes(){
     const groups=new Map();
     HIST.forEach((h,i)=>{const stage=h[0]==='Қазақстан тарихының кезеңдері'?'Жалпы шолу':h[0];if(!groups.has(stage))groups.set(stage,[]);groups.get(stage).push({h,i})});
     const order=['Жалпы шолу','Ежелгі дәуір','Ортағасыр','Қазақ хандығы','Отарлау дәуірі','Кеңес кезеңі','Тәуелсіздік'];
-    const ancientOrder=['Ежелгі дәуірдің бөлінуі','Палеолит: Қаратау тұрақтары','Мезолит','Неолит','Энеолит: Ботай мәдениеті','Қола дәуірі','Андронов мәдениеті','Беғазы-Дәндібай мәдениеті','Ерте темір дәуірі','Сақтар','Сармат мәдениеті'];
-    if(groups.has('Ежелгі дәуір'))groups.get('Ежелгі дәуір').sort((a,b)=>{const ia=ancientOrder.indexOf(a.h[2]),ib=ancientOrder.indexOf(b.h[2]);return (ia<0?ancientOrder.length+a.i:ia)-(ib<0?ancientOrder.length+b.i:ib)});
+    const positions=new Map(histOrder().map((id,n)=>[id,n]));
+    groups.forEach(items=>items.sort((a,b)=>positions.get(a.i)-positions.get(b.i)));
     const master=HIST.findIndex(h=>h[0]==='Қазақстан тарихының кезеңдері');
     document.getElementById('sch-list').innerHTML=`<div class="card" style="margin:10px 0;border:1px solid #b7d9bd"><h3>🌳 Қазақстан тарихы · бір карта</h3><p class="sub">Дәуірді басыңыз: сол дәуірдің дерегі ашылады. Жебені басыңыз: оның тақырыптары, кейін сол тақырыпқа қатысты мәдениеттері ашылады.</p><div class="row" style="margin-top:10px"><button class="btn btn-p btn-sm" onclick="histPreview(${master})">🌳 Толық картаны ашу</button>${user?`<button class="btn btn-s btn-sm" onclick="histCopyMine(${master},true)">📁 Бір схема ретінде сақтау</button>`:''}</div></div><h3 style="margin:12px 0">📁 Жеке тақырыптар</h3>`+[...groups].sort((a,b)=>order.indexOf(a[0])-order.indexOf(b[0])).map(([stage,items])=>`<details class="card" ${stage==='Жалпы шолу'?'open':''} style="margin:10px 0"><summary style="cursor:pointer;font-weight:700">📁 ${esc(stage)} · ${items.length} тақырып</summary><div style="margin-top:12px">${items.map(({h,i})=>`<div class="item"><div class="info"><h4>${esc(h[2])}</h4><p>${h[5].length} жеке тармақ</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="histPreview(${i})">👁 Қарау</button>${user?`<button class="btn btn-s btn-sm" onclick="histCopyMine(${i})">📁 Өзіме қосу</button>`:''}</div></div>`).join('')}</div></details>`).join('');
     return;
@@ -3687,6 +3704,20 @@ const HIST=[
  [['Аралтөбе','Сармат ескерткіші',[['Аймағы','Батыс Қазақстан']]],['Көшпелі тіршілік','Мал шаруашылығы',[['Белгісі','Жылқы, қару-жарақ және әшекей бұйымдар']]]]]
 ];
 function histId(i){return 'hist_'+String(i+1).padStart(2,'0')}
+function histOrder(){
+  const stored=LS.get('ubt_hist_order',[]),seen=new Set();
+  const order=[];
+  if(Array.isArray(stored))stored.forEach(i=>{if(Number.isInteger(i)&&i>=0&&i<HIST.length&&!seen.has(i)){seen.add(i);order.push(i)}});
+  HIST.forEach((_,i)=>{if(!seen.has(i))order.push(i)});
+  return order;
+}
+function histMove(i,delta){
+  if(!user||!user.isAdmin||![1,-1].includes(delta))return;
+  const order=histOrder(),at=order.indexOf(i),next=at+delta;
+  if(at<0||next<0||next>=order.length||HIST[order[next]][0]!==HIST[i][0])return;
+  [order[at],order[next]]=[order[next],order[at]];
+  LS.set('ubt_hist_order',order);renderHist();
+}
 function histCopyMine(i,openAfter){
   if(!user||!HIST[i])return;
   const all=allSchemes();
@@ -3713,7 +3744,7 @@ function histBuild(i){
       stage.children=HIST.filter((entry,index)=>index!==i&&(titles?titles.includes(entry[2]):eras.includes(entry[0])))
         .map(entry=>({tab:entry[2],...card(entry[2],entry[4]),
           children:entry[5].map(part=>({tab:part[0],...card(part[1],part[2])}))}));
-      if(titles)stage.children.sort((a,b)=>titles.indexOf(a.tab)-titles.indexOf(b.tab));
+      const order=histOrder();stage.children.sort((a,b)=>order.indexOf(HIST.findIndex(x=>x[2]===a.tab))-order.indexOf(HIST.findIndex(x=>x[2]===b.tab)));
     });
   }
   return {subject:'history',subjectName:'Қазақстан тарихы',histIndex:i,title:(i+1)+'. '+h[2],tabMain:h[0],subs:['Қазақстан тарихы'],theme:h[1],
@@ -3728,7 +3759,8 @@ function histPreview(i){
 function histAddAll(){
   if(!user||!user.isAdmin)return;
   const all=allSchemes(),have=new Set(all.map(x=>x.id));let n=0;
-  HIST.forEach((h,i)=>{
+  histOrder().forEach(i=>{
+    const h=HIST[i];
     const id=histId(i);if(have.has(id))return;
     all.push({id:id,authorId:user.id,authorName:'Админ',createdAt:new Date().toISOString(),isPublic:false,status:'private',...histBuild(i)});n++;
   });
@@ -3769,11 +3801,12 @@ function renderHist(){
   let out='<p class="sub" style="margin-bottom:10px">Барлығы: <b>'+HIST.length+'</b> тақырып · схема ретінде қосылған: <b>'+added+'</b> · 🆕 жаңадан қосылған: '+HIST.filter(h=>h[3]).length+'</p>'
     +'<div class="row" style="margin-bottom:12px;justify-content:flex-start"><button class="btn btn-p btn-sm" onclick="histAddAll()">➕ Барлық тақырыпты схема ретінде қосу</button><button class="btn btn-s btn-sm" onclick="histRefreshBuiltins()">↺ Дайын схемаларды жаңарту</button></div>';
   let cur='';
-  HIST.forEach((h,i)=>{
+  histOrder().forEach(i=>{
+    const h=HIST[i];
     if(h[0]!==cur){cur=h[0];out+='<h4 style="margin:14px 0 6px">'+esc(cur)+'</h4>'}
     const t=have.get(histId(i));
     const st=!t?'<span class="badge badge-priv">Қосылмаған</span>':(t.isPublic&&t.status==='approved'?'<span class="badge badge-pub">🌐 Жария</span>':'<span class="badge badge-priv">🔒 Тек админ</span>');
-    out+='<div class="item"><div class="info"><h4>'+(i+1)+'. '+esc(h[2])+(h[3]?' 🆕':'')+'</h4><p>'+st+' · '+h[5].length+' тармақ</p></div><div class="acts">'
+    out+='<div class="item"><div class="info"><h4>'+esc(h[2])+(h[3]?' 🆕':'')+'</h4><p>'+st+' · '+h[5].length+' тармақ</p></div><div class="acts"><button class="btn btn-s btn-sm" title="Жоғары жылжыту" onclick="histMove('+i+',-1)">↑</button><button class="btn btn-s btn-sm" title="Төмен жылжыту" onclick="histMove('+i+',1)">↓</button>'
       +(t?'<button class="btn btn-p btn-sm" onclick="schOpen('+jsq(histId(i))+')">👁 Қарау</button><button class="btn btn-s btn-sm" onclick="schEdit('+jsq(histId(i))+')">✎</button>'
         +(t.isPublic&&t.status==='approved'?'<button class="btn btn-w btn-sm" onclick="histPub('+i+',false)">🔒 Жасыру</button>':'<button class="btn btn-ok btn-sm" onclick="histPub('+i+',true)">🌐 Жариялау</button>')
         +'<button class="btn btn-s btn-sm" onclick="histResetOne('+i+')">↺</button><button class="btn btn-d btn-sm" onclick="histDel('+i+')">🗑</button>'
