@@ -3715,6 +3715,16 @@ function histDeleteTopic(i){
   saveSchemes(allSchemes().filter(t=>t.id!==histId(i)));
   LS.set('ubt_hist_hidden',[...hidden]);renderHist();
 }
+function histDeleteAll(){
+  if(!user||!user.isAdmin)return;
+  const ids=new Set(HIST.map((_,i)=>histId(i)));
+  const all=allSchemes(),count=HIST.length-histHidden().size;
+  const schemes=all.filter(t=>ids.has(t.id)).length;
+  if(!count&&!schemes)return;
+  if(!confirm('Барлық '+count+' дайын тарих тақырыбын және '+schemes+' дайын схеманы бірден өшіру керек пе?'))return;
+  saveSchemes(all.filter(t=>!ids.has(t.id)));
+  LS.set('ubt_hist_hidden',HIST.map((_,i)=>i));renderHist();
+}
 function histRestoreTopics(){
   if(!user||!user.isAdmin||!histHidden().size)return;
   if(!confirm('Өшірілген дайын тақырыптарды тізімге қайтару керек пе?'))return;
@@ -3820,7 +3830,7 @@ function renderHist(){
   const have=new Map(allSchemes().map(x=>[x.id,x]));
   let added=0;HIST.forEach((h,i)=>{if(!hidden.has(i)&&have.has(histId(i)))added++});
   let out='<p class="sub" style="margin-bottom:10px">Барлығы: <b>'+(HIST.length-hidden.size)+'</b> тақырып · схема ретінде қосылған: <b>'+added+'</b> · 🆕 жаңадан қосылған: '+HIST.filter((h,i)=>h[3]&&!hidden.has(i)).length+'</p>'
-    +'<div class="row" style="margin-bottom:12px;justify-content:flex-start"><button class="btn btn-p btn-sm" onclick="histAddAll()">➕ Барлық тақырыпты схема ретінде қосу</button><button class="btn btn-s btn-sm" onclick="histRefreshBuiltins()">↺ Дайын схемаларды жаңарту</button>'+(hidden.size?'<button class="btn btn-s btn-sm" onclick="histRestoreTopics()">↶ Өшірілген тақырыптарды қайтару ('+hidden.size+')</button>':'')+'</div>';
+    +'<div class="row" style="margin-bottom:12px;justify-content:flex-start"><button class="btn btn-p btn-sm" onclick="histAddAll()">➕ Барлық тақырыпты схема ретінде қосу</button><button class="btn btn-s btn-sm" onclick="histRefreshBuiltins()">↺ Дайын схемаларды жаңарту</button>'+(HIST.length>hidden.size||HIST.some((_,i)=>have.has(histId(i)))?'<button class="btn btn-d btn-sm" onclick="histDeleteAll()">🗑 Бәрін бірден өшіру</button>':'')+(hidden.size?'<button class="btn btn-s btn-sm" onclick="histRestoreTopics()">↶ Өшірілген тақырыптарды қайтару ('+hidden.size+')</button>':'')+'</div>';
   let cur='';
   histOrder().forEach(i=>{
     if(hidden.has(i))return;
