@@ -1467,7 +1467,8 @@ body.dark{background:radial-gradient(900px 420px at 0% -5%,rgba(59,130,246,.16),
 .ubt-bank-row .info strong{display:block;font-size:14px;overflow-wrap:anywhere}
 .ubt-bank-row .info p{font-size:12px;color:var(--m);margin-top:3px;overflow-wrap:anywhere}
 .profile-bar{border-radius:0 0 var(--r) var(--r);box-shadow:0 4px 18px rgba(30,41,59,.07);border-bottom:none}
-.profile-bar.app-header{position:sticky;top:0;z-index:160;margin:0 0 16px;gap:12px;flex-wrap:wrap;background:var(--c)}
+body.has-app-header{padding-top:var(--app-header-height,76px)}
+.profile-bar.app-header{position:fixed;top:0;left:0;right:0;width:100%;z-index:160;margin:0;gap:12px;flex-wrap:wrap;background:var(--c)}
 .app-header .app-back-slot{display:flex;align-items:center;flex:none}
 .app-header .topback{position:static!important;transform:none!important;background:transparent;padding:0;margin:0;backdrop-filter:none;-webkit-backdrop-filter:none}
 .app-header .app-profile{flex:1;min-width:0}.app-header .app-profile .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -6477,12 +6478,16 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
     var screen=document.querySelector('.screen.active'),id=screen&&screen.id;
     if(current&&current.parentNode===slot){var old=home[current.dataset.screen];if(old)old.insertBefore(current,old.firstChild)}
     current=null;
-    header.style.display=id&&id!=='s-login'&&id!=='s-test'?'flex':'none';
+    var visible=!!(id&&id!=='s-login'&&id!=='s-test');
+    header.style.display=visible?'flex':'none';
+    document.body.classList.toggle('has-app-header',visible);
     if(id&&home[id]){
       current=home[id].querySelector(':scope > .topback');
       if(current){current.dataset.screen=id;slot.appendChild(current)}
     }
+    if(visible)document.body.style.setProperty('--app-header-height',header.getBoundingClientRect().height+'px');
   }
+  if(window.ResizeObserver)new ResizeObserver(function(){if(header.style.display!=='none')document.body.style.setProperty('--app-header-height',header.getBoundingClientRect().height+'px')}).observe(header);
   document.querySelectorAll('.screen').forEach(function(scr){new MutationObserver(syncHeader).observe(scr,{attributes:true,attributeFilter:['class']})});
   syncHeader();
 })();
