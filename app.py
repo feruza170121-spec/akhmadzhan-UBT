@@ -3248,7 +3248,8 @@ function renderSchemes(){
     const order=['Жалпы шолу','Ежелгі дәуір','Ортағасыр','Қазақ хандығы','Отарлау дәуірі','Кеңес кезеңі','Тәуелсіздік'];
     const ancientOrder=['Ежелгі дәуірдің бөлінуі','Палеолит: Қаратау тұрақтары','Мезолит','Неолит','Энеолит: Ботай мәдениеті','Қола дәуірі','Андронов мәдениеті','Беғазы-Дәндібай мәдениеті','Ерте темір дәуірі','Сақтар','Сармат мәдениеті'];
     if(groups.has('Ежелгі дәуір'))groups.get('Ежелгі дәуір').sort((a,b)=>{const ia=ancientOrder.indexOf(a.h[2]),ib=ancientOrder.indexOf(b.h[2]);return (ia<0?ancientOrder.length+a.i:ia)-(ib<0?ancientOrder.length+b.i:ib)});
-    document.getElementById('sch-list').innerHTML='<h3 style="margin:12px 0">📁 Қазақстан тарихы · кезеңдер бойынша</h3>'+[...groups].sort((a,b)=>order.indexOf(a[0])-order.indexOf(b[0])).map(([stage,items])=>`<details class="card" ${stage==='Жалпы шолу'?'open':''} style="margin:10px 0"><summary style="cursor:pointer;font-weight:700">📁 ${esc(stage)} · ${items.length} тақырып</summary><div style="margin-top:12px">${items.map(({h,i})=>`<div class="item"><div class="info"><h4>${esc(h[2])}</h4><p>${h[5].length} жеке тармақ</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="histPreview(${i})">👁 Қарау</button>${user?`<button class="btn btn-s btn-sm" onclick="histCopyMine(${i})">📁 Өзіме қосу</button>`:''}</div></div>`).join('')}</div></details>`).join('');
+    const master=HIST.findIndex(h=>h[0]==='Қазақстан тарихының кезеңдері');
+    document.getElementById('sch-list').innerHTML=`<div class="card" style="margin:10px 0;border:1px solid #b7d9bd"><h3>🌳 Қазақстан тарихы · бір карта</h3><p class="sub">Дәуірді басыңыз: сол дәуірдің дерегі ашылады. Жебені басыңыз: оның тақырыптары, кейін сол тақырыпқа қатысты мәдениеттері ашылады.</p><div class="row" style="margin-top:10px"><button class="btn btn-p btn-sm" onclick="histPreview(${master})">🌳 Толық картаны ашу</button>${user?`<button class="btn btn-s btn-sm" onclick="histCopyMine(${master},true)">📁 Бір схема ретінде сақтау</button>`:''}</div></div><h3 style="margin:12px 0">📁 Жеке тақырыптар</h3>`+[...groups].sort((a,b)=>order.indexOf(a[0])-order.indexOf(b[0])).map(([stage,items])=>`<details class="card" ${stage==='Жалпы шолу'?'open':''} style="margin:10px 0"><summary style="cursor:pointer;font-weight:700">📁 ${esc(stage)} · ${items.length} тақырып</summary><div style="margin-top:12px">${items.map(({h,i})=>`<div class="item"><div class="info"><h4>${esc(h[2])}</h4><p>${h[5].length} жеке тармақ</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="histPreview(${i})">👁 Қарау</button>${user?`<button class="btn btn-s btn-sm" onclick="histCopyMine(${i})">📁 Өзіме қосу</button>`:''}</div></div>`).join('')}</div></details>`).join('');
     return;
   }
   const subj=document.getElementById('sch-f-subj').value;
@@ -3690,7 +3691,23 @@ function histCopyMine(i,openAfter){
 function histBuild(i){
   const h=HIST[i],card=(title,f)=>({title,img:'',img2:'',fields:f.map(x=>({k:x[0],v:x[1]}))});
   const overview=h[0]==='Қазақстан тарихының кезеңдері';
-  const kids=h[5].map(k=>({tab:k[0],...card(k[1],overview?[['Бөлім','Толық мәліметі бөлек тақырыптық схемада көрсетіледі']]:k[2])}));
+  const kids=h[5].map(k=>({tab:k[0],...card(k[1],overview?[['Кезең',k[1]]]:k[2])}));
+  if(overview){
+    const ancient={
+      'Тас дәуірі':['Палеолит: Қаратау тұрақтары','Мезолит','Неолит','Энеолит: Ботай мәдениеті'],
+      'Қола дәуірі':['Қола дәуірі','Андронов мәдениеті','Беғазы-Дәндібай мәдениеті'],
+      'Ерте темір дәуірі':['Ерте темір дәуірі','Сақтар','Сармат мәдениеті','Үйсін және Қаңлы мемлекеттері','Ғұн мемлекеті']
+    };
+    const groups={'Орта ғасырлар':['Ортағасыр','Қазақ хандығы'],'Жаңа заман':['Отарлау дәуірі'],
+      'Кеңестік кезең':['Кеңес кезеңі'],'Тәуелсіз Қазақстан':['Тәуелсіздік']};
+    kids.forEach(stage=>{
+      const titles=ancient[stage.tab],eras=groups[stage.tab]||[];
+      stage.children=HIST.filter((entry,index)=>index!==i&&(titles?titles.includes(entry[2]):eras.includes(entry[0])))
+        .map(entry=>({tab:entry[2],...card(entry[2],entry[4]),
+          children:entry[5].map(part=>({tab:part[0],...card(part[1],part[2])}))}));
+      if(titles)stage.children.sort((a,b)=>titles.indexOf(a.tab)-titles.indexOf(b.tab));
+    });
+  }
   return {subject:'history',subjectName:'Қазақстан тарихы',title:(i+1)+'. '+h[2],tabMain:h[0],subs:['Қазақстан тарихы'],theme:h[1],
     root:{...card(h[2],h[4]),head:overview?'Қазақстан тарихы':h[2]},kids};
 }
