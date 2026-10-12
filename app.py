@@ -1128,6 +1128,21 @@ html,body{overflow-x:hidden}
  .sch-kid::before,.sch-kid::after{display:none!important}
  .sch-card-in .ph{width:96px}
 }
+
+/* Анимациялы mind-map схемасы: тақырыптар қолданушы енгізгенде ғана көрсетіледі */
+.sch-bg.mindmap{background:radial-gradient(ellipse at top,#fff 0%,#f7faf7 60%,#edf4ed 100%);border:1px solid #dce8dc;padding:26px 18px 34px;overflow:hidden;position:relative}
+.mindmap .sch-h{font-size:clamp(20px,3vw,28px);color:#20352a;margin:0 0 18px;animation:mindFade .55s both}
+.mind-top{width:max-content;max-width:100%;margin:0 auto 12px;padding:8px 24px;border-radius:22px;background:#fff;border:1px solid #d7e4d8;color:#385b42;font-weight:700;box-shadow:0 4px 12px #1d462010}
+.mind-tags{display:flex;justify-content:center;gap:8px;flex-wrap:wrap;margin:0 auto 18px}
+.mind-tags span{background:#fff;border:1px solid #dbe8dc;border-radius:18px;padding:6px 14px;font-size:13px;color:#47624c;animation:mindPop .45s both;animation-delay:var(--delay)}
+.mind-center{display:flex;justify-content:center;position:relative;z-index:2}
+.mind-node{position:relative;display:flex;flex-direction:column;align-items:flex-start;text-align:left;width:100%;border:1px solid color-mix(in srgb,var(--branch,#8bb99a),white 30%);border-left:5px solid var(--branch,var(--mind));border-radius:17px;background:#fff;padding:13px 15px;box-shadow:0 5px 16px #183b1b12;cursor:pointer;font:inherit;color:#25342a;transition:transform .2s,box-shadow .2s;animation:mindSlide .5s both;animation-delay:var(--delay,0ms)}
+.mind-node:hover{transform:translateY(-3px);box-shadow:0 10px 24px #183b1b20}
+.mind-node strong{font-size:15px;line-height:1.4}.mind-main{max-width:420px;align-items:center;text-align:center;background:linear-gradient(135deg,#dff0df,#c8e4c9);border:2px solid #91bd96;border-left:2px solid #91bd96;border-radius:23px;padding:18px 24px;color:#254c30}.mind-main strong{font-size:19px}.mind-main small{font-size:11px;color:#4b7053;margin-top:4px}.mind-dot{display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:#fff;color:#438251;margin-bottom:6px}
+.mind-branches{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,205px),1fr));gap:14px;margin-top:42px;position:relative}.mind-branches:before{content:'';position:absolute;top:-22px;left:8%;right:8%;height:2px;background:var(--mind-line);opacity:.9}.mind-branch{position:relative;min-width:0}.mind-connector{position:absolute;left:50%;top:-22px;height:22px;width:2px;background:var(--mind-line)}.mind-branch .mind-node{min-height:74px;padding-right:35px}.mind-subtitle{font-size:12px;color:#6b756c;margin-top:3px}.mind-toggle{position:absolute;right:12px;top:12px;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:var(--mind-soft);color:var(--mind);font-weight:800}.mind-details{display:none;width:100%;margin-top:10px;padding-top:8px;border-top:1px solid #e5ece5;text-align:left}.mind-node.expanded .mind-details{display:block;animation:mindFade .25s both}.mind-node.expanded .mind-toggle{transform:rotate(45deg)}.mind-detail{display:grid;grid-template-columns:minmax(65px,.7fr) 1.3fr;gap:8px;padding:5px 0;font-size:12px;line-height:1.45;border-bottom:1px dashed #e6ece6}.mind-detail b{color:var(--mind)}.mind-detail span{overflow-wrap:anywhere}.mind-img{max-width:100%;max-height:150px;object-fit:contain;border-radius:10px;margin-top:8px}
+@keyframes mindFade{from{opacity:0}to{opacity:1}}@keyframes mindPop{from{opacity:0;transform:translateY(-8px) scale(.96)}to{opacity:1;transform:translateY(0) scale(1)}}@keyframes mindSlide{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+@media(max-width:640px){.sch-bg.mindmap{padding:20px 10px}.mind-branches{grid-template-columns:1fr;margin-top:28px;gap:10px}.mind-branches:before{left:15px;right:auto;top:0;bottom:0;height:auto;width:2px}.mind-connector{left:15px;top:50%;height:2px;width:12px}.mind-branch .mind-node{margin-left:25px;width:calc(100% - 25px)}.mind-main{max-width:100%}.mind-detail{grid-template-columns:1fr;gap:2px}}
+
 .sch-ed .card{padding:14px}
 .sch-fr{display:flex;gap:8px;margin-bottom:6px}
 .sch-fr input{flex:1;min-width:0;padding:8px 10px;border:1px solid var(--b);border-radius:14px;font-size:13px;font-family:inherit;background:var(--bg)}
@@ -3152,7 +3167,7 @@ function previewTest(id){
 
 // ================= Схемалар (суретті кесте / карточкалық схема) =================
 const SCH_THEMES={blue:'Көк',green:'Жасыл',red:'Қызыл-күрең',violet:'Күлгін'};
-const SCH_MAX_KIDS=4,SCH_MAX_FIELDS=6,SCH_IMG_BYTES=38000;
+const SCH_MAX_KIDS=20,SCH_MAX_FIELDS=10,SCH_IMG_BYTES=38000;
 function allSchemes(){return LS.get('ubt_schemes',[])}
 function saveSchemes(a){LS.set('ubt_schemes',a)}
 function schIsPub(t){return t.isPublic===true&&t.status==='approved'}
@@ -3169,14 +3184,17 @@ function schCardHtml(c,kind){
   return `<div class="sch-card-in">${ph}<div class="tx"><b class="t">${esc(c.title||'')}</b>${f.map(x=>`<p>${x.k?esc(x.k)+': ':''}${esc(x.v||'')}</p>`).join('')}${ph2}</div></div>`;
 }
 function schRender(t){
-  const th='th-'+(SCH_THEMES[t.theme]?t.theme:'blue');
-  const subs=Array.isArray(t.subs)?t.subs.filter(Boolean):[];
-  const kids=(Array.isArray(t.kids)?t.kids:[]).filter(Boolean);
-  return `<div class="sch-bg"><h2 class="sch-h">${esc(t.title||'')}</h2>
-    ${t.tabMain?`<div class="sch-tab"><span>${esc(t.tabMain)}</span></div>`:''}
-    ${subs.length?`<div class="sch-subs">${subs.map((x,i)=>`<span class="${i===0?'on':''}">${esc(x)}</span>`).join('')}</div><div class="sch-stem"></div>`:''}
-    <div class="sch-root ${th}">${(t.root||{}).head?`<h3>${esc(t.root.head)}</h3>`:''}${schCardHtml(t.root||{},'root')}</div>
-    ${kids.length?`<div class="sch-stem"></div><div class="sch-kids">${kids.map(k=>`<div class="sch-kid"><span class="lab">${esc(k.tab||'')}</span><div class="bd">${schCardHtml(k,'kid')}</div></div>`).join('')}</div>`:''}
+  const palette={blue:['#dcefe0','#b7d9bd','#3c8050'],green:['#d9f1df','#b9e2c4','#28764a'],red:['#fbe1d6','#f2c3a9','#b95735'],violet:['#e8e0f7','#cfc0ef','#7655a6']};
+  const colors=palette[t.theme]||palette.blue;
+  const root=t.root||{}, kids=(Array.isArray(t.kids)?t.kids:[]).filter(Boolean);
+  const subs=(Array.isArray(t.subs)?t.subs:[]).filter(Boolean);
+  const details=c=>(Array.isArray(c.fields)?c.fields:[]).filter(f=>f&&(f.k||f.v)).map(f=>`<div class="mind-detail"><b>${esc(f.k||'')}</b>${f.v?`<span>${esc(f.v)}</span>`:''}</div>`).join('');
+  return `<div class="sch-bg mindmap" style="--mind:${colors[2]};--mind-soft:${colors[0]};--mind-line:${colors[1]}">
+    <h2 class="sch-h">${esc(t.title||'Схема')}</h2>
+    ${t.tabMain?`<div class="mind-top">${esc(t.tabMain)}</div>`:''}
+    ${subs.length?`<div class="mind-tags">${subs.map((x,i)=>`<span style="--delay:${i*100}ms">${esc(x)}</span>`).join('')}</div>`:''}
+    <div class="mind-center"><button class="mind-node mind-main" type="button" onclick="this.classList.toggle('expanded')"><span class="mind-dot">✦</span><strong>${esc(root.head||root.title||t.title||'Негізгі тақырып')}</strong><small>Мәліметтерді ашу / жабу</small><div class="mind-details">${details(root)}${schImgOk(root.img)?`<img class="mind-img" src="${root.img}" alt="">`:''}</div></button></div>
+    ${kids.length?`<div class="mind-branches">${kids.map((k,i)=>`<article class="mind-branch" style="--delay:${i*120}ms;--branch:${['#d8a94e','#7a9fc4','#76ad8a','#c98b83','#a694cf'][i%5]}"><div class="mind-connector"></div><button class="mind-node" type="button" onclick="this.classList.toggle('expanded')"><strong>${esc(k.tab||k.title||('Тақырып '+(i+1)))}</strong>${k.title&&k.tab?`<span class="mind-subtitle">${esc(k.title)}</span>`:''}<div class="mind-details">${details(k)}${schImgOk(k.img)?`<img class="mind-img" src="${k.img}" alt="">`:''}${schImgOk(k.img2)?`<img class="mind-img" src="${k.img2}" alt="">`:''}</div><span class="mind-toggle">＋</span></button></article>`).join('')}</div>`:''}
   </div>`;
 }
 let schTabCur='pub',schDraft=null;
