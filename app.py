@@ -1288,6 +1288,8 @@ html_code = r"""
 <!DOCTYPE html>
 <html lang="kk">
 <head>
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ҰБТ+</title>
@@ -1856,7 +1858,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <button class="mode" onclick="showFormulas()"><span class="ic">📐</span><h3>Формула</h3><p>Формулаларды қарау</p></button>
       <button class="mode" onclick="showMistakes()"><span class="ic">❌</span><h3>Қателер</h3><p>Қате жауаптар</p></button>
       <button class="mode" onclick="showHistory()"><span class="ic">📋</span><h3>Тарих</h3><p>Тест нәтижелері</p></button>
-      <button class="mode" onclick="showFileTest()"><span class="ic">📂</span><h3>Файлдан</h3><p>Файлдан тест ашу</p></button>
+      <button class="mode" onclick="showFileTest()"><span class="ic">📂</span><h3>JSON / файл тесті</h3><p>JSON жүктеп, бірден жеке тест тапсыру</p></button>
       <button class="mode" onclick="showMyProfile()"><span class="ic">📈</span><h3>График</h3><p>Үлгерім көрсеткіші</p></button>
       <button class="mode" onclick="showFlash()"><span class="ic">🃏</span><h3>Флеш-карталар</h3><p>Қайталауға арналған</p></button>
       <button class="mode" onclick="showGloss()"><span class="ic">📖</span><h3>Глоссарий</h3><p>Терминдер мен ұғымдар</p></button>
@@ -2141,8 +2143,8 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
 
 <div id="s-file" class="screen">
   <div class="wrap">
-    <div class="hdr"><h2>📂 Файлдан тест тапсыру</h2><p class="sub">Сұрақтар файлын таңдаңыз немесе мәтінді қойыңыз</p></div>
-    <div class="card"><div class="fg" style="margin-bottom:0"><label>Сұрақтарды базаға сақтайтын пән</label><select id="f-question-subject"></select></div></div>
+    <div class="hdr"><h2>📂 JSON / файлдан жеке тест</h2><p class="sub">JSON файлын таңдаңыз және «Тестті бастау» батырмасын басыңыз. Пәнге сақтау міндетті емес.</p></div>
+    <div class="card"><div class="fg" style="margin-bottom:0"><label>Базаға сақтағыңыз келсе, пәнді таңдаңыз</label><select id="f-question-subject"></select></div></div>
     <div id="f-bulk-host"></div>
     <div class="row" style="margin-top:16px"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
@@ -4517,13 +4519,15 @@ function parseQuestions(text,fname){
 function parseJSONQs(t){
   let data;try{data=JSON.parse(t)}catch(e){return null}
   const res={questions:[],errors:[],meta:{},format:'json'};
-  const arr=Array.isArray(data)?data:(data&&Array.isArray(data.questions)?data.questions:null);
+  const arr=Array.isArray(data)?data:(data&&Array.isArray(data.questions)?data.questions:(data&&Array.isArray(data.tests)?data.tests:null));
   if(!arr){res.errors.push({line:0,msg:'JSON ішінен сұрақтар тізімі табылмады'});return res}
   if(!Array.isArray(data)){res.meta.topic=data.topic||data.title||'';res.meta.subject=data.subject||''}
   arr.forEach((o,i)=>{
     o=o||{};
-    const q={text:o.text||o.question||o.q||'',options:o.options||o.answers||o.variants||[],correct:-1,line:i+1};
-    const c=o.correct!==undefined?o.correct:o.answer;
+    let opts=o.options||o.answers||o.variants||[];
+    if(opts&&!Array.isArray(opts)&&typeof opts==='object')opts=Object.values(opts);
+    const q={text:o.text||o.question||o.q||o['сұрақ']||'',options:opts,correct:-1,line:i+1};
+    const c=o.correct!==undefined?o.correct:(o.answer!==undefined?o.answer:o.correctAnswer);
     if(typeof c==='number')q.correct=c;
     else if(typeof c==='string'){
       const m=/^[A-Da-dА-Да-д]$/.exec(c.trim());
@@ -4734,8 +4738,6 @@ function showFileTest(){
 function startFromFile(){
   const r=takeBulkQs('f');if(!r)return;
   const subject=document.getElementById('f-question-subject').value;
-  if(!subject){alert('Сұрақтарды базаға сақтау үшін пәнді таңдаңыз');return}
-  rememberQuestionsInBank(subject,r.qs,'Файлдан қосылған');
   const label=r.meta.topic||(bulkName.f||'').replace(/\.[^.]+$/,'')||'Файлдан тест';
   st=baseState();
   st.questions=r.qs.map(q=>({...q,subjectName:label}));
