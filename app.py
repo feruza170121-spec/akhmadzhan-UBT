@@ -604,6 +604,8 @@ def _handle_req(state, sid, rq):
             _put(state, "ubt_user_stats", _jdump(stats))
             tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
             _put(state, "ubt_tests", _jdump([t for t in tests if not (isinstance(t, dict) and t.get("authorId") == uid)]))
+            schs = _jload(state["db"].get("ubt_schemes", "[]"), list, [])
+            _put(state, "ubt_schemes", _jdump([t for t in schs if not (isinstance(t, dict) and t.get("authorId") == uid)]))
             _revoke_uid(state, uid)
             _commit(state)
         return {"ok": True}
@@ -794,6 +796,66 @@ def _merge_tests(state, sess, v):
     return _jdump(out)
 
 
+_SCH_CONTENT = ("subject", "title", "tabMain", "subs", "theme", "root", "kids")
+_SCH_MAX_ONE = 700_000
+_SCH_MAX_ALL = 7_000_000
+_SCH_MAX_PER_USER = 30
+
+
+def _merge_schemes(state, sess, v):
+    """Схемалар: автор тек өзінікін өзгертеді, жариялауды тек админ мақұлдайды."""
+    inc = _jload(v, list, None)
+    if inc is None:
+        return None
+    if sess["admin"]:
+        out = [t for t in inc if isinstance(t, dict) and isinstance(t.get("id"), str)]
+        return _jdump(out) if len(_jdump(out)) < _SCH_MAX_ALL else None
+    stored = _jload(state["db"].get("ubt_schemes", "[]"), list, [])
+    sby = {t.get("id"): t for t in stored if isinstance(t, dict)}
+    uid = sess["uid"]
+    out, seen, mine = [], set(), 0
+    for t in inc:
+        if not isinstance(t, dict) or not isinstance(t.get("id"), str) or len(t["id"]) > 60:
+            continue
+        tid = t["id"]
+        if tid in seen:
+            continue
+        seen.add(tid)
+        s0 = sby.get(tid)
+        if s0 is not None and s0.get("authorId") != uid:
+            out.append(s0)          # бөтен схеманы өзгертуге болмайды
+            continue
+        if len(_jdump(t)) > _SCH_MAX_ONE:
+            if s0 is not None:
+                out.append(s0)
+            continue
+        mine += 1
+        if mine > _SCH_MAX_PER_USER and s0 is None:
+            continue
+        n = dict(t)
+        n["authorId"] = uid
+        if s0 is not None:
+            was_ok = s0.get("status") == "approved" and bool(s0.get("isPublic"))
+            changed = any(n.get(k) != s0.get(k) for k in _SCH_CONTENT)
+            if was_ok and not changed:
+                n["status"], n["isPublic"] = "approved", True
+            elif was_ok and changed:
+                n["status"], n["isPublic"] = "pending", False
+            else:
+                n["isPublic"] = False
+                n["status"] = n.get("status") if n.get("status") in ("pending", "private") else (
+                    s0.get("status") if s0.get("status") in ("rejected",) and not changed else "private")
+        else:
+            n["isPublic"] = False
+            n["status"] = n.get("status") if n.get("status") in ("pending", "private") else "private"
+        out.append(n)
+    for s0 in stored:
+        if isinstance(s0, dict) and s0.get("id") not in seen and s0.get("authorId") != uid:
+            out.append(s0)
+    res = _jdump(out)
+    return res if len(res) < _SCH_MAX_ALL else None
+
+
 def _authorize(state, sess, k, v, chat_token=""):
     """Жаңа мәнді қайтарады (түзетілген болуы мүмкін) немесе None (жазуға рұқсат жоқ)."""
     if k == "ubt_chat":
@@ -806,6 +868,8 @@ def _authorize(state, sess, k, v, chat_token=""):
         return _merge_stats(state, sess, v)
     if k == "ubt_tests":
         return _merge_tests(state, sess, v)
+    if k == "ubt_schemes":
+        return _merge_schemes(state, sess, v)
     if k != "ubt_qotd_day" and any(k.startswith(p) for p in _USER_PREFIXES):
         if sess["admin"] or any(k == p + sess["uid"] for p in _USER_PREFIXES):
             return v
@@ -898,6 +962,10 @@ def _snapshot(tok="", claim=""):
     db["ubt_chat"] = chat
     if "ubt_profiles" in db:
         db["ubt_profiles"] = _jdump({k: _pub_user(p) for k, p in profs.items() if isinstance(p, dict)})
+    if not sess["admin"] and "ubt_schemes" in db:
+        sch = _jload(db.get("ubt_schemes"), list, [])
+        db["ubt_schemes"] = _jdump([t for t in sch if isinstance(t, dict) and (
+            t.get("authorId") == sess["uid"] or (t.get("status") == "approved" and t.get("isPublic")))])
     if not sess["admin"]:
         for k in list(db.keys()):
             if k.startswith(_PRIVATE_PREFIXES) and not (k.endswith(sess["uid"]) and any(k == p + sess["uid"] for p in _PRIVATE_PREFIXES)):
@@ -1013,6 +1081,50 @@ html,body{overflow-x:hidden}
 .tbed td{padding:2px}
 .tbed input{width:90px;padding:6px 8px;border:1px solid var(--b);border-radius:10px;font-size:13px;font-family:inherit;background:var(--bg)}
 .aq-prev{max-width:240px;max-height:180px;border-radius:12px;border:1px solid var(--b);display:block;margin-top:8px}
+
+.sch-bg{background:linear-gradient(180deg,#f8f3ea,#f3ebdd);border-radius:26px;padding:22px 14px 28px;border:1px solid #eadfcb;--sc:#3d7396}
+.sch-bg h2.sch-h{text-align:center;font-size:24px;font-weight:700;margin-bottom:14px;color:#222}
+.sch-tab{display:flex;justify-content:center}
+.sch-tab span{background:#fff;padding:10px 38px;border-radius:24px 24px 0 0;font-size:20px;border-bottom:3px solid var(--sc);box-shadow:0 -2px 10px rgba(0,0,0,.04)}
+.sch-subs{display:flex;justify-content:center;gap:6px;background:#fff;border-radius:0 0 22px 22px;padding:8px 10px;max-width:420px;margin:0 auto;box-shadow:0 4px 14px rgba(0,0,0,.06);flex-wrap:wrap}
+.sch-subs span{padding:6px 16px;border-radius:18px;font-size:14px;color:#555}
+.sch-subs span.on{background:#f3f4f6;color:#111;box-shadow:0 1px 4px rgba(0,0,0,.1)}
+.sch-stem{width:2px;height:22px;background:var(--sc);margin:0 auto}
+.sch-root{max-width:600px;margin:0 auto;border-radius:22px;padding:16px 18px 18px;color:#fff;box-shadow:0 8px 24px rgba(0,0,0,.16)}
+.sch-root h3{text-align:center;font-size:20px;margin-bottom:10px}
+.sch-card-in{display:flex;gap:14px;align-items:flex-start}
+.sch-card-in .ph{width:150px;flex:none;border-radius:16px;object-fit:cover;aspect-ratio:3/4;background:#0001}
+.sch-card-in .tx{flex:1;min-width:0}
+.sch-card-in .tx b.t{display:block;font-size:19px;margin-bottom:6px}
+.sch-card-in .tx p{font-size:13px;line-height:1.55;margin:2px 0}
+.sch-card-in .ph2{max-width:130px;max-height:96px;border-radius:10px;margin-top:6px;display:block;object-fit:contain}
+.sch-kids{display:flex;justify-content:center;gap:0;flex-wrap:nowrap}
+.sch-kid{position:relative;flex:1 1 0;max-width:340px;padding:22px 8px 0;min-width:0}
+.sch-kid::before,.sch-kid::after{content:'';position:absolute;top:0;width:50%;height:22px;border-top:2px solid var(--sc)}
+.sch-kid::before{right:50%;border-right:2px solid var(--sc);border-top-right-radius:16px}
+.sch-kid::after{left:50%;border-left:2px solid var(--sc);border-top-left-radius:16px}
+.sch-kid:first-child::before,.sch-kid:last-child::after{display:none}
+.sch-kid:only-child::before{display:block;border:none;border-left:2px solid var(--sc);right:auto;left:50%;width:0;border-radius:0}
+.sch-kid:first-child:not(:only-child)::after{left:50%}
+.sch-kid .lab{display:inline-block;background:#fff;padding:8px 22px;border-radius:20px 20px 0 0;font-size:16px;font-weight:600;margin-left:14px}
+.sch-kid .bd{background:#fff;border-radius:20px;padding:12px;box-shadow:0 6px 18px rgba(0,0,0,.1)}
+.sch-kid .bd .ph{width:96px;aspect-ratio:1;border-radius:12px}
+.sch-kid .tx{color:#222}
+.th-blue{background:linear-gradient(135deg,#3f86ad,#265a7c)}
+.th-green{background:linear-gradient(135deg,#3f9a6a,#22664a)}
+.th-red{background:linear-gradient(135deg,#a8403f,#722423)}
+.th-violet{background:linear-gradient(135deg,#7d5bb0,#4b3380)}
+@media(max-width:640px){
+ .sch-kids{flex-direction:column;align-items:stretch}
+ .sch-kid{max-width:none;padding-top:16px}
+ .sch-kid::before,.sch-kid::after{display:none!important}
+ .sch-card-in .ph{width:96px}
+}
+.sch-ed .card{padding:14px}
+.sch-fr{display:flex;gap:8px;margin-bottom:6px}
+.sch-fr input{flex:1;min-width:0;padding:8px 10px;border:1px solid var(--b);border-radius:14px;font-size:13px;font-family:inherit;background:var(--bg)}
+.sch-fr input:first-child{max-width:150px}
+
 .ovl{position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:9999;overflow:auto;padding:20px 12px}
 .ovl .box{max-width:760px;margin:0 auto;background:var(--c);border-radius:22px;padding:20px}
 .opts{display:flex;flex-direction:column;gap:7px}
@@ -1375,6 +1487,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <div class="mode" onclick="showMyTests()"><div class="ic">📚</div><h3>Менің тесттерім</h3><p>Өз тесттеріңіз</p></div>
       <div class="mode" onclick="showCreate()"><div class="ic">➕</div><h3>Тест құру</h3><p>Атауы + сұрақтар</p></div>
       <div class="mode" onclick="showAddQ()"><div class="ic">🖼</div><h3>Сұрақ қосу</h3><p>Сурет · кесте · барлық пән</p></div>
+      <div class="mode" onclick="showSchemes()"><div class="ic">🗺</div><h3>Схема құру</h3><p>Кезеңдер · карточка · фото</p></div>
       <div class="mode" onclick="showRanking()"><div class="ic">🏆</div><h3>Рейтинг</h3><p>Ортақ көшбасшылар</p></div>
     </div>
     <div class="grid2 home-tools">
@@ -1555,6 +1668,39 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <button class="btn btn-s" onclick="showMyTests()">📚 Менің тесттерім</button>
       <button class="btn btn-s" onclick="aqLeave()">Артқа</button>
     </div>
+  </div>
+</div>
+
+<div id="s-schemes" class="screen">
+  <div class="wrap">
+    <div class="hdr"><h2>🗺 Схемалар</h2><p class="sub">Тақырып бойынша суретті схема құрыңыз: бөлімдер, карточкалар, фото, мәліметтер</p></div>
+    <div class="row" style="margin-bottom:12px">
+      <button class="btn btn-s btn-sm" id="sch-t-pub" onclick="schTab('pub')">🌐 Жария</button>
+      <button class="btn btn-s btn-sm" id="sch-t-mine" onclick="schTab('mine')">📁 Менікі</button>
+      <button class="btn btn-s btn-sm" id="sch-t-pend" style="display:none" onclick="schTab('pend')">⏳ Күтіп тұрған</button>
+    </div>
+    <div class="fg"><select id="sch-f-subj" onchange="renderSchemes()"></select></div>
+    <div id="sch-list" class="list"></div>
+    <div class="row" style="margin-top:20px"><button class="btn btn-p" onclick="schNew()">➕ Схема құру</button><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+  </div>
+</div>
+
+<div id="s-schedit" class="screen">
+  <div class="wrap">
+    <div class="hdr"><h2 id="sch-ed-h">🗺 Схема құру</h2><p class="sub">Негізгі карточка мен тармақтарды толтырыңыз. Сурет — әр карточкаға</p></div>
+    <div class="sch-ed" id="sch-ed"></div>
+    <div class="row" style="margin-top:14px">
+      <button class="btn btn-s" onclick="schPreview()">👁 Алдын ала қарау</button>
+      <button class="btn btn-p" onclick="schSave()">💾 Сақтау</button>
+      <button class="btn btn-s" onclick="schBack()">Артқа</button>
+    </div>
+  </div>
+</div>
+
+<div id="s-schview" class="screen">
+  <div class="wrap wide">
+    <div id="sch-view"></div>
+    <div class="row" style="margin-top:16px"><button class="btn btn-s" onclick="showSchemes()">Артқа</button></div>
   </div>
 </div>
 
@@ -1848,6 +1994,11 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <div class="fg"><input id="admin-user-q" placeholder="🔍 Атын жазып іздеу..." oninput="renderAdminUsers()"></div>
       <div id="admin-user-count" class="sub" style="margin-bottom:8px"></div>
       <div id="admin-users" class="list"></div>
+    </div>
+    <div class="card" style="padding:20px">
+      <h3 style="margin-bottom:12px">🗺 Схемалар</h3>
+      <p class="sub" id="admin-sch-info" style="margin-bottom:10px"></p>
+      <button class="btn btn-p btn-sm" onclick="showSchemes('pend')">Күтіп тұрған схемаларды қарау</button>
     </div>
     <div class="card" style="padding:20px">
       <h3 style="margin-bottom:12px">📚 Барлық тесттер</h3>
@@ -2372,6 +2523,7 @@ function showAdmin(){
         <button class="btn btn-d btn-sm" onclick="rejectTest('${t.id}')">✕ Бас тарту</button>
       </div></div>`).join(''):'<p class="sub">Күтіп тұрған тест жоқ</p>';
 
+  try{const sc=allSchemes();document.getElementById('admin-sch-info').textContent='Барлығы: '+sc.length+' · күтіп тұрған: '+sc.filter(x=>x.status==='pending').length}catch(e){}
   renderAdminUsers();
   // password change block
   let passBox=document.getElementById('admin-pass-box');
@@ -2930,6 +3082,204 @@ function previewTest(id){
   o.innerHTML='<div class="box"><div class="item" style="border:none;padding:0;margin-bottom:10px"><div class="info"><h3>'+esc(t.topic)+'</h3><p class="sub">'+esc(t.subjectName||'')+' · '+t.questions.length+' сұрақ · '+esc(t.authorName||'')+'</p></div><button class="btn btn-s btn-sm" onclick="document.getElementById(\'ovl-prev\').remove()">✕ Жабу</button></div>'
    +t.questions.map((q,i)=>`<div class="card"><div class="qt"><b>${i+1}.</b> ${esc(q.text)}</div>${qMedia(q)}${q.options.map((op,j)=>`<div style="padding:4px 0;${j===q.correct?'color:var(--ok);font-weight:600':''}">${L[j]}) ${esc(op)}${j===q.correct?' ✓':''}</div>`).join('')}</div>`).join('')+'</div>';
   document.body.appendChild(o);mathIn(o);
+}
+
+// ================= Схемалар (суретті кесте / карточкалық схема) =================
+const SCH_THEMES={blue:'Көк',green:'Жасыл',red:'Қызыл-күрең',violet:'Күлгін'};
+const SCH_MAX_KIDS=4,SCH_MAX_FIELDS=6,SCH_IMG_BYTES=38000;
+function allSchemes(){return LS.get('ubt_schemes',[])}
+function saveSchemes(a){LS.set('ubt_schemes',a)}
+function schIsPub(t){return t.isPublic===true&&t.status==='approved'}
+function schSubjOptions(first){
+  const src=document.querySelector('#c-subject');
+  return '<option value="">'+first+'</option>'+Array.from(src.options).filter(o=>o.value).map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('');
+}
+function schImgOk(u){return typeof u==='string'&&/^data:image\/(jpeg|png|webp);base64,/.test(u)}
+function schCardHtml(c,kind){
+  if(!c)return '';
+  const f=(Array.isArray(c.fields)?c.fields:[]).filter(x=>x&&(x.k||x.v));
+  const ph=schImgOk(c.img)?`<img class="ph" alt="" src="${c.img}">`:'';
+  const ph2=schImgOk(c.img2)?`<img class="ph2" alt="" src="${c.img2}">`:'';
+  return `<div class="sch-card-in">${ph}<div class="tx"><b class="t">${esc(c.title||'')}</b>${f.map(x=>`<p>${x.k?esc(x.k)+': ':''}${esc(x.v||'')}</p>`).join('')}${ph2}</div></div>`;
+}
+function schRender(t){
+  const th='th-'+(SCH_THEMES[t.theme]?t.theme:'blue');
+  const subs=Array.isArray(t.subs)?t.subs.filter(Boolean):[];
+  const kids=(Array.isArray(t.kids)?t.kids:[]).filter(Boolean);
+  return `<div class="sch-bg"><h2 class="sch-h">${esc(t.title||'')}</h2>
+    ${t.tabMain?`<div class="sch-tab"><span>${esc(t.tabMain)}</span></div>`:''}
+    ${subs.length?`<div class="sch-subs">${subs.map((x,i)=>`<span class="${i===0?'on':''}">${esc(x)}</span>`).join('')}</div><div class="sch-stem"></div>`:''}
+    <div class="sch-root ${th}">${(t.root||{}).head?`<h3>${esc(t.root.head)}</h3>`:''}${schCardHtml(t.root||{},'root')}</div>
+    ${kids.length?`<div class="sch-stem"></div><div class="sch-kids">${kids.map(k=>`<div class="sch-kid"><span class="lab">${esc(k.tab||'')}</span><div class="bd">${schCardHtml(k,'kid')}</div></div>`).join('')}</div>`:''}
+  </div>`;
+}
+let schTabCur='pub',schDraft=null;
+function showSchemes(tab){
+  if(tab)schTabCur=tab;
+  document.getElementById('sch-f-subj').innerHTML=schSubjOptions('Барлық пәндер');
+  document.getElementById('sch-t-pend').style.display=(user&&user.isAdmin)?'':'none';
+  if(schTabCur==='pend'&&!(user&&user.isAdmin))schTabCur='pub';
+  renderSchemes();showScr('s-schemes');
+}
+function schTab(t){schTabCur=t;renderSchemes()}
+function renderSchemes(){
+  ['pub','mine','pend'].forEach(k=>{const b=document.getElementById('sch-t-'+k);if(b){b.className='btn btn-sm '+(k===schTabCur?'btn-p':'btn-s')}});
+  const subj=document.getElementById('sch-f-subj').value;
+  let a=allSchemes();
+  if(schTabCur==='pub')a=a.filter(schIsPub);
+  else if(schTabCur==='mine')a=a.filter(t=>user&&t.authorId===user.id);
+  else a=a.filter(t=>t.status==='pending');
+  if(subj)a=a.filter(t=>t.subject===subj);
+  const el=document.getElementById('sch-list');
+  if(!a.length){el.innerHTML='<div class="empty"><div class="ic">🗺</div><p>Әзірге схема жоқ</p></div>';return}
+  el.innerHTML=a.map(t=>{
+    let badge='<span class="badge badge-priv">🔒 Жеке</span>';
+    if(schIsPub(t))badge='<span class="badge badge-pub">🌐 Жария</span>';
+    else if(t.status==='pending')badge='<span class="badge" style="background:#fef3c7;color:#92400e">⏳ Күтуде</span>';
+    else if(t.status==='rejected')badge='<span class="badge badge-err">Бас тартылған</span>';
+    const mine=user&&t.authorId===user.id,adm=user&&user.isAdmin;
+    return `<div class="item"><div class="info"><h4>${esc(t.title||'Атаусыз')}</h4><p>${esc(t.subjectName||'')} · ${esc(t.authorName||'')} · ${badge}</p></div><div class="acts">
+      <button class="btn btn-p btn-sm" onclick="schOpen(${jsq(t.id)})">👁 Қарау</button>
+      ${mine?`<button class="btn btn-s btn-sm" onclick="schEdit(${jsq(t.id)})">✎</button>`:''}
+      ${mine&&!adm&&t.status!=='pending'&&!schIsPub(t)?`<button class="btn btn-w btn-sm" onclick="schRequest(${jsq(t.id)})">Жариялауға</button>`:''}
+      ${adm&&t.status!=='approved'?`<button class="btn btn-ok btn-sm" onclick="schApprove(${jsq(t.id)})">✓</button>`:''}
+      ${adm&&t.status!=='rejected'?`<button class="btn btn-d btn-sm" onclick="schReject(${jsq(t.id)})">✕ Бас тарту</button>`:''}
+      ${(mine||adm)?`<button class="btn btn-d btn-sm" onclick="schDel(${jsq(t.id)})">🗑</button>`:''}
+    </div></div>`}).join('');
+}
+function schOpen(id){
+  const t=allSchemes().find(x=>x.id===id);if(!t)return;
+  if(!(schIsPub(t)||(user&&(user.isAdmin||t.authorId===user.id))))return;
+  document.getElementById('sch-view').innerHTML=schRender(t);showScr('s-schview');
+}
+function schMut(id,fn){
+  const a=allSchemes(),t=a.find(x=>x.id===id);if(!t)return;
+  fn(t);saveSchemes(a);renderSchemes();
+}
+function schApprove(id){if(!user||!user.isAdmin)return;schMut(id,t=>{t.isPublic=true;t.status='approved'})}
+function schReject(id){if(!user||!user.isAdmin)return;schMut(id,t=>{t.isPublic=false;t.status='rejected'})}
+function schRequest(id){schMut(id,t=>{t.status='pending';t.isPublic=false});alert('Админге жіберілді. Мақұлдаған соң жарияланады.')}
+function schDel(id){if(!confirm('Схеманы өшіру керек пе?'))return;saveSchemes(allSchemes().filter(x=>x.id!==id));renderSchemes()}
+
+function schBlankCard(){return {title:'',img:'',img2:'',fields:[{k:'Дәуір',v:''},{k:'Мекен',v:''}]}}
+function schNew(){
+  schDraft={id:'',subject:'',title:'',tabMain:'',subs:[],theme:'blue',root:schBlankCard(),kids:[{tab:'',...schBlankCard()}],request:false};
+  document.getElementById('sch-ed-h').textContent='🗺 Схема құру';
+  schRenderForm();showScr('s-schedit');
+}
+function schEdit(id){
+  const t=allSchemes().find(x=>x.id===id);if(!t||!user||t.authorId!==user.id)return;
+  schDraft=JSON.parse(JSON.stringify(t));schDraft.request=false;
+  if(!Array.isArray(schDraft.subs))schDraft.subs=[];if(!Array.isArray(schDraft.kids))schDraft.kids=[];
+  document.getElementById('sch-ed-h').textContent='✎ Схеманы өңдеу';
+  schRenderForm();showScr('s-schedit');
+}
+function schBack(){if(confirm('Сақталмаған өзгерістер жоғалады. Шығу керек пе?'))showSchemes()}
+function schGet(path){return path.split('.').reduce((o,k)=>o==null?o:o[k],schDraft)}
+function schIn(el){
+  const parts=el.dataset.p.split('.'),last=parts.pop();
+  const o=parts.reduce((x,k)=>x[k],schDraft);
+  if(last==='subs')o[last]=el.value.split(',').map(x=>x.trim()).filter(Boolean).slice(0,4);
+  else if(el.type==='checkbox')o[last]=el.checked;
+  else o[last]=el.value;
+}
+function schCardForm(path,c,isKid,idx){
+  const img=(k,label)=>`<div class="fg" style="margin-bottom:8px"><label>${label}</label><div class="row" style="justify-content:flex-start"><label class="btn btn-s btn-sm" style="cursor:pointer">📷 Таңдау<input type="file" accept="image/*" style="display:none" onchange="schPick(this,'${path}.${k}')"></label>${schImgOk(c[k])?`<button class="btn btn-s btn-sm" onclick="schClrImg('${path}.${k}')">🗑</button>`:''}</div>${schImgOk(c[k])?`<img class="aq-prev" src="${c[k]}" alt="">`:''}</div>`;
+  return `<div class="card">
+    ${isKid?`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><h3>Тармақ ${idx+1}</h3><button class="btn btn-d btn-sm" onclick="schDelKid(${idx})">✕</button></div><div class="fg"><label>Белгі (мыс: Орта ғасырлар)</label><input data-p="${path}.tab" value="${esc(c.tab||'')}" oninput="schIn(this)" maxlength="40"></div>`:`<h3 style="margin-bottom:8px">Негізгі карточка</h3><div class="fg"><label>Бөлім атауы (мыс: Ежелгі Қазақстан)</label><input data-p="${path}.head" value="${esc(c.head||'')}" oninput="schIn(this)" maxlength="60"></div>`}
+    <div class="fg"><label>Атауы (мыс: Алтын адам)</label><input data-p="${path}.title" value="${esc(c.title||'')}" oninput="schIn(this)" maxlength="80"></div>
+    ${img('img','🖼 Сурет')}${img('img2','🗺 Қосымша сурет (карта, сызба — міндетті емес)')}
+    <div class="fg"><label>Мәліметтер (белгі: мән)</label>${(c.fields||[]).map((f,i)=>`<div class="sch-fr"><input placeholder="Дәуір" data-p="${path}.fields.${i}.k" value="${esc(f.k||'')}" oninput="schIn(this)" maxlength="30"><input placeholder="Б.з.д. VIII – VI ғғ." data-p="${path}.fields.${i}.v" value="${esc(f.v||'')}" oninput="schIn(this)" maxlength="120"><button class="btn btn-s btn-sm" onclick="schDelField('${path}',${i})">✕</button></div>`).join('')}
+      ${(c.fields||[]).length<SCH_MAX_FIELDS?`<button class="btn btn-s btn-sm" onclick="schAddField('${path}')">➕ Жол қосу</button>`:''}</div>
+  </div>`;
+}
+function schRenderForm(){
+  const d=schDraft;
+  document.getElementById('sch-ed').innerHTML=`<div class="card">
+    <div class="fg"><label>Пән *</label><select data-p="subject" onchange="schIn(this)">${schSubjOptions('— Пәнді таңдаңыз —').replace('value="'+esc(d.subject)+'"','value="'+esc(d.subject)+'" selected')}</select></div>
+    <div class="fg"><label>Схема атауы *</label><input data-p="title" value="${esc(d.title)}" oninput="schIn(this)" maxlength="100" placeholder="Мыс: Қазақстан тарихы: Кезеңдерге бөлінуі"></div>
+    <div class="fg"><label>Жоғарғы белгі (міндетті емес)</label><input data-p="tabMain" value="${esc(d.tabMain||'')}" oninput="schIn(this)" maxlength="40" placeholder="Мыс: Тарих"></div>
+    <div class="fg"><label>Кіші белгілер, үтірмен (міндетті емес, ең көбі 4)</label><input data-p="subs" value="${esc((d.subs||[]).join(', '))}" oninput="schIn(this)" maxlength="120" placeholder="Мыс: Тарихи карталар, Мәдениет"></div>
+    <div class="fg"><label>Түс</label><select data-p="theme" onchange="schIn(this)">${Object.entries(SCH_THEMES).map(([k,v])=>`<option value="${k}"${d.theme===k?' selected':''}>${v}</option>`).join('')}</select></div>
+    <div class="fg"><label class="switch"><input type="checkbox" data-p="request" ${d.request?'checked':''} onchange="schIn(this)"> 🌐 Жариялауға жіберу (админ мақұлдаған соң барлығына шығады)</label></div>
+  </div>
+  ${schCardForm('root',d.root,false,0)}
+  ${d.kids.map((k,i)=>schCardForm('kids.'+i,k,true,i)).join('')}
+  ${d.kids.length<SCH_MAX_KIDS?'<button class="btn btn-s" onclick="schAddKid()">➕ Тармақ карточка қосу</button>':''}`;
+}
+function schAddKid(){schDraft.kids.push({tab:'',...schBlankCard()});schRenderForm()}
+function schDelKid(i){schDraft.kids.splice(i,1);schRenderForm()}
+function schAddField(path){const c=schGet(path);if(c.fields.length<SCH_MAX_FIELDS){c.fields.push({k:'',v:''});schRenderForm()}}
+function schDelField(path,i){schGet(path).fields.splice(i,1);schRenderForm()}
+function schClrImg(path){const parts=path.split('.'),last=parts.pop();parts.reduce((x,k)=>x[k],schDraft)[last]='';schRenderForm()}
+function schPick(inp,path){
+  const f=inp.files&&inp.files[0];inp.value='';
+  if(!f)return;
+  if(!/^image\//.test(f.type)){alert('Сурет файлын таңдаңыз (JPG, PNG...)');return}
+  const r=new FileReader();
+  r.onload=()=>{
+    const img=new Image();
+    img.onload=()=>{
+      let maxSide=520,q=0.72,out='';
+      for(let k=0;k<7;k++){
+        const sc=Math.min(1,maxSide/Math.max(img.width,img.height));
+        const w=Math.max(1,Math.round(img.width*sc)),h=Math.max(1,Math.round(img.height*sc));
+        const c=document.createElement('canvas');c.width=w;c.height=h;
+        const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,w,h);x.drawImage(img,0,0,w,h);
+        out=c.toDataURL('image/jpeg',q);
+        if(out.length*0.75<=SCH_IMG_BYTES)break;
+        maxSide=Math.round(maxSide*0.82);q=Math.max(0.42,q-0.06);
+      }
+      if(out.length*0.75>SCH_IMG_BYTES*1.5){alert('Сурет тым үлкен. Кішірек сурет таңдаңыз');return}
+      const parts=path.split('.'),last=parts.pop();
+      parts.reduce((x,k)=>x[k],schDraft)[last]=out;
+      schRenderForm();
+    };
+    img.onerror=()=>alert('Сурет оқылмады. Басқа файл таңдаңыз');
+    img.src=r.result;
+  };
+  r.readAsDataURL(f);
+}
+function schClean(d){
+  const cc=c=>({title:String(c.title||'').trim().slice(0,80),img:schImgOk(c.img)?c.img:'',img2:schImgOk(c.img2)?c.img2:'',
+    fields:(c.fields||[]).map(f=>({k:String(f.k||'').trim().slice(0,30),v:String(f.v||'').trim().slice(0,120)})).filter(f=>f.k||f.v).slice(0,SCH_MAX_FIELDS)});
+  return {subject:d.subject,title:String(d.title||'').trim().slice(0,100),tabMain:String(d.tabMain||'').trim().slice(0,40),
+    subs:(d.subs||[]).map(x=>String(x).trim().slice(0,40)).filter(Boolean).slice(0,4),theme:SCH_THEMES[d.theme]?d.theme:'blue',
+    root:{...cc(d.root),head:String((d.root||{}).head||'').trim().slice(0,60)},kids:d.kids.map(k=>({tab:String(k.tab||'').trim().slice(0,40),...cc(k)})).slice(0,SCH_MAX_KIDS)};
+}
+function schPreview(){
+  const c=schClean(schDraft);
+  const old=document.getElementById('ovl-prev');if(old)old.remove();
+  const o=document.createElement('div');o.className='ovl';o.id='ovl-prev';
+  o.innerHTML='<div class="box" style="max-width:1000px"><div style="text-align:right;margin-bottom:8px"><button class="btn btn-s btn-sm" onclick="document.getElementById(\'ovl-prev\').remove()">✕ Жабу</button></div>'+schRender(c)+'</div>';
+  document.body.appendChild(o);
+}
+function schSave(){
+  if(!user){alert('Алдымен жүйеге кіріңіз');return}
+  const d=schDraft,c=schClean(d);
+  if(!c.subject){alert('Пәнді таңдаңыз!');return}
+  if(!c.title){alert('Схема атауын жазыңыз!');return}
+  if(!c.root.title){alert('Негізгі карточка атауын жазыңыз!');return}
+  if(JSON.stringify(c).length>600000){alert('Схема тым үлкен. Суреттер санын азайтыңыз');return}
+  const subjEl=document.querySelector('#c-subject'),opt=Array.from(subjEl.options).find(o=>o.value===c.subject);
+  const all=allSchemes();
+  let t=d.id?all.find(x=>x.id===d.id&&x.authorId===user.id):null;
+  const isNew=!t;
+  if(isNew){
+    if(all.filter(x=>x.authorId===user.id).length>=30){alert('Бір адам ең көбі 30 схема құра алады');return}
+    t={id:'sc_'+Date.now().toString(36)+Math.random().toString(36).slice(2,5),authorId:user.id,authorName:user.name,createdAt:new Date().toISOString(),isPublic:false,status:'private'};
+    all.unshift(t);
+  }
+  const wasPub=schIsPub(t);
+  Object.assign(t,c,{subjectName:opt?opt.textContent:''});
+  if(user.isAdmin){
+    if(d.request||wasPub){t.isPublic=true;t.status='approved'}
+  }else if(wasPub){t.isPublic=false;t.status='pending'}
+  else if(d.request){t.status='pending';t.isPublic=false}
+  else if(t.status!=='pending')t.status='private';
+  saveSchemes(all);
+  alert(user.isAdmin&&t.isPublic?'✅ Схема жарияланды':(t.status==='pending'?'✅ Схема сақталды. Админ мақұлдаған соң жарияланады.':'✅ Схема сақталды (тек өзіңізге көрінеді)'));
+  schTabCur='mine';showSchemes();
 }
 
 function selOpt(i){st.answers[st.questions[st.currentIndex].id]=i;renderQ()}
