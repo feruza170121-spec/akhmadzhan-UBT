@@ -1932,6 +1932,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
     <div class="card"><h3 style="margin-bottom:10px">📈 График</h3><div id="uv-chart"></div></div>
     <div class="card"><h3 style="margin-bottom:10px">📋 Тест тарихы</h3><div id="uv-hist" class="list"></div></div>
     <div class="card"><h3 style="margin-bottom:10px">❌ Қателері</h3><div id="uv-mist" class="list"></div></div>
+    <div class="card"><h3 style="margin-bottom:8px">📚 Сұрақтар базасы</h3><p class="sub" style="margin-bottom:12px">Осы қолданушының базаға қосқан және өзі жасаған тесттеріндегі сұрақтар</p><div id="uv-question-bank" class="list"></div></div>
     <div class="row"><button class="btn btn-s" onclick="showAdmin()">Артқа</button></div>
   </div>
 </div>
@@ -3416,8 +3417,43 @@ function adminViewUser(id){
   document.getElementById('uv-mist').innerHTML=mist.length?mist.map(q=>`
     <div class="item"><div class="info"><h4>${esc((q.text||'').substring(0,80))}</h4><p>${esc(q.subjectName||'')}</p></div></div>`).join(''):'<p class="sub">Қате жоқ</p>';
   document.getElementById('uv-newpass').value='';
+  renderAdminUserQuestions(id);
   renderProgress('uv-chart',null,getProg(id));
   showScr('s-user-view');
+}
+function adminUserQuestions(uid){
+  if(!user||!user.isAdmin)return [];
+  const found=[],seen=new Set(),hidden=new Set(LS.get('ubt_qbank_hidden_'+uid,[]));
+  const add=(q,subject,origin)=>{
+    if(!q||typeof q.text!=='string'||!q.text.trim()||!Array.isArray(q.options)||q.options.length<2)return;
+    const correct=Number(q.correct),key=ubtBankIdentity(subject,q.text);
+    if(!Number.isInteger(correct)||correct<0||correct>=q.options.length||seen.has(key)||hidden.has(key))return;
+    seen.add(key);found.push({subject,text:q.text,options:q.options,correct,img:q.img,tbl:q.tbl,origin});
+  };
+  LS.get('ubt_qbank_'+uid,[]).forEach(q=>add(q,q.subject,q.origin||'Сұрақтар базасы'));
+  allTests().filter(t=>t.authorId===uid&&!t.assignmentId).forEach(t=>(t.questions||[]).forEach(q=>add(q,t.subject,t.topic||'Тест')));
+  return found;
+}
+function renderAdminUserQuestions(uid){
+  if(!user||!user.isAdmin||viewingUserId!==uid)return;
+  const qs=adminUserQuestions(uid),el=document.getElementById('uv-question-bank');
+  el.innerHTML=qs.length?`<p class="sub" style="margin-bottom:10px">${qs.length} сұрақ</p><button class="btn btn-p btn-sm" style="margin-bottom:12px" onclick="adminTakeUserQuestions(${jsq(uid)})">📥 Барлығын өз базама алу</button>`
+    +qs.map((q,i)=>`<div class="item"><div class="info"><h4>${esc(q.text)}</h4><p>${esc(subjName(q.subject)||q.subject||'Басқа')} · ${esc(q.origin)} · Дұрыс жауап: ${esc(q.options[q.correct])}</p>${qMedia(q)}</div><button class="btn btn-s btn-sm" onclick="adminTakeUserQuestions(${jsq(uid)},${i})">📥 Алу</button></div>`).join(''):'<p class="sub">Бұл қолданушының сұрақтары әзірге жоқ</p>';
+}
+function adminTakeUserQuestions(uid,index){
+  if(!user||!user.isAdmin||viewingUserId!==uid)return;
+  const qs=adminUserQuestions(uid),selected=Number.isInteger(index)?[qs[index]]:qs;
+  const author=Object.values(LS.get('ubt_profiles',{})).find(p=>p&&p.id===uid);
+  const groups=new Map();
+  for(const q of selected){
+    if(!q||!q.subject)continue;
+    if(!groups.has(q.subject))groups.set(q.subject,[]);
+    groups.get(q.subject).push(q);
+  }
+  const before=LS.get('ubt_qbank_'+user.id,[]).length;
+  groups.forEach((questions,subject)=>rememberQuestionsInBank(subject,questions,'Қолданушы сұрақтары: '+(author&&author.name||uid),true));
+  const added=LS.get('ubt_qbank_'+user.id,[]).length-before;
+  alert(added?'✅ '+added+' сұрақ базаңызға қосылды':'Бұл сұрақтар базаңызда бар немесе жүктеуге жарамсыз');
 }
 function adminChangeUserPass(){return guarded(async()=>{
   if(!viewingUserId||!user||!user.isAdmin)return;
@@ -6771,7 +6807,7 @@ function rememberQuestionsInBank(subject,questions,origin,restore=false){
   for(const q of questions){
     if(bank.length>=10000)break;
     if(!q||typeof q.text!=='string'||!q.text.trim()||!Array.isArray(q.options)||q.options.length<2)continue;
-    if(q.img)continue;
+    if(q.img&&!(typeof q.img==='string'&&q.img.length<120000&&/^data:image\/(jpeg|png|webp);base64,/.test(q.img)))continue;
     const correct=Number(q.correct);
     if(!Number.isInteger(correct)||correct<0||correct>=q.options.length)continue;
     const identity=ubtBankIdentity(subject,q.text);
@@ -6783,6 +6819,7 @@ function rememberQuestionsInBank(subject,questions,origin,restore=false){
     seen.add(identity);
     bank.push({id:'q_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,10),subject,
       text:q.text,options:q.options.slice(),correct,origin:origin||'Өз сұрағым'});
+    if(q.img)bank[bank.length-1].img=q.img;
     if(Array.isArray(q.tbl))bank[bank.length-1].tbl=q.tbl;
     added++;
   }
@@ -6798,7 +6835,7 @@ function ubtQuestionBank(){
     if(!Number.isInteger(correct)||correct<0||correct>=q.options.length)return;
     const key=ubtBankIdentity(subject,q.text);
     if(hidden.has(key)||seen.has(key))return;seen.add(key);
-    out.push({id,subject,text:q.text,options:q.options.slice(),correct,source,editable});
+    out.push({id,subject,text:q.text,options:q.options.slice(),correct,source,editable,img:q.img,tbl:q.tbl});
   }
   LS.get('ubt_qbank_'+user.id,[]).forEach(q=>add(q,q.subject,'bank:'+q.id,q.origin||'Базаға қосылған',true));
   myTests().forEach(t=>(t.questions||[]).forEach((q,i)=>add(q,t.subject,'test:'+t.id+':'+i,t.topic||'Менің тестім',false)));
