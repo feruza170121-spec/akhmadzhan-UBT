@@ -1252,7 +1252,7 @@ def _snapshot(tok="", claim=""):
         tests = _jload(db.get("ubt_tests", "[]"), list, [])
         db["ubt_tests"] = _jdump([t for t in tests if isinstance(t, dict) and
             (t.get("authorId") == sess["uid"] or
-             (t.get("authorId") != "admin" and (t.get("classId") in joined if t.get("classId") else (t.get("isPublic") or t.get("status") == "approved"))))])
+             (t.get("classId") in joined if t.get("classId") else (t.get("isPublic") or t.get("status") == "approved")))])
         for k in list(db.keys()):
             if k.startswith(_PRIVATE_PREFIXES) and not (any(k == p + sess["uid"] for p in _PRIVATE_PREFIXES) or
                 (teacher and any(k == p + uid for c in mine if c.get("id") in managed for uid in c.get("students", [])
@@ -3215,7 +3215,7 @@ function saveAllTests(a){
   if(user) a.filter(t=>t.authorId===user.id&&t.subject).forEach(t=>rememberQuestionsInBank(t.subject,t.questions||[],'Тест: '+(t.topic||'')));
 }
 function myTests(){return allTests().filter(t=>t.authorId===user.id)}
-function publicTests(){return allTests().filter(t=>(user&&user.isAdmin||t.authorId!=='admin')&&(t.isPublic||t.status==='approved')&&!t.classId&&t.questions.length>0)}
+function publicTests(){return allTests().filter(t=>(t.isPublic||t.status==='approved')&&!t.classId&&t.questions.length>0)}
 function showFormulas(){
   renderFormulas();showScr('s-formulas');
 }
