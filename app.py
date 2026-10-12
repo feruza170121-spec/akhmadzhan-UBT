@@ -387,6 +387,11 @@ def _is_teacher(state, uid):
     return False
 
 
+def _is_student(state, uid):
+    return any(isinstance(p, dict) and p.get("id") == uid and p.get("role") != "teacher"
+               for p in _profiles(state).values())
+
+
 # ---------------------------------------------------------------- қате әрекеттерді шектеу
 def _locked(state, key):
     now = time.time()
@@ -531,8 +536,8 @@ def _handle_req(state, sid, rq):
         return {"ok": True}
 
     if typ == "chat_claim":
-        if not sess or sess["admin"]:
-            return {"ok": False, "msg": "Хабарлама жазу үшін аккаунтыңызға кіріңіз"}
+        if not sess or sess["admin"] or not _is_student(state, sess["uid"]):
+            return {"ok": False, "msg": "Админге тек аккаунтына кірген оқушылар жаза алады"}
         return {"ok": True, "login": sess["name"]}
 
     if typ == "admin_setpass":
@@ -615,6 +620,8 @@ def _merge_chat(state, sess, v):
         return None
     if sess and sess["admin"]:
         return _jdump([m for m in inc if isinstance(m, dict)])
+    if not _is_student(state, sess["uid"]):
+        return None
     stored = _jload(state["db"].get("ubt_chat", "[]"), list, [])
     ids = {m.get("id") for m in stored if isinstance(m, dict)}
     add = []
@@ -1170,7 +1177,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doLogin()">Кіру</button>
       <button class="btn btn-s" style="width:100%;margin-bottom:10px" onclick="showRegister()">Тіркелу</button>
       <button class="btn btn-s btn-sm" style="width:100%;margin-bottom:10px" onclick="showTeacherReg()">👨‍🏫 Мұғалім болуға өтініш жіберу</button>
-      <p class="sub" style="text-align:center;margin-top:8px">💬 Админге жазу үшін алдымен кіріңіз немесе тіркеліңіз.</p>
+      <button class="btn btn-w btn-sm" style="width:100%" onclick="showContactAdmin()">💬 Админге жазу</button>
     </div>
     <div class="card" id="register-box" style="display:none">
       <h3 style="margin-bottom:12px">Тіркелу</h3>
@@ -1212,8 +1219,9 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
         <button class="btn btn-sm" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,.4)" onclick="closeChat()">✕</button>
       </div>
       <div id="chat-gate" style="padding:20px 16px;background:#f0f0f0">
-        <div class="fg"><label>Админмен чатты ашу үшін логиніңізді (атыңызды) жазыңыз</label><input id="chat-login" placeholder="Логин" maxlength="30" style="background:#fff" onkeydown="if(event.key==='Enter')enterChat()"></div>
-        <button class="btn btn-ok" style="width:100%" onclick="enterChat()">Чатты ашу</button>
+        <p style="margin-bottom:12px">Админге тек тіркелген оқушылар жаза алады. Алдымен аккаунтыңызға кіріңіз немесе тіркеліңіз.</p>
+        <button class="btn btn-ok" style="width:100%;margin-bottom:8px" onclick="showLoginBox()">Кіру</button>
+        <button class="btn btn-s" style="width:100%" onclick="showRegister()">Тіркелу</button>
       </div>
       <div id="chat-room" style="display:none">
         <div id="chat-me" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:#fff;border-bottom:1px solid #ddd"></div>
@@ -1761,13 +1769,19 @@ function showRegister(){
 function showForgot(){sendForgotCode()}
 let chatLogin=null;
 function showContactAdmin(){
-  if(!user||user.isAdmin){showLoginBox();return}
-  chatLogin=user.name;
   document.getElementById('login-box').style.display='none';
   document.getElementById('register-box').style.display='none';
   document.getElementById('forgot-box').style.display='none';
   document.getElementById('contact-box').style.display='block';
-  openChatRoom();
+  if(user&&!user.isAdmin&&user.role!=='teacher'&&window.__token){
+    chatLogin=user.name;
+    openChatRoom();
+  }else{
+    chatLogin=null;
+    document.getElementById('chat-room').style.display='none';
+    document.getElementById('chat-gate').style.display='block';
+    document.getElementById('chat-sub').textContent='ҰБТ+ қолдау';
+  }
 }
 function openContactFromApp(){
   if(user&&user.isAdmin){showAdmin();return}
@@ -1775,7 +1789,7 @@ function openContactFromApp(){
   showScr('s-login');showContactAdmin();
 }
 function enterChat(){
-  if(!user||user.isAdmin){alert('Хабарлама жазу үшін аккаунтыңызға кіріңіз');return}
+  if(!user||user.isAdmin||user.role==='teacher'||!window.__token){alert('Админге тек аккаунтына кірген оқушылар жаза алады');return}
   chatLogin=user.name;
   openChatRoom();
 }
@@ -1831,7 +1845,7 @@ function threadKey(x){return String(x||'').trim().toLowerCase()}
 function threadOf(m){return threadKey(m.role==='admin'?m.to:m.from)}
 function newMsgId(){return 'm_'+Date.now()+'_'+Math.random().toString(36).slice(2,7)}
 function sendChatMsg(){
-  if(!user||user.isAdmin||!window.__token){alert('Хабарлама жазу үшін аккаунтыңызға кіріңіз');return}
+  if(!user||user.isAdmin||user.role==='teacher'||!window.__token){alert('Админге тек аккаунтына кірген оқушылар жаза алады');return}
   chatLogin=user.name;
   if(!chatLogin){alert('Алдымен логиніңізді жазыңыз');return}
   const text=document.getElementById('chat-text').value.trim();
