@@ -1160,6 +1160,10 @@ body.dark{background:radial-gradient(900px 420px at 0% -5%,rgba(59,130,246,.16),
 .home-tools .mode h3{line-height:1.35}
 .home-tools .mode p{line-height:1.4}
 @media(max-width:520px){.home-tools{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.home-tools .mode{min-height:135px;padding:14px 8px}.home-tools .mode h3{font-size:13px}}
+.uv-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.uv-actions .btn{width:100%;min-height:48px;padding:10px 12px;text-align:center;font-size:13px;line-height:1.3}
+.uv-actions .uv-danger{grid-column:1/-1}
+@media(max-width:600px){.uv-actions{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .profile-bar{border-radius:0 0 var(--r) var(--r);box-shadow:0 4px 18px rgba(30,41,59,.07);border-bottom:none}
 .avatar{background:var(--grad);background-size:cover;background-position:center;box-shadow:0 2px 8px rgba(37,99,235,.3);flex-shrink:0;overflow:hidden}
 .item{border-radius:22px;box-shadow:0 2px 8px rgba(30,41,59,.04);transition:.15s}
@@ -1280,6 +1284,11 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <h3 style="margin-bottom:12px">👤 Аккаунт деректері</h3>
       <div class="fg"><label>Логин</label><input id="uv-login" readonly style="background:#f1f5f9"></div>
       <div class="fg"><label>Қазіргі пароль</label><input id="uv-curpass" readonly style="background:#f1f5f9"></div>
+    </div>
+    <div class="card">
+      <h3 style="margin-bottom:4px">⚙️ Профильді басқару</h3>
+      <p class="sub" style="margin-bottom:14px">Осы қолданушының мәртебесі мен марапаттарын өзгертіңіз</p>
+      <div class="uv-actions" id="uv-actions"></div>
     </div>
     <div class="card" id="uv-pass-card">
       <h3 style="margin-bottom:10px">🔑 Парольді өзгерту</h3>
@@ -2188,14 +2197,8 @@ function renderAdminUsers(){
         <p>🔒 пароль хэштелген (көрінбейді)</p>
         <p>⭐ ${s.points||0} · ${esc(s.title||'Атақ жоқ')} · <span style="color:#f59e0b">${starStr(s.stars||0)}</span></p>
         <p>🌐 Жариялаған тест: <b>${u.pub.length}</b>${u.pub.length?' — '+esc(u.pub.slice(0,3).map(t=>t.topic).join(', '))+(u.pub.length>3?'…':''):''}</p></div>
-      <div class="acts">
-        <button class="btn btn-p btn-sm" onclick="adminViewUser(${jsq(p.id)})">Профиль</button>
-        <button class="btn btn-sm ${p.role==='teacher'&&p.teacherApproved?'btn-s':'btn-ok'}" onclick="adminSetTeacher(${jsq(p.id)},${!(p.role==='teacher'&&p.teacherApproved)})">${p.role==='teacher'&&p.teacherApproved?'Мұғалімді алу':'Мұғалім ету'}</button>
-        <button class="btn btn-ok btn-sm" onclick="adminToggleVerify(${jsq(p.id)})">${s.verified?'✓ Бар':'Галочка'}</button>
-        <button class="btn btn-w btn-sm" onclick="adminSetTitle(${jsq(p.id)})">Атақ</button>
-        <button class="btn btn-s btn-sm" onclick="adminSetStars(${jsq(p.id)})">Жұлдыз</button>
-        <button class="btn btn-d btn-sm" onclick="adminDelUser(${jsq(p.id)})">Өшіру</button>
-      </div></div>`}).join(''):'<p class="sub">Ешкім табылмады</p>';
+      <div class="acts"><button class="btn btn-p btn-sm" onclick="adminViewUser(${jsq(p.id)})">👤 Профильді ашу</button></div>
+    </div>`}).join(''):'<p class="sub">Ешкім табылмады</p>';
 }
 function showAdmin(){
   if(!user||!user.isAdmin){alert('Қолжетімсіз');return}
@@ -2267,22 +2270,27 @@ function adminDelUser(id){return guarded(async()=>{
   try{await window.__bridge.refresh()}catch(e){}
   showAdmin();
 })}
+function refreshAdminUser(id){
+  const inProfile=document.getElementById('s-user-view').classList.contains('active')&&viewingUserId===id;
+  showAdmin();
+  if(inProfile)adminViewUser(id);
+}
 function adminSetTitle(id){
   const s=getUserStats(id);
   const t=prompt('Атақ беріңіз (мыс: Алтын оқушы, Шебер):',s.title||'');
   if(t===null)return;
-  s.title=t.trim();setUserStats(id,s);showAdmin();
+  s.title=t.trim();setUserStats(id,s);refreshAdminUser(id);
 }
 function adminSetStars(id){
   const s=getUserStats(id);
   const n=prompt('Жұлдыз саны (0-5):',String(s.stars||0));
   if(n===null)return;
-  s.stars=Math.max(0,Math.min(5,parseInt(n)||0));setUserStats(id,s);showAdmin();
+  s.stars=Math.max(0,Math.min(5,parseInt(n)||0));setUserStats(id,s);refreshAdminUser(id);
 }
 function adminToggleVerify(id){
   const s=getUserStats(id);
   s.verified=!s.verified;
-  setUserStats(id,s);showAdmin();
+  setUserStats(id,s);refreshAdminUser(id);
 }
 function changeAdminPass(){alert('Админ паролі Streamlit Secrets ішіндегі ADMIN_PASSWORD арқылы өзгертіледі')}
 let viewingUserId=null;
@@ -2296,6 +2304,13 @@ function adminViewUser(id){
   setAv(document.getElementById('uv-avatar'),id,p.name);
   document.getElementById('uv-name').textContent=p.name+(s.verified?' ✓':'');
   document.getElementById('uv-info').textContent=`⭐ ${s.points||0} · ${s.title||'атақ жоқ'} · ${starStr(s.stars||0)}`;
+  const teacherOn=p.role==='teacher'&&p.teacherApproved;
+  document.getElementById('uv-actions').innerHTML=`
+    <button class="btn ${teacherOn?'btn-s':'btn-ok'}" onclick="adminSetTeacher(${jsq(id)},${!teacherOn})">${teacherOn?'👨‍🏫 Мұғалім мәртебесін алу':'👨‍🏫 Мұғалім ету'}</button>
+    <button class="btn ${s.verified?'btn-ok':'btn-s'}" onclick="adminToggleVerify(${jsq(id)})">${s.verified?'✅ Расталған':'✓ Растау белгісі'}</button>
+    <button class="btn btn-w" onclick="adminSetTitle(${jsq(id)})">🏅 Атақ беру</button>
+    <button class="btn btn-s" onclick="adminSetStars(${jsq(id)})">⭐ Жұлдыз беру (${s.stars||0}/5)</button>
+    <button class="btn btn-d uv-danger" onclick="adminDelUser(${jsq(id)})">🗑 Профильді өшіру</button>`;
   document.getElementById('uv-login').value=p.name||'';
   document.getElementById('uv-curpass').value='🔒 хэштелген (көрсетілмейді)';
   const hist=LS.get('ubt_hist_'+id,[]);
@@ -4171,7 +4186,7 @@ function adminSetTeacher(id,on){
     else{delete p.role;delete p.teacherApproved;delete p.teacherInfo}
   });
   if(on){const s=getUserStats(id);if(!s.title){s.title='👨‍🏫 Мұғалім';setUserStats(id,s)}}
-  showAdmin();
+  refreshAdminUser(id);
 }
 function renderTeacherReq(){
   const el=document.getElementById('admin-teacher-req');if(!el)return;
