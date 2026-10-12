@@ -375,7 +375,7 @@ def _session(state, tok):
         return None
     if not s["admin"]:
         prof = next((p for p in _profiles(state).values() if isinstance(p, dict) and p.get("id") == s["uid"]), None)
-        if not prof or prof.get("accessApproved") is False:
+        if not prof or prof.get("accessApproved") is not True:
             state["sessions"].pop(tok, None)
             return None
     return s
@@ -637,7 +637,7 @@ def _handle_req(state, sid, rq):
             if not good:
                 _fail(state, lk, sk)
                 return {"ok": False, "msg": _MSG_BAD}
-            if prof.get("accessApproved") is False:
+            if prof.get("accessApproved") is not True:
                 return {"ok": False, "msg": "Тіркелу өтінішіңіз админнің растауын күтіп тұр"}
             state["fails"].pop(lk, None)
             tok = _new_session(state, prof.get("id"), prof.get("name") or name, False)
@@ -771,16 +771,75 @@ def _handle_req(state, sid, rq):
             return {"ok": False, "msg": "Қате"}
         with state["lock"]:
             profs = _profiles(state)
-            for k in [k for k, p in profs.items() if isinstance(p, dict) and p.get("id") == uid]:
+            names = [k for k, p in profs.items() if isinstance(p, dict) and p.get("id") == uid]
+            if not names:
+                return {"ok": False, "msg": "Қолданушы табылмады"}
+            for k in names:
                 profs.pop(k, None)
             _put(state, "ubt_profiles", _jdump(profs))
             stats = _jload(state["db"].get("ubt_user_stats", "{}"), dict, {})
             stats.pop(uid, None)
             _put(state, "ubt_user_stats", _jdump(stats))
+            classes = _jload(state["db"].get("ubt_classes", "[]"), list, [])
+            owned = {c.get("id") for c in classes if isinstance(c, dict) and isinstance(c.get("id"), str)
+                     and c.get("teacherId") == uid}
+            removed_threads = {c.get("reqId") or "cls_" + str(c.get("id")) for c in classes
+                               if isinstance(c, dict) and c.get("id") in owned}
+            kept_classes = []
+            for c in classes:
+                if not isinstance(c, dict) or c.get("id") in owned:
+                    continue
+                if uid in c.get("students", []):
+                    c = {**c, "students": [student for student in c["students"] if student != uid]}
+                kept_classes.append(c)
+            _put(state, "ubt_classes", _jdump(kept_classes))
+            reqs = _jload(state["db"].get("ubt_class_reqs", "[]"), list, [])
+            removed_threads.update(r.get("id") for r in reqs if isinstance(r, dict) and r.get("teacherId") == uid)
+            _put(state, "ubt_class_reqs", _jdump([r for r in reqs if not (isinstance(r, dict) and r.get("teacherId") == uid)]))
+            chats = _jload(state["db"].get("ubt_class_chat", "{}"), dict, {})
+            _put(state, "ubt_class_chat", _jdump({k: v for k, v in chats.items() if k not in removed_threads}))
             tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
-            _put(state, "ubt_tests", _jdump([t for t in tests if not (isinstance(t, dict) and t.get("authorId") == uid)]))
+            removed_tests = {t.get("id") for t in tests if isinstance(t, dict) and t.get("authorId") == uid}
+            detached_class_tests = {t.get("id") for t in tests if isinstance(t, dict) and
+                                    t.get("classId") in owned and owned}
+            kept_tests = []
+            for t in tests:
+                if not isinstance(t, dict) or t.get("id") in removed_tests:
+                    continue
+                if t.get("classId") in owned and owned:
+                    t = {**t, "status": "private", "isPublic": False}
+                    t.pop("classId", None)
+                    t.pop("className", None)
+                kept_tests.append(t)
+            assignments = _jload(state["db"].get("ubt_assigned_tests", "[]"), list, [])
+            kept_assignments = [a for a in assignments if isinstance(a, dict) and a.get("uid") != uid
+                                and a.get("testId") not in removed_tests and a.get("classId") not in owned]
+            orphaned = {t.get("id") for t in kept_tests if t.get("assignmentId") and
+                        not any(a.get("testId") == t.get("id") for a in kept_assignments)}
+            removed_tests.update(orphaned)
+            kept_tests = [t for t in kept_tests if t.get("id") not in orphaned]
+            _put(state, "ubt_tests", _jdump(kept_tests))
+            _put(state, "ubt_assigned_tests", _jdump(kept_assignments))
             schs = _jload(state["db"].get("ubt_schemes", "[]"), list, [])
             _put(state, "ubt_schemes", _jdump([t for t in schs if not (isinstance(t, dict) and t.get("authorId") == uid)]))
+            letters = _jload(state["db"].get("ubt_admin_letters", "[]"), list, [])
+            _put(state, "ubt_admin_letters", _jdump([m for m in letters if not (isinstance(m, dict) and m.get("toUid") == uid)]))
+            for key in list(state["db"]):
+                if any(key == prefix + uid for prefix in _USER_PREFIXES):
+                    _drop(state, key)
+                elif key.startswith(("ubt_att_", "ubt_tres_")):
+                    tid = key[len("ubt_att_"):] if key.startswith("ubt_att_") else key[len("ubt_tres_"):]
+                    if tid in removed_tests or tid in detached_class_tests:
+                        _drop(state, key)
+                    elif key.startswith("ubt_att_"):
+                        attempts = _jload(state["db"][key], dict, {})
+                        if uid in attempts:
+                            attempts.pop(uid, None)
+                            _put(state, key, _jdump(attempts))
+                    else:
+                        results = _jload(state["db"][key], list, [])
+                        if any(isinstance(result, dict) and result.get("uid") == uid for result in results):
+                            _put(state, key, _jdump([result for result in results if not (isinstance(result, dict) and result.get("uid") == uid)]))
             _revoke_uid(state, uid)
             _commit(state)
         return {"ok": True}
@@ -1415,7 +1474,7 @@ def _snapshot(tok="", claim=""):
         m for m in letters if isinstance(m, dict) and m.get("toUid") == sess["uid"]])
     if "ubt_profiles" in db:
         db["ubt_profiles"] = _jdump({k: _pub_user(p) for k, p in profs.items() if isinstance(p, dict) and
-                                      (sess["admin"] or p.get("accessApproved") is not False)})
+                                      (sess["admin"] or p.get("accessApproved") is True)})
     if not sess["admin"] and "ubt_schemes" in db:
         sch = _jload(db.get("ubt_schemes"), list, [])
         db["ubt_schemes"] = _jdump([t for t in sch if isinstance(t, dict) and (
@@ -3247,7 +3306,7 @@ function renderAdminUsers(){
   const el=document.getElementById('admin-users');if(!el)return;
   const q=((document.getElementById('admin-user-q')||{}).value||'').trim().toLowerCase();
   const tests=allTests();
-  let users=Object.values(LS.get('ubt_profiles',{})).filter(p=>p&&p.accessApproved!==false).map(p=>{
+  let users=Object.values(LS.get('ubt_profiles',{})).filter(p=>p&&p.accessApproved===true).map(p=>{
     const st0=getUserStats(p.id);
     const pub=tests.filter(t=>t.authorId===p.id&&(t.isPublic||t.status==='approved'));
     return{p,s:st0,pub};
@@ -3277,7 +3336,7 @@ function showAdmin(){
   const formulas=LS.get('ubt_formulas',[]);
   const pending=tests.filter(t=>t.status==='pending');
   const approved=tests.filter(t=>t.isPublic||t.status==='approved');
-  const users=Object.values(profiles).filter(p=>p&&p.accessApproved!==false);
+  const users=Object.values(profiles).filter(p=>p&&p.accessApproved===true);
   updateAccessRequestCounts();
   document.getElementById('admin-letter-logins').innerHTML=users.filter(p=>p&&p.name).map(p=>`<option value="${esc(p.name)}">${p.role==='teacher'?'Мұғалім':'Оқушы'}</option>`).join('');
   renderAdminLetterHistory();
@@ -3334,7 +3393,7 @@ function showAdmin(){
 function accessRequests(){
   if(!user||!user.isAdmin)return [];
   return Object.values(LS.get('ubt_profiles',{})).filter(p=>p&&p.id&&
-    (p.accessApproved===false||(p.role==='teacher'&&!p.teacherApproved)));
+    (p.accessApproved!==true||(p.role==='teacher'&&!p.teacherApproved)));
 }
 function updateAccessRequestCounts(){
   if(!user||!user.isAdmin)return;
@@ -3350,8 +3409,8 @@ function renderAccessRequests(){
   if(!user||!user.isAdmin)return;
   const list=accessRequests();updateAccessRequestCounts();
   document.getElementById('access-requests-list').innerHTML=list.length?list.map(p=>{
-    const isNew=p.accessApproved===false,teacher=p.role==='teacher';
-    const label=isNew?(teacher?'Жаңа мұғалім · сайтқа кіру':'Жаңа оқушы · сайтқа кіру'):'Мұғалім мәртебесі';
+    const isNew=p.accessApproved!==true,teacher=p.role==='teacher';
+    const label=isNew?(p.registeredAt?(teacher?'Жаңа мұғалім · сайтқа кіру':'Жаңа оқушы · сайтқа кіру'):(teacher?'Бұрын тіркелген мұғалім · сайтқа кіру':'Бұрын тіркелген оқушы · сайтқа кіру')):'Мұғалім мәртебесі';
     return `<div class="item"><div class="info"><h4>${esc(p.name)}</h4><p>${label}${teacher&&p.teacherSubject?' · '+esc(subjName(p.teacherSubject)):''}${p.teacherInfo?' · '+esc(p.teacherInfo):''}</p></div><div class="acts"><button class="btn btn-ok btn-sm" onclick="approveAccessRequest(${jsq(p.id)},${isNew})">✓ Рұқсат беру</button><button class="btn btn-d btn-sm" onclick="rejectAccessRequest(${jsq(p.id)},${isNew})">✕ Бас тарту</button></div></div>`;
   }).join(''):'<div class="empty"><p>Қаралатын өтініш жоқ</p></div>';
 }
@@ -3487,7 +3546,7 @@ function adminDelUser(id){return guarded(async()=>{
   if(!user||!user.isAdmin)return;
   const profiles=LS.get('ubt_profiles',{});
   const pr=Object.values(profiles).find(x=>x.id===id);
-  if(!confirm((pr?pr.name:'')+' профилін өшіру?'))return;
+  if(!confirm((pr?pr.name:'')+' профилін өшіру? Оған тиесілі сыныптар, тесттер және нәтижелер де жойылады.'))return;
   const r=await authCall('admin_deluser',{uid:id});
   if(!r.ok){alert(r.msg||'Қате');return}
   try{await window.__bridge.refresh()}catch(e){}
