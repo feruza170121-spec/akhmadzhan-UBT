@@ -491,11 +491,54 @@ def _handle_req(state, sid, rq):
             kept = [a for a in old if a.get("id") != aid] if isinstance(old, list) else []
             if len(kept) == len(old):
                 return {"ok": False, "msg": "Жіберілген тест табылмады"}
-            tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
-            _put(state, "ubt_tests", _jdump([t for t in tests if not (isinstance(t, dict) and t.get("assignmentId") == aid)]))
+            removed = next((a for a in old if isinstance(a, dict) and a.get("id") == aid), None)
+            if removed and not any(a.get("testId") == removed.get("testId") for a in kept if isinstance(a, dict)):
+                tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
+                _put(state, "ubt_tests", _jdump([t for t in tests if not (isinstance(t, dict) and t.get("id") == removed.get("testId") and t.get("assignmentId"))]))
             _put(state, "ubt_assigned_tests", _jdump(kept))
             _commit(state)
         return {"ok": True}
+
+    if typ == "teacher_assign_class":
+        if not sess or (not sess["admin"] and not _is_teacher(state, sess["uid"])):
+            return {"ok": False, "msg": "Рұқсат жоқ"}
+        cid = str(d.get("classId") or "")
+        tid = str(d.get("testId") or "")
+        limit = d.get("limit")
+        if type(limit) is not int or not 1 <= limit <= 100:
+            return {"ok": False, "msg": "Лимит 1–100 аралығында болуы керек"}
+        with state["lock"]:
+            classes = _jload(state["db"].get("ubt_classes", "[]"), list, [])
+            cls = next((c for c in classes if isinstance(c, dict) and c.get("id") == cid and
+                        (sess["admin"] or c.get("teacherId") == sess["uid"])), None)
+            tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
+            source = next((t for t in tests if isinstance(t, dict) and t.get("id") == tid and
+                           t.get("authorId") == sess["uid"] and not t.get("assignmentId")), None)
+            if not cls or not source or not isinstance(source.get("questions"), list) or not source["questions"]:
+                return {"ok": False, "msg": "Сынып немесе өз тестіңіз табылмады"}
+            members = list(dict.fromkeys(x for x in cls.get("students", []) if isinstance(x, str) and x != sess["uid"]))
+            registered = {p.get("id") for p in _profiles(state).values() if isinstance(p, dict)}
+            members = [x for x in members if x in registered]
+            if not members or len(members) > 100:
+                return {"ok": False, "msg": "Сыныпта 1–100 тіркелген адам болуы керек"}
+            private_id = "sent_" + secrets.token_hex(12)
+            batch = "batch_" + secrets.token_hex(12)
+            clone = dict(source)
+            clone.update({"id": private_id, "authorId": sess["uid"], "status": "private",
+                          "isPublic": False, "adminApproved": False, "assignmentId": batch})
+            clone.pop("classId", None)
+            clone.pop("className", None)
+            assignments = _jload(state["db"].get("ubt_assigned_tests", "[]"), list, [])
+            names = {p.get("id"): key for key, p in _profiles(state).items() if isinstance(p, dict)}
+            assignments.extend({"id": "as_" + secrets.token_hex(12), "batchId": batch,
+                                "classId": cid, "uid": uid, "login": names.get(uid, ""),
+                                "testId": private_id, "title": str(source.get("topic") or "Тест")[:150],
+                                "limit": limit, "used": 0, "created": int(time.time())} for uid in members)
+            tests.append(clone)
+            _put(state, "ubt_tests", _jdump(tests))
+            _put(state, "ubt_assigned_tests", _jdump(assignments))
+            _commit(state)
+        return {"ok": True, "count": len(members)}
 
     if typ == "start_assigned_test":
         if not sess:
@@ -1933,7 +1976,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <button class="mode" onclick="showFormulas()"><span class="ic">📐</span><h3>Формула</h3><p>Формулаларды қарау</p></button>
       <button class="mode" onclick="showMistakes()"><span class="ic">❌</span><h3>Қателер</h3><p>Қате жауаптар</p></button>
       <button class="mode" onclick="showHistory()"><span class="ic">📋</span><h3>Тарих</h3><p>Тест нәтижелері</p></button>
-      <button class="mode" id="admin-json-card" style="display:none" onclick="showFileTest()"><span class="ic">📂</span><h3>JSON / файл тесті</h3><p>Тек админге: JSON жүктеп, тест тапсыру</p></button>
+      <button class="mode" id="admin-json-card" style="display:none" onclick="showFileTest()"><span class="ic">📂</span><h3>JSON / файл тесті</h3><p>Админ мен мұғалімге: файлдан тест құру</p></button>
       <button class="mode" onclick="showMyProfile()"><span class="ic">📈</span><h3>График</h3><p>Үлгерім көрсеткіші</p></button>
       <button class="mode" onclick="showFlash()"><span class="ic">🃏</span><h3>Флеш-карталар</h3><p>Қайталауға арналған</p></button>
       <button class="mode" onclick="showGloss()"><span class="ic">📖</span><h3>Глоссарий</h3><p>Терминдер мен ұғымдар</p></button>
@@ -2043,6 +2086,20 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
     <div class="hdr"><h2>📥 Жүктелген тесттер</h2><p class="sub">JSON файлдан сақталған және басқа қолданушылардан көшірілген тесттер</p></div>
     <div id="copied-tests-list" class="list"></div>
     <div class="row"><button class="btn btn-p" onclick="showSendTests()">📨 Тест жіберу</button><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+  </div>
+</div>
+
+<div id="s-class-send" class="screen">
+  <div class="wrap">
+    <div class="hdr"><h2>🏫 Сыныбыма тест тарату</h2><p class="sub">Өз тестіңізді өз сыныбыңыздағы барлық тіркелген адамға жіберіңіз</p></div>
+    <div class="card">
+      <div class="fg"><label>Сынып</label><select id="class-send-choice" onchange="updateClassSendCount()"></select></div>
+      <p id="class-send-count" class="sub" style="margin-bottom:12px"></p>
+      <div class="fg"><label>Өз тестім</label><select id="class-send-test"></select></div>
+      <div class="fg"><label>Әр адамға тапсыру лимиті</label><input id="class-send-limit" type="number" min="1" max="100" value="1"></div>
+      <button class="btn btn-p" onclick="sendTestToClass()">📨 Бүкіл сыныпқа жіберу</button>
+    </div>
+    <div class="row"><button class="btn btn-s" onclick="showTeacher()">Артқа</button></div>
   </div>
 </div>
 
@@ -2249,8 +2306,8 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
 
 <div id="s-file" class="screen">
   <div class="wrap">
-    <div class="hdr"><h2>📂 JSON / файлдан жеке тест</h2><p class="sub">JSON файлын таңдаңыз және «Тестті бастау» батырмасын басыңыз. Пәнге сақтау міндетті емес.</p></div>
-    <div class="card"><div class="fg" style="margin-bottom:0"><label>Базаға сақтағыңыз келсе, пәнді таңдаңыз</label><select id="f-question-subject"></select></div></div>
+    <div class="hdr"><h2>📂 JSON / файлдан тест</h2><p class="sub">JSON файлын жүктеңіз. Мұғалім оны сақтап, өз сыныбына лимитпен тарата алады.</p></div>
+    <div class="card"><div class="fg" style="margin-bottom:0"><label>Пән (міндетті емес)</label><select id="f-question-subject"></select></div></div>
     <div id="f-bulk-host"></div>
     <div class="row" style="margin-top:16px"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
@@ -2421,6 +2478,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
 <div id="s-teacher" class="screen">
   <div class="wrap wide">
     <div class="hdr"><h2>👨‍🏫 Мұғалім / Куратор</h2><p class="sub">Сынып құрып, оқушылардың нәтижесін бақылаңыз</p></div>
+    <div class="row" id="teacher-send-actions" style="justify-content:flex-start;margin-bottom:16px;display:none"><button class="btn btn-p btn-sm" onclick="showFileTest()">📂 JSON файлдан тест құру</button><button class="btn btn-ok btn-sm" onclick="showClassSend()">📨 Сыныбыма тарату</button></div>
     <div id="tch-notice"></div>
     <div class="card" id="tch-create-card">
       <h3 style="margin-bottom:10px">➕ Жаңа сынып</h3>
@@ -2896,7 +2954,7 @@ function refreshProfileBar(){
   const v=document.getElementById('p-verified');
   if(v){v.style.display=s.verified?'block':'none'}
   document.getElementById('admin-btn').style.display=user.isAdmin?'block':'none';
-  document.getElementById('admin-json-card').style.display=user.isAdmin?'block':'none';
+  document.getElementById('admin-json-card').style.display=isTeacherUser()?'block':'none';
   document.getElementById('admin-copied-card').style.display=user.isAdmin?'block':'none';
   document.getElementById('teacher-home-card').style.gridColumn=user.isAdmin?'':'1/-1';
 }
@@ -3201,10 +3259,16 @@ function showSendTests(selectedId){
   renderSentTests();showScr('s-send-tests');
 }
 function isCopiedTest(t){return !!(t&&!t.assignmentId&&t.authorId==='admin'&&(t.adminUploaded||t.copiedFromId||String(t.id||'').startsWith('t_admin_copy_')))}
+function republishCopiedTest(id){
+  if(!user||!user.isAdmin)return;
+  const all=allTests(),t=all.find(x=>x.id===id&&isCopiedTest(x));if(!t)return;
+  t.isPublic=true;t.status='approved';t.adminApproved=true;
+  saveAllTests(all);showCopiedTests();
+}
 function showCopiedTests(){
   if(!user||!user.isAdmin)return;
   const tests=allTests().filter(isCopiedTest),el=document.getElementById('copied-tests-list');
-  el.innerHTML=tests.length?tests.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic||'Тест')}</h4><p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ${t.copiedFromName?' · Бастапқы автор: '+esc(t.copiedFromName):t.adminUploaded?' · JSON файлдан':''}</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="showSendTests(${jsq(t.id)})">📨 Адамға жіберу</button><button class="btn btn-s btn-sm" onclick="previewTest(${jsq(t.id)})">👁 Қарау</button><button class="btn btn-s btn-sm" onclick="exportTest(${jsq(t.id)})">⬇ Файл</button><button class="btn btn-d btn-sm" onclick="removeCopiedTest(${jsq(t.id)})">Өшіру</button></div></div>`).join(''):'<div class="empty"><p>Әлі тест жүктелмеді. JSON файлды сақтаңыз немесе админ панелінен тестті «Өзіме көшіру» арқылы алыңыз.</p></div>';
+  el.innerHTML=tests.length?tests.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic||'Тест')}</h4><p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ${t.copiedFromName?' · Бастапқы автор: '+esc(t.copiedFromName):t.adminUploaded?' · JSON файлдан':''}${t.isPublic?' · 🌐 Жария':''}</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="showSendTests(${jsq(t.id)})">📨 Адамға жіберу</button>${!t.isPublic?`<button class="btn btn-ok btn-sm" onclick="republishCopiedTest(${jsq(t.id)})">🌐 Қайта жариялау</button>`:''}<button class="btn btn-s btn-sm" onclick="previewTest(${jsq(t.id)})">👁 Қарау</button><button class="btn btn-s btn-sm" onclick="exportTest(${jsq(t.id)})">⬇ Файл</button><button class="btn btn-d btn-sm" onclick="removeCopiedTest(${jsq(t.id)})">Өшіру</button></div></div>`).join(''):'<div class="empty"><p>Әлі тест жүктелмеді. JSON файлды сақтаңыз немесе админ панелінен тестті «Өзіме көшіру» арқылы алыңыз.</p></div>';
   showScr('s-copied-tests');
 }
 function removeCopiedTest(id){
@@ -3462,6 +3526,8 @@ function showMyTests(){
       <button class="btn btn-s btn-sm" onclick="previewTest('${t.id}')">👁</button>
       <button class="btn btn-s btn-sm" onclick="editTest('${t.id}')">+ Сұрақ қосу</button>
       <button class="btn btn-s btn-sm" onclick="exportTest('${t.id}')">⬇ Файл</button>
+      ${isTeacherUser()?`<button class="btn btn-s btn-sm" onclick="exportJsonTest(${jsq(t.id)})">⬇ JSON</button>`:''}
+      ${isTeacherUser()&&!user.isAdmin?`<button class="btn btn-ok btn-sm" onclick="showClassSend(${jsq(t.id)})">🏫 Сыныбыма тарату</button>`:''}
       ${t.status!=='pending'&&t.status!=='approved'&&!t.isPublic&&!t.classId?`<button class="btn btn-w btn-sm" onclick="requestPub('${t.id}')">Жариялауға</button>`:''}
       <button class="btn btn-d btn-sm" onclick="delTest('${t.id}')">✕</button>
     </div></div>`}).join('')}
@@ -4889,7 +4955,7 @@ function bulkBlock(ctx){
   const btns={
     c:'',
     e:'',
-    f:'<button class="btn btn-p" onclick="startFromFile()">▶ Тестті бастау</button><button class="btn btn-ok" onclick="saveFromFile()">💾 Менің тесттеріме сақтау</button>'
+    f:'<button class="btn btn-p" onclick="startFromFile()">▶ Тестті бастау</button><button class="btn btn-ok" onclick="saveFromFile()">💾 Тестті сақтау</button>'
   }[ctx];
   return `<div class="card">
     <h3 style="margin-bottom:6px">📥 ${ctx==='c'?'Сұрақтар файлы (барлық сұрақ бір файлда)':ctx==='f'?'Сұрақтар файлы':'Файлдан сұрақ қосу'}</h3>
@@ -4926,14 +4992,14 @@ function matchSubject(sub){
   return Array.from(el.options||[]).find(o=>o.value&&(o.value===x||String(o.text).toLowerCase()===x))||null;
 }
 function showFileTest(){
-  if(!user||!user.isAdmin){alert('JSON файлын тек админ жүктей алады');return}
+  if(!isTeacherUser()){alert('JSON файлын админ немесе бекітілген мұғалім жүктей алады');return}
   clearBulk('f');
   const sel=document.getElementById('f-question-subject');
   if(!sel.options.length)sel.innerHTML=Array.from(document.querySelectorAll('#c-subject option')).map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('');
   sel.value='';showScr('s-file');
 }
 function startFromFile(){
-  if(!user||!user.isAdmin)return;
+  if(!isTeacherUser())return;
   const r=takeBulkQs('f');if(!r)return;
   const subject=document.getElementById('f-question-subject').value;
   const label=r.meta.topic||(bulkName.f||'').replace(/\.[^.]+$/,'')||'Файлдан тест';
@@ -4944,16 +5010,16 @@ function startFromFile(){
   beginTest();
 }
 function saveFromFile(){
-  if(!user||!user.isAdmin)return;
+  if(!isTeacherUser())return;
   const r=takeBulkQs('f');if(!r)return;
   const subject=document.getElementById('f-question-subject').value||'other';
   let topic=prompt('Тест тақырыбы:',r.meta.topic||(bulkName.f||'').replace(/\.[^.]+$/,'')||'');
   if(topic===null)return;
   topic=topic.trim();
   if(!topic){alert('Тақырыпты жазыңыз');return}
-  const test={id:'t_'+Date.now(),subject,subjectName:subjName(subject),topic,desc:'',isPublic:false,status:'private',authorId:user.id,authorName:user.name,questions:r.qs,adminUploaded:true,createdAt:new Date().toISOString()};
+  const test={id:'t_'+Date.now(),subject,subjectName:subjName(subject),topic,desc:'',isPublic:false,status:'private',authorId:user.id,authorName:user.name,questions:r.qs,adminUploaded:!!user.isAdmin,createdAt:new Date().toISOString()};
   const all=allTests();all.unshift(test);saveAllTests(all);
-  clearBulk('f');alert('✅ Тест сақталды: '+r.qs.length+' сұрақ');showCopiedTests();
+  clearBulk('f');alert('✅ Тест сақталды: '+r.qs.length+' сұрақ');user.isAdmin?showCopiedTests():showMyTests();
 }
 function testToText(topic,subjectName,qs){
   let o='Тақырып: '+topic+'\n'+(subjectName?'Пән: '+subjectName+'\n':'')+'\n';
@@ -4978,6 +5044,15 @@ function exportTest(id){
   const t=allTests().find(x=>x.id===id);
   if(!t||!t.questions.length){alert('Сұрақ жоқ');return}
   downloadText(safeName(t.topic)+'.txt',testToText(t.topic,t.subjectName,t.questions));
+}
+function exportJsonTest(id){
+  const t=allTests().find(x=>x.id===id);
+  if(!t||!user||!isTeacherUser()||!(user.isAdmin||t.authorId===user.id)){alert('Бұл тестке рұқсат жоқ');return}
+  const data={title:t.topic||'Тест',topic:t.topic||'Тест',subject:t.subjectName||t.subject||'',
+    questions:(t.questions||[]).map(q=>({text:q.text,options:q.options,correct:q.correct}))};
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json;charset=utf-8'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=safeName(t.topic)+'.json';
+  document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1000);
 }
 function downloadSample(){downloadText('ulgi_suraqtar.txt',SAMPLE_TXT)}
 let draftQs=[];
@@ -6091,7 +6166,38 @@ function studentStats(id){
   const avg=n?Math.round(pg.map(pctOf).reduce((a,b)=>a+b,0)/n):0;
   return{n,avg,last:n?pg[n-1]:null,mist:LS.get('ubt_mistakes_'+id,[]).length,points:getUserStats(id).points||0};
 }
-function showTeacher(){tchOpen=null;document.getElementById('tch-detail').innerHTML='';renderTeacher();showScr('s-teacher')}
+function showTeacher(){tchOpen=null;document.getElementById('tch-detail').innerHTML='';document.getElementById('teacher-send-actions').style.display=isTeacherUser()?'flex':'none';renderTeacher();showScr('s-teacher')}
+function showClassSend(selectedId){
+  if(!isTeacherUser())return;
+  const classes=getClasses().filter(c=>c.teacherId===user.id);
+  const tests=allTests().filter(t=>t.authorId===user.id&&!t.assignmentId&&Array.isArray(t.questions)&&t.questions.length);
+  if(!classes.length){alert('Алдымен өз сыныбыңызды ашыңыз');return}
+  if(!tests.length){alert('Алдымен өз тестіңізді жасаңыз немесе JSON файлдан сақтаңыз');return}
+  document.getElementById('class-send-choice').innerHTML=classes.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
+  document.getElementById('class-send-test').innerHTML=tests.map(t=>`<option value="${esc(t.id)}">${esc(t.topic||'Тест')} (${t.questions.length} сұрақ)</option>`).join('');
+  if(typeof selectedId==='string'&&tests.some(t=>t.id===selectedId))document.getElementById('class-send-test').value=selectedId;
+  updateClassSendCount();showScr('s-class-send');
+}
+function updateClassSendCount(){
+  const c=getClasses().find(c=>c.id===document.getElementById('class-send-choice').value);
+  const ids=[...new Set((c&&c.students)||[])].filter(id=>id!==user.id);
+  document.getElementById('class-send-count').textContent=c?'Бұл сыныпта '+ids.length+' адам бар. Тест барлығына жіберіледі.':'';
+}
+function sendTestToClass(){return guarded(async()=>{
+  if(!isTeacherUser())return;
+  const classId=document.getElementById('class-send-choice').value;
+  const testId=document.getElementById('class-send-test').value;
+  const limit=Number(document.getElementById('class-send-limit').value);
+  const c=getClasses().find(x=>x.id===classId&&x.teacherId===user.id);
+  const t=allTests().find(x=>x.id===testId&&x.authorId===user.id&&!x.assignmentId);
+  if(!c||!t||!Number.isInteger(limit)||limit<1||limit>100){alert('Сыныпты, өз тестіңізді және 1–100 аралығындағы лимитті таңдаңыз');return}
+  const n=[...new Set(c.students||[])].filter(id=>id!==user.id).length;
+  if(!n){alert('Сыныпта тіркелген адам жоқ');return}
+  if(!confirm('«'+t.topic+'» тестін «'+c.name+'» сыныбындағы барлық '+n+' адамға жіберуді растайсыз ба? Әр адамға '+limit+' рет тапсыруға рұқсат беріледі.'))return;
+  const r=await authCall('teacher_assign_class',{classId,testId,limit});
+  if(!r.ok){alert(r.msg||'Тест жіберілмеді');return}
+  await window.__bridge.refresh();alert('✅ Тест сыныптағы '+r.count+' адамға жіберілді');showTeacher();
+})}
 function createClass(){
   if(!user||!user.isAdmin)return;
   const n=document.getElementById('tch-name').value.trim();
