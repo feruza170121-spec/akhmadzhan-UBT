@@ -870,7 +870,7 @@ def _authorize(state, sess, k, v, chat_token=""):
         return _merge_tests(state, sess, v)
     if k == "ubt_schemes":
         return _merge_schemes(state, sess, v)
-    if k == "ubt_hist_order":
+    if k in ("ubt_hist_order", "ubt_hist_hidden"):
         if not sess["admin"]:
             return None
         order = _jload(v, list, None)
@@ -3267,12 +3267,12 @@ function renderSchemes(){
   document.getElementById('sch-f-subj').parentElement.style.display=schTabCur==='history'?'none':'';
   if(schTabCur==='history'){
     const groups=new Map();
-    HIST.forEach((h,i)=>{const stage=h[0]==='Қазақстан тарихының кезеңдері'?'Жалпы шолу':h[0];if(!groups.has(stage))groups.set(stage,[]);groups.get(stage).push({h,i})});
+    HIST.forEach((h,i)=>{if(histHidden().has(i))return;const stage=h[0]==='Қазақстан тарихының кезеңдері'?'Жалпы шолу':h[0];if(!groups.has(stage))groups.set(stage,[]);groups.get(stage).push({h,i})});
     const order=['Жалпы шолу','Ежелгі дәуір','Ортағасыр','Қазақ хандығы','Отарлау дәуірі','Кеңес кезеңі','Тәуелсіздік'];
     const positions=new Map(histOrder().map((id,n)=>[id,n]));
     groups.forEach(items=>items.sort((a,b)=>positions.get(a.i)-positions.get(b.i)));
-    const master=HIST.findIndex(h=>h[0]==='Қазақстан тарихының кезеңдері');
-    document.getElementById('sch-list').innerHTML=`<div class="card" style="margin:10px 0;border:1px solid #b7d9bd"><h3>🌳 Қазақстан тарихы · бір карта</h3><p class="sub">Дәуірді басыңыз: сол дәуірдің дерегі ашылады. Жебені басыңыз: оның тақырыптары, кейін сол тақырыпқа қатысты мәдениеттері ашылады.</p><div class="row" style="margin-top:10px"><button class="btn btn-p btn-sm" onclick="histPreview(${master})">🌳 Толық картаны ашу</button>${user?`<button class="btn btn-s btn-sm" onclick="histCopyMine(${master},true)">📁 Бір схема ретінде сақтау</button>`:''}</div></div><h3 style="margin:12px 0">📁 Жеке тақырыптар</h3>`+[...groups].sort((a,b)=>order.indexOf(a[0])-order.indexOf(b[0])).map(([stage,items])=>`<details class="card" ${stage==='Жалпы шолу'?'open':''} style="margin:10px 0"><summary style="cursor:pointer;font-weight:700">📁 ${esc(stage)} · ${items.length} тақырып</summary><div style="margin-top:12px">${items.map(({h,i})=>`<div class="item"><div class="info"><h4>${esc(h[2])}</h4><p>${h[5].length} жеке тармақ</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="histPreview(${i})">👁 Қарау</button>${user?`<button class="btn btn-s btn-sm" onclick="histCopyMine(${i})">📁 Өзіме қосу</button>`:''}</div></div>`).join('')}</div></details>`).join('');
+    const master=HIST.findIndex((h,i)=>h[0]==='Қазақстан тарихының кезеңдері'&&!histHidden().has(i));
+    document.getElementById('sch-list').innerHTML=(master>=0?`<div class="card" style="margin:10px 0;border:1px solid #b7d9bd"><h3>🌳 Қазақстан тарихы · бір карта</h3><p class="sub">Дәуірді басыңыз: сол дәуірдің дерегі ашылады. Жебені басыңыз: оның тақырыптары, кейін сол тақырыпқа қатысты мәдениеттері ашылады.</p><div class="row" style="margin-top:10px"><button class="btn btn-p btn-sm" onclick="histPreview(${master})">🌳 Толық картаны ашу</button>${user?`<button class="btn btn-s btn-sm" onclick="histCopyMine(${master},true)">📁 Бір схема ретінде сақтау</button>`:''}</div></div>`:'')+'<h3 style="margin:12px 0">📁 Жеке тақырыптар</h3>'+[...groups].sort((a,b)=>order.indexOf(a[0])-order.indexOf(b[0])).map(([stage,items])=>`<details class="card" ${stage==='Жалпы шолу'?'open':''} style="margin:10px 0"><summary style="cursor:pointer;font-weight:700">📁 ${esc(stage)} · ${items.length} тақырып</summary><div style="margin-top:12px">${items.map(({h,i})=>`<div class="item"><div class="info"><h4>${esc(h[2])}</h4><p>${h[5].length} жеке тармақ</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="histPreview(${i})">👁 Қарау</button>${user?`<button class="btn btn-s btn-sm" onclick="histCopyMine(${i})">📁 Өзіме қосу</button>`:''}</div></div>`).join('')}</div></details>`).join('');
     return;
   }
   const subj=document.getElementById('sch-f-subj').value;
@@ -3704,6 +3704,22 @@ const HIST=[
  [['Аралтөбе','Сармат ескерткіші',[['Аймағы','Батыс Қазақстан']]],['Көшпелі тіршілік','Мал шаруашылығы',[['Белгісі','Жылқы, қару-жарақ және әшекей бұйымдар']]]]]
 ];
 function histId(i){return 'hist_'+String(i+1).padStart(2,'0')}
+function histHidden(){
+  const data=LS.get('ubt_hist_hidden',[]);
+  return new Set(Array.isArray(data)?data.filter(i=>Number.isInteger(i)&&i>=0&&i<HIST.length):[]);
+}
+function histDeleteTopic(i){
+  if(!user||!user.isAdmin||!HIST[i]||histHidden().has(i))return;
+  if(!confirm('«'+HIST[i][2]+'» тақырыбын тарих тізімінен өшіріп, жарияланған дайын схемасын да алып тастау керек пе?'))return;
+  const hidden=histHidden();hidden.add(i);
+  saveSchemes(allSchemes().filter(t=>t.id!==histId(i)));
+  LS.set('ubt_hist_hidden',[...hidden]);renderHist();
+}
+function histRestoreTopics(){
+  if(!user||!user.isAdmin||!histHidden().size)return;
+  if(!confirm('Өшірілген дайын тақырыптарды тізімге қайтару керек пе?'))return;
+  LS.set('ubt_hist_hidden',[]);renderHist();
+}
 function histOrder(){
   const stored=LS.get('ubt_hist_order',[]),seen=new Set();
   const order=[];
@@ -3713,13 +3729,14 @@ function histOrder(){
 }
 function histMove(i,delta){
   if(!user||!user.isAdmin||![1,-1].includes(delta))return;
-  const order=histOrder(),at=order.indexOf(i),next=at+delta;
-  if(at<0||next<0||next>=order.length||HIST[order[next]][0]!==HIST[i][0])return;
-  [order[at],order[next]]=[order[next],order[at]];
+  const order=histOrder(),visible=order.filter(x=>!histHidden().has(x)),at=visible.indexOf(i),next=at+delta;
+  if(at<0||next<0||next>=visible.length||HIST[visible[next]][0]!==HIST[i][0])return;
+  const ia=order.indexOf(i),ib=order.indexOf(visible[next]);
+  [order[ia],order[ib]]=[order[ib],order[ia]];
   LS.set('ubt_hist_order',order);renderHist();
 }
 function histCopyMine(i,openAfter){
-  if(!user||!HIST[i])return;
+  if(!user||!HIST[i]||histHidden().has(i))return;
   const all=allSchemes();
   if(all.filter(t=>t.authorId===user.id).length>=30){alert('Бір адам ең көбі 30 схема құра алады');return}
   const id='sc_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7);
@@ -3741,7 +3758,7 @@ function histBuild(i){
       'Кеңестік кезең':['Кеңес кезеңі'],'Тәуелсіз Қазақстан':['Тәуелсіздік']};
     kids.forEach(stage=>{
       const titles=ancient[stage.tab],eras=groups[stage.tab]||[];
-      stage.children=HIST.filter((entry,index)=>index!==i&&(titles?titles.includes(entry[2]):eras.includes(entry[0])))
+      stage.children=HIST.filter((entry,index)=>index!==i&&!histHidden().has(index)&&(titles?titles.includes(entry[2]):eras.includes(entry[0])))
         .map(entry=>({tab:entry[2],...card(entry[2],entry[4]),
           children:entry[5].map(part=>({tab:part[0],...card(part[1],part[2])}))}));
       const order=histOrder();stage.children.sort((a,b)=>order.indexOf(HIST.findIndex(x=>x[2]===a.tab))-order.indexOf(HIST.findIndex(x=>x[2]===b.tab)));
@@ -3751,6 +3768,7 @@ function histBuild(i){
     root:{...card(h[2],h[4]),head:overview?'Қазақстан тарихы':h[2]},kids};
 }
 function histPreview(i){
+  if(!HIST[i]||histHidden().has(i))return;
   const old=document.getElementById('ovl-prev');if(old)old.remove();
   const o=document.createElement('div');o.className='ovl';o.id='ovl-prev';
   o.innerHTML='<div class="box" style="max-width:1000px"><div class="row" style="justify-content:flex-end;margin-bottom:8px">'+(user?'<button class="btn btn-p btn-sm" onclick="histCopyMine('+i+',true)">＋ Өзіме қосып, мәлімет жазу</button>':'')+'<button class="btn btn-s btn-sm" onclick="document.getElementById(\'ovl-prev\').remove()">✕ Жабу</button></div>'+schRender(histBuild(i))+'</div>';
@@ -3760,6 +3778,7 @@ function histAddAll(){
   if(!user||!user.isAdmin)return;
   const all=allSchemes(),have=new Set(all.map(x=>x.id));let n=0;
   histOrder().forEach(i=>{
+    if(histHidden().has(i))return;
     const h=HIST[i];
     const id=histId(i);if(have.has(id))return;
     all.push({id:id,authorId:user.id,authorName:'Админ',createdAt:new Date().toISOString(),isPublic:false,status:'private',...histBuild(i)});n++;
@@ -3771,6 +3790,7 @@ function histRefreshBuiltins(){
   if(!user||!user.isAdmin||!confirm('Админнің дайын тарих схемаларын жаңа үлгілермен ауыстыру керек пе? Сіз өңдеген дайын схемалар да жаңарады. Өзге адамдардың схемалары сақталады.'))return;
   const all=allSchemes();let count=0;
   HIST.forEach((h,i)=>{
+    if(histHidden().has(i))return;
     const id=histId(i),j=all.findIndex(t=>t.id===id);
     if(j<0)return;
     const old=all[j];
@@ -3796,20 +3816,22 @@ function histPub(i,on){
 }
 function renderHist(){
   const el=document.getElementById('admin-hist');if(!el)return;
+  const hidden=histHidden();
   const have=new Map(allSchemes().map(x=>[x.id,x]));
-  let added=0;HIST.forEach((h,i)=>{if(have.has(histId(i)))added++});
-  let out='<p class="sub" style="margin-bottom:10px">Барлығы: <b>'+HIST.length+'</b> тақырып · схема ретінде қосылған: <b>'+added+'</b> · 🆕 жаңадан қосылған: '+HIST.filter(h=>h[3]).length+'</p>'
-    +'<div class="row" style="margin-bottom:12px;justify-content:flex-start"><button class="btn btn-p btn-sm" onclick="histAddAll()">➕ Барлық тақырыпты схема ретінде қосу</button><button class="btn btn-s btn-sm" onclick="histRefreshBuiltins()">↺ Дайын схемаларды жаңарту</button></div>';
+  let added=0;HIST.forEach((h,i)=>{if(!hidden.has(i)&&have.has(histId(i)))added++});
+  let out='<p class="sub" style="margin-bottom:10px">Барлығы: <b>'+(HIST.length-hidden.size)+'</b> тақырып · схема ретінде қосылған: <b>'+added+'</b> · 🆕 жаңадан қосылған: '+HIST.filter((h,i)=>h[3]&&!hidden.has(i)).length+'</p>'
+    +'<div class="row" style="margin-bottom:12px;justify-content:flex-start"><button class="btn btn-p btn-sm" onclick="histAddAll()">➕ Барлық тақырыпты схема ретінде қосу</button><button class="btn btn-s btn-sm" onclick="histRefreshBuiltins()">↺ Дайын схемаларды жаңарту</button>'+(hidden.size?'<button class="btn btn-s btn-sm" onclick="histRestoreTopics()">↶ Өшірілген тақырыптарды қайтару ('+hidden.size+')</button>':'')+'</div>';
   let cur='';
   histOrder().forEach(i=>{
+    if(hidden.has(i))return;
     const h=HIST[i];
     if(h[0]!==cur){cur=h[0];out+='<h4 style="margin:14px 0 6px">'+esc(cur)+'</h4>'}
     const t=have.get(histId(i));
     const st=!t?'<span class="badge badge-priv">Қосылмаған</span>':(t.isPublic&&t.status==='approved'?'<span class="badge badge-pub">🌐 Жария</span>':'<span class="badge badge-priv">🔒 Тек админ</span>');
-    out+='<div class="item"><div class="info"><h4>'+esc(h[2])+(h[3]?' 🆕':'')+'</h4><p>'+st+' · '+h[5].length+' тармақ</p></div><div class="acts"><button class="btn btn-s btn-sm" title="Жоғары жылжыту" onclick="histMove('+i+',-1)">↑</button><button class="btn btn-s btn-sm" title="Төмен жылжыту" onclick="histMove('+i+',1)">↓</button>'
+    out+='<div class="item"><div class="info"><h4>'+esc(h[2])+(h[3]?' 🆕':'')+'</h4><p>'+st+' · '+h[5].length+' тармақ</p></div><div class="acts"><button class="btn btn-s btn-sm" title="Жоғары жылжыту" onclick="histMove('+i+',-1)">↑</button><button class="btn btn-s btn-sm" title="Төмен жылжыту" onclick="histMove('+i+',1)">↓</button><button class="btn btn-d btn-sm" onclick="histDeleteTopic('+i+')">🗑 Өшіру</button>'
       +(t?'<button class="btn btn-p btn-sm" onclick="schOpen('+jsq(histId(i))+')">👁 Қарау</button><button class="btn btn-s btn-sm" onclick="schEdit('+jsq(histId(i))+')">✎</button>'
         +(t.isPublic&&t.status==='approved'?'<button class="btn btn-w btn-sm" onclick="histPub('+i+',false)">🔒 Жасыру</button>':'<button class="btn btn-ok btn-sm" onclick="histPub('+i+',true)">🌐 Жариялау</button>')
-        +'<button class="btn btn-s btn-sm" onclick="histResetOne('+i+')">↺</button><button class="btn btn-d btn-sm" onclick="histDel('+i+')">🗑</button>'
+        +'<button class="btn btn-s btn-sm" onclick="histResetOne('+i+')">↺</button>'
         :'<button class="btn btn-s btn-sm" onclick="histPreview('+i+')">👁 Алдын ала</button><button class="btn btn-ok btn-sm" onclick="histResetOne('+i+')">➕ Қосу</button>')
       +'</div></div>';
   });
