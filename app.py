@@ -52,8 +52,10 @@ _ADMIN_NAMES = ("админ", "admin")
 _USER_TTL = 14 * 86400
 _ADMIN_TTL = 12 * 3600
 _USER_PREFIXES = ("ubt_mistakes_", "ubt_hist_", "ubt_prog_", "ubt_bm_", "ubt_plan_done_",
-                  "ubt_plan_", "ubt_qotd_", "ubt_streak_", "ubt_avatar_", "ubt_viol_")
-_PRIVATE_PREFIXES = ("ubt_mistakes_", "ubt_plan_done_", "ubt_plan_", "ubt_bm_")
+                  "ubt_plan_", "ubt_qotd_", "ubt_streak_", "ubt_avatar_", "ubt_viol_",
+                  "ubt_qbank_", "ubt_ubt140_selection_")
+_PRIVATE_PREFIXES = ("ubt_mistakes_", "ubt_plan_done_", "ubt_plan_", "ubt_bm_",
+                     "ubt_qbank_", "ubt_ubt140_selection_")
 _SINGLE_DEVICE = True   # True: бір аккаунт бір уақытта тек бір құрылғыда (жаңа кіру ескісін шығарады)
 _MAX_FAILS = 5
 _FAIL_WINDOW = 600
@@ -1164,6 +1166,14 @@ body.dark{background:radial-gradient(900px 420px at 0% -5%,rgba(59,130,246,.16),
 .uv-actions .btn{width:100%;min-height:48px;padding:10px 12px;text-align:center;font-size:13px;line-height:1.3}
 .uv-actions .uv-danger{grid-column:1/-1}
 @media(max-width:600px){.uv-actions{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.ubt-modes{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}
+.ubt-modes label{display:flex;align-items:center;gap:8px;padding:11px 14px;border:1px solid var(--b);border-radius:18px;cursor:pointer;background:var(--c);font-size:14px;font-weight:600}
+.ubt-modes input{accent-color:var(--p);width:18px;height:18px}
+.ubt-bank-row{display:flex;gap:12px;align-items:flex-start;border:1px solid var(--b);border-radius:18px;padding:12px;margin-bottom:8px;background:var(--c)}
+.ubt-bank-row input[type=checkbox]{width:20px;height:20px;accent-color:var(--p);flex:none;margin-top:2px;cursor:pointer}
+.ubt-bank-row .info{min-width:0;flex:1}
+.ubt-bank-row .info strong{display:block;font-size:14px;overflow-wrap:anywhere}
+.ubt-bank-row .info p{font-size:12px;color:var(--m);margin-top:3px;overflow-wrap:anywhere}
 .profile-bar{border-radius:0 0 var(--r) var(--r);box-shadow:0 4px 18px rgba(30,41,59,.07);border-bottom:none}
 .avatar{background:var(--grad);background-size:cover;background-position:center;box-shadow:0 2px 8px rgba(37,99,235,.3);flex-shrink:0;overflow:hidden}
 .item{border-radius:22px;box-shadow:0 2px 8px rgba(30,41,59,.04);transition:.15s}
@@ -1659,12 +1669,39 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
 
 <div id="s-ubt140" class="screen">
   <div class="wrap">
-    <div class="hdr"><h2>🎓 ҰБТ 140 формат</h2><p class="sub">140 сұрақ: тарих 20 · оқу сауаттылығы 10 · мат. сауаттылық 10 · 2 бейіндік пән × 40 · 240 минут</p></div>
+    <div class="hdr"><h2>🎓 ҰБТ 140 формат</h2><p class="sub">120 сұрақ: тарих 20 · оқу сауаттылығы 10 · мат. сауаттылық 10 · 2 бейіндік пән × 40 · 240 минут</p></div>
     <div class="card">
       <div class="fg"><label>1-бейіндік пән</label><select id="u-p1" onchange="renderUbt140()"></select></div>
       <div class="fg"><label>2-бейіндік пән</label><select id="u-p2" onchange="renderUbt140()"></select></div>
+      <h3>Сұрақтарды таңдау</h3>
+      <div class="ubt-modes">
+        <label><input type="radio" name="u-mode" value="manual" checked onchange="renderUbt140()"> Өзім таңдаймын</label>
+        <label><input type="radio" name="u-mode" value="random" onchange="renderUbt140()"> 🎲 Кездейсоқ, өз базамнан</label>
+      </div>
       <div id="u-info"></div>
       <button class="btn btn-p" onclick="startUbt140()">▶ Бастау</button>
+    </div>
+    <div class="card">
+      <h3>📚 Сұрақтар базам</h3>
+      <p class="sub" style="margin-bottom:12px">Өзіңіз құрған тесттердегі және осында қосқан барлық сұрақтар. Қолмен таңдау үшін сұрақтың жанындағы белгіні қойыңыз.</p>
+      <div class="grid2">
+        <div class="fg"><label>Пән бойынша сүзу</label><select id="u-bank-subject" onchange="renderUbtBank()"></select></div>
+        <div class="fg"><label>Сұрақты іздеу</label><input id="u-bank-search" placeholder="Сұрақ мәтіні" oninput="renderUbtBank()"></div>
+      </div>
+      <div id="u-bank-list"></div>
+    </div>
+    <div class="card">
+      <h3 style="margin-bottom:12px">➕ Базаға сұрақ қосу</h3>
+      <div class="fg"><label>Пән</label><select id="u-add-subject"></select></div>
+      <div class="fg"><label>Сұрақ мәтіні</label><textarea id="u-add-text" placeholder="Сұрақты жазыңыз"></textarea></div>
+      <div class="grid2">
+        <div class="fg"><label>A жауабы</label><input id="u-add-o0"></div>
+        <div class="fg"><label>B жауабы</label><input id="u-add-o1"></div>
+        <div class="fg"><label>C жауабы</label><input id="u-add-o2"></div>
+        <div class="fg"><label>D жауабы</label><input id="u-add-o3"></div>
+      </div>
+      <div class="fg"><label>Дұрыс жауап</label><select id="u-add-correct"><option value="0">A</option><option value="1">B</option><option value="2">C</option><option value="3">D</option></select></div>
+      <button class="btn btn-ok" onclick="addUbtBankQuestion()">Сұрақты сақтау</button>
     </div>
     <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
@@ -4522,27 +4559,110 @@ function startSubjectMix(key){
 // --- ҰБТ 140 формат ---
 const UBT_PROFILE=['math','physics','chemistry','biology','geography','informatics','english','kazakh','worldhistory','law'];
 function ubtSections(p1,p2){return[{key:'history',n:20},{key:'reading',n:10},{key:'mathlit',n:10},{key:p1,n:40},{key:p2,n:40}]}
+function ubtQuestionBank(){
+  if(!user)return [];
+  const seen=new Set(),out=[];
+  function add(q,subject,id,source,editable){
+    if(!q||typeof q.text!=='string'||!q.text.trim()||!Array.isArray(q.options)||q.options.length<2)return;
+    const correct=Number(q.correct);
+    if(!Number.isInteger(correct)||correct<0||correct>=q.options.length)return;
+    const key=subject+'|'+q.text.trim().toLowerCase();
+    if(seen.has(key))return;seen.add(key);
+    out.push({id,subject,text:q.text,options:q.options.slice(),correct,source,editable});
+  }
+  LS.get('ubt_qbank_'+user.id,[]).forEach(q=>add(q,q.subject,'bank:'+q.id,'Базаға қосылған',true));
+  myTests().forEach(t=>(t.questions||[]).forEach((q,i)=>add(q,t.subject,'test:'+t.id+':'+i,t.topic||'Менің тестім',false)));
+  return out;
+}
+function ubtSelectedIDs(){return LS.get('ubt_ubt140_selection_'+user.id,[])}
+function ubtMode(){return (document.querySelector('input[name="u-mode"]:checked')||{}).value||'manual'}
 function showUbt140(){
   const opts=UBT_PROFILE.map(k=>`<option value="${k}">${esc(subjName(k))}</option>`).join('');
   const a=document.getElementById('u-p1'),b=document.getElementById('u-p2');
   if(!a.options.length){a.innerHTML=opts;b.innerHTML=opts;a.value='math';b.value='physics'}
+  const subjects=Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value);
+  const bankFilter=document.getElementById('u-bank-subject'),addSubject=document.getElementById('u-add-subject');
+  if(!bankFilter.options.length){
+    bankFilter.innerHTML='<option value="">Барлық пәндер</option>'+subjects.map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('');
+    addSubject.innerHTML=subjects.map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('');
+    addSubject.value='history';
+  }
   renderUbt140();showScr('s-ubt140');
 }
 function renderUbt140(){
   const p1=document.getElementById('u-p1').value,p2=document.getElementById('u-p2').value;
-  const rows=ubtSections(p1,p2).map(s=>{const have=subjectPool(s.key).length,ok=have>=s.n;
-    return `<tr><td>${esc(subjName(s.key))}</td><td>${s.n}</td><td style="color:${ok?'var(--ok)':'var(--warn)'};font-weight:700">${have}${ok?'':' ⚠'}</td></tr>`}).join('');
-  document.getElementById('u-info').innerHTML=`<div class="tscroll"><table class="ttable"><tr><th>Пән</th><th>Керек</th><th>Базада</th></tr>${rows}</table></div><p class="sub" style="margin:8px 0 12px">⚠ — сұрақ жеткіліксіз: бар сұрақтармен ғана құрылады. Сұрақ базасы админ мақұлдаған жария тесттерден жиналады.</p>`;
+  const bank=ubtQuestionBank(),valid=new Set(bank.map(q=>q.id));
+  const selected=new Set(ubtSelectedIDs().filter(id=>valid.has(id)));
+  const manual=ubtMode()==='manual',sections=ubtSections(p1,p2);
+  const rows=sections.map(s=>{
+    const have=bank.filter(q=>q.subject===s.key).length;
+    const chosen=bank.filter(q=>q.subject===s.key&&selected.has(q.id)).length;
+    const ok=(manual?chosen:have)>=s.n;
+    return `<tr><td>${esc(subjName(s.key))}</td><td>${s.n}</td><td>${have}</td><td style="color:${ok?'var(--ok)':'var(--warn)'};font-weight:700">${manual?chosen:(Math.min(have,s.n))}${ok?'':' ⚠'}</td></tr>`;
+  }).join('');
+  document.getElementById('u-info').innerHTML=`<div class="tscroll"><table class="ttable"><tr><th>Пән</th><th>Керек</th><th>Базада</th><th>${manual?'Таңдалған':'Алынатын'}</th></tr>${rows}</table></div><p class="sub" style="margin:8px 0 12px">${p1===p2?'⚠ Екі түрлі бейіндік пән таңдаңыз.':manual?'Төмендегі сұрақтардан әр пәннің керекті санын белгілеңіз.':'Сұрақтар тек өз базаңыздан кездейсоқ таңдалады.'}</p>`;
+  renderUbtBank();
+}
+function renderUbtBank(){
+  const el=document.getElementById('u-bank-list');if(!el||!user)return;
+  const bank=ubtQuestionBank(),filter=document.getElementById('u-bank-subject').value;
+  const query=document.getElementById('u-bank-search').value.trim().toLowerCase();
+  const sections=ubtSections(document.getElementById('u-p1').value,document.getElementById('u-p2').value);
+  const allowed=new Set(sections.map(s=>s.key)),selected=new Set(ubtSelectedIDs()),manual=ubtMode()==='manual';
+  const visible=bank.filter(q=>(!filter||q.subject===filter)&&(!query||q.text.toLowerCase().includes(query)));
+  el.innerHTML=`<p class="sub" style="margin-bottom:10px">Барлығы: <b>${bank.length}</b> · Көрсетілгені: <b>${visible.length}</b> · Таңдалғаны: <b>${bank.filter(q=>selected.has(q.id)).length}</b></p>`+
+    (visible.length?visible.map(q=>{
+      const canPick=manual&&allowed.has(q.subject);
+      return `<div class="ubt-bank-row"><input type="checkbox" aria-label="140 форматқа қосу" ${selected.has(q.id)?'checked':''} ${canPick?'':'disabled'} onchange="toggleUbtQuestion(${jsq(q.id)},this.checked)">
+        <div class="info"><strong>${esc(q.text)}</strong><p>${esc(subjName(q.subject))} · ${esc(q.source)} · Дұрыс жауап: ${esc(q.options[q.correct])}</p>${!allowed.has(q.subject)?'<p>Бұл пән таңдалған ҰБТ құрамына кірмейді</p>':''}</div>
+        ${q.editable?`<button class="btn btn-d btn-sm" onclick="deleteUbtBankQuestion(${jsq(q.id)})">Өшіру</button>`:''}
+      </div>`;
+    }).join(''):'<p class="sub">Бұл сүзгі бойынша сұрақ жоқ. Жаңа сұрақ қосыңыз немесе өз тестіңізді құрыңыз.</p>');
+}
+function toggleUbtQuestion(id,on){
+  const bank=ubtQuestionBank(),q=bank.find(x=>x.id===id);if(!q)return;
+  const sections=ubtSections(document.getElementById('u-p1').value,document.getElementById('u-p2').value);
+  const section=sections.find(s=>s.key===q.subject);
+  if(!section){renderUbt140();return}
+  const selected=new Set(ubtSelectedIDs().filter(k=>bank.some(x=>x.id===k)));
+  if(on&&bank.filter(x=>x.subject===q.subject&&selected.has(x.id)).length>=section.n){alert('Бұл пәннен '+section.n+' сұрақ таңдалып қойған');renderUbt140();return}
+  if(on)selected.add(id);else selected.delete(id);
+  LS.set('ubt_ubt140_selection_'+user.id,Array.from(selected));renderUbt140();
+}
+function addUbtBankQuestion(){
+  if(!user)return;
+  const subject=document.getElementById('u-add-subject').value,text=document.getElementById('u-add-text').value.trim();
+  const options=[0,1,2,3].map(i=>document.getElementById('u-add-o'+i).value.trim());
+  const correct=Number(document.getElementById('u-add-correct').value);
+  if(!subject||!text||options.some(x=>!x)){alert('Пәнді, сұрақты және төрт жауапты түгел толтырыңыз');return}
+  const bank=LS.get('ubt_qbank_'+user.id,[]);
+  if(bank.length>=10000){alert('Базадағы сұрақ саны шегіне жетті');return}
+  if(ubtQuestionBank().some(q=>q.subject===subject&&q.text.trim().toLowerCase()===text.toLowerCase())){alert('Бұл сұрақ базада бар');return}
+  bank.push({id:'q_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,10),subject,text,options,correct});
+  LS.set('ubt_qbank_'+user.id,bank);
+  document.getElementById('u-add-text').value='';[0,1,2,3].forEach(i=>document.getElementById('u-add-o'+i).value='');
+  document.getElementById('u-bank-subject').value=subject;document.getElementById('u-bank-search').value='';
+  renderUbt140();
+}
+function deleteUbtBankQuestion(id){
+  if(!confirm('Сұрақты базаңыздан өшіру керек пе?'))return;
+  LS.set('ubt_qbank_'+user.id,LS.get('ubt_qbank_'+user.id,[]).filter(q=>'bank:'+q.id!==id));
+  LS.set('ubt_ubt140_selection_'+user.id,ubtSelectedIDs().filter(x=>x!==id));
+  renderUbt140();
 }
 function startUbt140(){
   const p1=document.getElementById('u-p1').value,p2=document.getElementById('u-p2').value;
   if(p1===p2){alert('Екі түрлі бейіндік пән таңдаңыз');return}
-  let qs=[];
-  ubtSections(p1,p2).forEach(s=>{const nm=subjName(s.key);shuffled(subjectPool(s.key)).slice(0,s.n).forEach(q=>qs.push({...q,subjectName:nm}))});
-  if(!qs.length){alert('Сұрақ базасы бос');return}
-  if(qs.length<140&&!confirm('Базада сұрақ жеткіліксіз: '+qs.length+' / 140. Жалғастыру керек пе?'))return;
+  const bank=ubtQuestionBank(),selected=new Set(ubtSelectedIDs()),manual=ubtMode()==='manual';
+  const sections=ubtSections(p1,p2),short=[];let qs=[];
+  sections.forEach(s=>{
+    const pool=bank.filter(q=>q.subject===s.key&&(!manual||selected.has(q.id)));
+    if(pool.length<s.n)short.push(subjName(s.key)+': '+pool.length+'/'+s.n);
+    (manual?pool:shuffled(pool)).slice(0,s.n).forEach(q=>qs.push({id:q.id,text:q.text,options:q.options.slice(),correct:q.correct,points:1,subjectName:subjName(s.key)}));
+  });
+  if(short.length){alert((manual?'Таңдалған сұрақтар':'Өз базаңыздағы сұрақтар')+' жеткіліксіз:\n'+short.join('\n'));return}
   st=baseState();st.questions=qs;st.subjectName='ҰБТ 140 формат';st.is140=true;
-  st.timerSeconds=Math.max(Math.round(qs.length/140*240*60),600);beginTest();
+  st.timerSeconds=240*60;beginTest();
 }
 
 // --- Ілмектер ---
