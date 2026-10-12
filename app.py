@@ -1155,6 +1155,11 @@ body.dark{background:radial-gradient(900px 420px at 0% -5%,rgba(59,130,246,.16),
 .mode::before{content:'';position:absolute;left:0;right:0;top:0;height:4px;background:var(--grad);opacity:0;transition:.2s}
 .mode:hover::before{opacity:1}
 .mode .ic{width:58px;height:58px;border-radius:24px;background:linear-gradient(135deg,rgba(37,99,235,.12),rgba(124,58,237,.16));display:flex;align-items:center;justify-content:center;margin:0 auto 10px;font-size:28px}
+.home-tools{grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:12px}
+.home-tools .mode{width:100%;font-family:inherit;color:var(--t);min-height:150px}
+.home-tools .mode h3{line-height:1.35}
+.home-tools .mode p{line-height:1.4}
+@media(max-width:520px){.home-tools{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.home-tools .mode{min-height:135px;padding:14px 8px}.home-tools .mode h3{font-size:13px}}
 .profile-bar{border-radius:0 0 var(--r) var(--r);box-shadow:0 4px 18px rgba(30,41,59,.07);border-bottom:none}
 .avatar{background:var(--grad);background-size:cover;background-position:center;box-shadow:0 2px 8px rgba(37,99,235,.3);flex-shrink:0;overflow:hidden}
 .item{border-radius:22px;box-shadow:0 2px 8px rgba(30,41,59,.04);transition:.15s}
@@ -1315,21 +1320,21 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
       <div class="mode" onclick="showCreate()"><div class="ic">➕</div><h3>Тест құру</h3><p>Атауы + сұрақтар</p></div>
       <div class="mode" onclick="showRanking()"><div class="ic">🏆</div><h3>Рейтинг</h3><p>Ортақ көшбасшылар</p></div>
     </div>
-    <div class="row">
-      <button class="btn btn-s btn-sm btn-chip" onclick="showFormulas()">📐 Формула</button>
-      <button class="btn btn-s btn-sm btn-chip" onclick="showMistakes()">❌ Қателер</button>
-      <button class="btn btn-s btn-sm btn-chip" onclick="showHistory()">📋 Тарих</button>
-      <button class="btn btn-s btn-sm btn-chip" onclick="startQuickSubject()">⚡ Жылдам</button>
-      <button class="btn btn-s btn-sm btn-chip" onclick="showFileTest()">📂 Файлдан</button>
-      <button class="btn btn-s btn-sm btn-chip" onclick="showMyProfile()">📈 График</button>
-      <button class="btn btn-s btn-sm btn-chip" onclick="showFlash()">🃏 Флеш-карталар</button>
-      <button class="btn btn-s btn-sm btn-chip" onclick="showGloss()">📖 Глоссарий</button>
-      <button class="btn btn-s btn-sm btn-chip" onclick="showBookmarks()">🔖 Таңдаулылар</button>
-      <button class="btn btn-s btn-sm btn-chip" onclick="showPlanner()">🗓 Жоспар</button>
-      <button class="btn btn-s btn-sm btn-chip" onclick="showTeacher()">🏫 Сынып / Мұғалім</button>
-      <button class="btn btn-s btn-sm btn-chip" onclick="showUbt140()">🎓 140 формат</button>
-      <button class="btn btn-w btn-sm btn-chip" onclick="openContactFromApp()">💬 Админге</button>
-      <button class="btn btn-w btn-sm btn-chip" id="admin-btn" style="display:none" onclick="showAdmin()">🛠 Админ</button>
+    <div class="grid2 home-tools">
+      <button class="mode" onclick="showFormulas()"><span class="ic">📐</span><h3>Формула</h3><p>Формулаларды қарау</p></button>
+      <button class="mode" onclick="showMistakes()"><span class="ic">❌</span><h3>Қателер</h3><p>Қате жауаптар</p></button>
+      <button class="mode" onclick="showHistory()"><span class="ic">📋</span><h3>Тарих</h3><p>Тест нәтижелері</p></button>
+      <button class="mode" onclick="startQuickSubject()"><span class="ic">⚡</span><h3>Жылдам</h3><p>Жылдам тест</p></button>
+      <button class="mode" onclick="showFileTest()"><span class="ic">📂</span><h3>Файлдан</h3><p>Файлдан тест ашу</p></button>
+      <button class="mode" onclick="showMyProfile()"><span class="ic">📈</span><h3>График</h3><p>Үлгерім көрсеткіші</p></button>
+      <button class="mode" onclick="showFlash()"><span class="ic">🃏</span><h3>Флеш-карталар</h3><p>Қайталауға арналған</p></button>
+      <button class="mode" onclick="showGloss()"><span class="ic">📖</span><h3>Глоссарий</h3><p>Терминдер мен ұғымдар</p></button>
+      <button class="mode" onclick="showBookmarks()"><span class="ic">🔖</span><h3>Таңдаулылар</h3><p>Сақталған сұрақтар</p></button>
+      <button class="mode" onclick="showPlanner()"><span class="ic">🗓</span><h3>Жоспар</h3><p>Дайындық жоспары</p></button>
+      <button class="mode" onclick="showTeacher()"><span class="ic">🏫</span><h3>Сынып / Мұғалім</h3><p>Сыныппен жұмыс</p></button>
+      <button class="mode" onclick="showUbt140()"><span class="ic">🎓</span><h3>140 формат</h3><p>ҰБТ үлгісіндегі тест</p></button>
+      <button class="mode" onclick="openContactFromApp()"><span class="ic">💬</span><h3>Админге</h3><p>Хабарлама жазу</p></button>
+      <button class="mode" id="admin-btn" style="display:none" onclick="showAdmin()"><span class="ic">🛠</span><h3>Админ</h3><p>Басқару панелі</p></button>
     </div>
   </div>
 </div>
@@ -2038,7 +2043,7 @@ function refreshProfileBar(){
   document.getElementById('p-stars').textContent=starStr(s.stars||0);
   const v=document.getElementById('p-verified');
   if(v){v.style.display=s.verified?'block':'none'}
-  document.getElementById('admin-btn').style.display=user.isAdmin?'inline-flex':'none';
+  document.getElementById('admin-btn').style.display=user.isAdmin?'block':'none';
 }
 function enterApp(){
   refreshProfileBar();
