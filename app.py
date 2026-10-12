@@ -1094,7 +1094,7 @@ st.markdown("""<style>
 #MainMenu,footer,header{visibility:hidden}
 </style>
 <style id="ubt-manage-css">
-[data-testid="manage-app-button"],[class*="_terminalButton_"],[class*="_viewerBadge_"],[class*="viewerBadge"],[class*="_profileContainer_"],.stAppDeployButton,[data-testid="stToolbar"],[data-testid="stDecoration"],[data-testid="stStatusWidget"]{display:none!important}
+[data-testid="manage-app-button"],[data-testid*="manage-app"],[data-testid*="manageApp"],[aria-label*="Manage app" i],[title*="Manage app" i],[class*="_terminalButton_"],[class*="_viewerBadge_"],[class*="viewerBadge"],[class*="_profileContainer_"],.stAppDeployButton,[data-testid="stToolbar"],[data-testid="stDecoration"],[data-testid="stStatusWidget"]{display:none!important}
 html,body,.stApp,[data-testid="stAppViewContainer"],[data-testid="stMain"],section.main{margin:0!important;padding:0!important}
 [data-testid="stHeader"],[data-testid="stAppHeader"]{display:none!important;height:0!important}
 .block-container,[data-testid="stMainBlockContainer"],[data-testid="stAppViewBlockContainer"]{padding:0!important;max-width:100%!important;margin:0!important}
@@ -1500,6 +1500,33 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" onload="window.mathScreen&&mathScreen()"></script>
+<script>
+// Жүйе мәзірін бастапқы жүктелуден бастап жасыру; админ бетінде ғана ашу.
+(function(){
+  var hidden=new WeakMap(),documents=[];
+  try{documents.push(window.parent.document)}catch(e){}
+  try{if(window.top!==window.parent)documents.push(window.top.document)}catch(e){}
+  function sync(){
+    documents.forEach(function(d){
+      try{
+        d.querySelectorAll('button,a,[role="button"]').forEach(function(el){
+          var label=(el.getAttribute('aria-label')||el.getAttribute('title')||el.textContent||'').trim().replace(/\s+/g,' ').toLowerCase();
+          if(!/^manage (this )?app\b/.test(label))return;
+          if(window.__ubtManageVisible){
+            if(hidden.has(el)){var prev=hidden.get(el);if(prev.value)el.style.setProperty('display',prev.value,prev.priority);else el.style.removeProperty('display');hidden.delete(el)}
+          }else if(!hidden.has(el)){
+            hidden.set(el,{value:el.style.getPropertyValue('display'),priority:el.style.getPropertyPriority('display')});
+            el.style.setProperty('display','none','important');
+          }
+        });
+      }catch(e){}
+    });
+  }
+  window.__ubtManageVisible=false;window.__ubtManageSync=sync;
+  sync();
+  documents.forEach(function(d){try{var queued=false;new MutationObserver(function(){if(queued)return;queued=true;setTimeout(function(){queued=false;sync()},0)}).observe(d.documentElement,{childList:true,subtree:true})}catch(e){}});
+})();
+</script>
 </head>
 <body>
 
@@ -4823,11 +4850,13 @@ function pinFrame(){
 pinFrame();setInterval(pinFrame,1500);window.addEventListener('resize',pinFrame);
 
 // «Manage app» батырмасы: әдепкіде жасырын, тек админ панелінде ғана көрінеді
-const MANAGE_SEL='[data-testid="manage-app-button"],[class*="_terminalButton_"],[class*="_viewerBadge_"],[class*="viewerBadge"],[class*="_profileContainer_"],.stAppDeployButton,[data-testid="stToolbar"],[data-testid="stDecoration"],[data-testid="stStatusWidget"]';
+const MANAGE_SEL='[data-testid="manage-app-button"],[data-testid*="manage-app"],[data-testid*="manageApp"],[aria-label*="Manage app" i],[title*="Manage app" i],[class*="_terminalButton_"],[class*="_viewerBadge_"],[class*="viewerBadge"],[class*="_profileContainer_"],.stAppDeployButton,[data-testid="stToolbar"],[data-testid="stDecoration"],[data-testid="stStatusWidget"]';
 function chromeSync(){
   syncAdminClass();updWatermark();
   const act=document.querySelector('.screen.active');
   const show=isAdminNow()&&act&&act.id==='s-admin';
+  window.__ubtManageVisible=!!show;
+  if(window.__ubtManageSync)window.__ubtManageSync();
   const docs=[];
   try{docs.push(window.parent.document)}catch(e){}
   try{if(window.top!==window.parent)docs.push(window.top.document)}catch(e){}
