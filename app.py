@@ -172,7 +172,7 @@ def _store():
         data = {}
     state = {"db": data, "sb": _sb_conf(), "ok": False, "err": "", "dirty": set(), "deleted": set(),
              "lock": threading.RLock(), "flush_lock": threading.Lock(), "retry_t": 0.0,
-             "sessions": {}, "fails": {}, "reg": {}}
+             "sessions": {}, "chat_claims": {}, "fails": {}, "reg": {}}
     _remote_sync(state)
     _migrate_start(state)
     return state
@@ -392,6 +392,18 @@ def _is_student(state, uid):
                for p in _profiles(state).values())
 
 
+def _guest_chat(state, token):
+    if not isinstance(token, str) or not token:
+        return None
+    claim = state["chat_claims"].get(token)
+    if not claim:
+        return None
+    if claim["exp"] < time.time() or not _is_student(state, claim["uid"]):
+        state["chat_claims"].pop(token, None)
+        return None
+    return claim
+
+
 # ---------------------------------------------------------------- қате әрекеттерді шектеу
 def _locked(state, key):
     now = time.time()
@@ -536,9 +548,20 @@ def _handle_req(state, sid, rq):
         return {"ok": True}
 
     if typ == "chat_claim":
-        if not sess or sess["admin"] or not _is_student(state, sess["uid"]):
-            return {"ok": False, "msg": "Админге тек аккаунтына кірген оқушылар жаза алады"}
-        return {"ok": True, "login": sess["name"]}
+        login = str(d.get("login") or "").strip()[:60]
+        with state["lock"]:
+            if sess and not sess["admin"] and _is_student(state, sess["uid"]):
+                return {"ok": True, "login": sess["name"]}
+            prof = _profiles(state).get(login.lower())
+            if not isinstance(prof, dict) or prof.get("role") == "teacher":
+                return {"ok": False, "msg": "Мұндай оқушы логині тіркелмеген. Алдымен тіркеліңіз."}
+            if len(state["chat_claims"]) > 5000:
+                state["chat_claims"] = {k: c for k, c in state["chat_claims"].items() if c["exp"] > time.time()}
+            token = secrets.token_urlsafe(32)
+            messages = _jload(state["db"].get("ubt_chat", "[]"), list, [])
+            state["chat_claims"][token] = {"name": prof["name"], "uid": prof["id"],
+                                            "exp": time.time() + 3600, "start": len(messages)}
+        return {"ok": True, "login": prof["name"], "chatToken": token}
 
     if typ == "admin_setpass":
         if not (sess and sess["admin"]):
@@ -612,15 +635,16 @@ def _process_reqs(state, sid, reqs):
 
 
 # ---------------------------------------------------------------- жазу құқығын тексеру
-def _merge_chat(state, sess, v):
-    if not sess:
+def _merge_chat(state, sess, v, chat_token=""):
+    claim = None if sess else _guest_chat(state, chat_token)
+    if not sess and not claim:
         return None
     inc = _jload(v, list, None)
     if inc is None:
         return None
     if sess and sess["admin"]:
         return _jdump([m for m in inc if isinstance(m, dict)])
-    if not _is_student(state, sess["uid"]):
+    if sess and not _is_student(state, sess["uid"]):
         return None
     stored = _jload(state["db"].get("ubt_chat", "[]"), list, [])
     ids = {m.get("id") for m in stored if isinstance(m, dict)}
@@ -633,7 +657,7 @@ def _merge_chat(state, sess, v):
             continue
         if not isinstance(text, str) or not text.strip() or len(text) > 2000:
             continue
-        frm = sess["name"]
+        frm = sess["name"] if sess else claim["name"]
         add.append({"id": mid, "from": frm, "thread": frm.strip().lower(), "text": text, "role": "user",
                     "time": str(m.get("time") or "")[:40], "read": False})
         ids.add(mid)
@@ -762,10 +786,10 @@ def _merge_tests(state, sess, v):
     return _jdump(out)
 
 
-def _authorize(state, sess, k, v):
+def _authorize(state, sess, k, v, chat_token=""):
     """Жаңа мәнді қайтарады (түзетілген болуы мүмкін) немесе None (жазуға рұқсат жоқ)."""
     if k == "ubt_chat":
-        return _merge_chat(state, sess, v)
+        return _merge_chat(state, sess, v, chat_token)
     if not sess:
         return None
     if k == "ubt_profiles":
@@ -808,7 +832,7 @@ def _apply_ops(res):
                 continue
             k, v = op.get("key"), op.get("value")
             if _key_ok(k) and isinstance(v, str) and len(v) < 8_000_000:
-                nv = _authorize(state, _session(state, op.get("tok")), k, v)
+                nv = _authorize(state, _session(state, op.get("tok")), k, v, op.get("chat_tok"))
                 if nv is None:
                     print("[ubt-sec] write rejected:", k[:60])
                 elif db.get(k) != nv:
@@ -829,16 +853,18 @@ def _apply_ops(res):
     return new
 
 
-def _chat_for(raw, sess, claim):
+def _chat_for(raw, sess, claim, state):
     if sess and sess["admin"]:
         return raw if isinstance(raw, str) else "[]"
-    if not sess:
+    guest = None if sess else _guest_chat(state, claim)
+    if not sess and not guest:
         return "[]"
-    key = sess["name"].strip().lower()
+    key = (sess["name"] if sess else guest["name"]).strip().lower()
     if not key:
         return "[]"
     out = []
-    for m in _jload(raw, list, []) if isinstance(raw, str) else []:
+    messages = _jload(raw, list, []) if isinstance(raw, str) else []
+    for m in (messages[guest["start"]:] if guest else messages):
         if not isinstance(m, dict):
             continue
         who = m.get("to") if m.get("role") == "admin" else m.get("from")
@@ -857,7 +883,8 @@ def _snapshot(tok="", claim=""):
         teacher = bool(sess and not sess["admin"] and _is_teacher(state, sess["uid"]))
     for k in _SERVER_ONLY:
         db.pop(k, None)
-    chat = _chat_for(db.get("ubt_chat"), sess, claim)
+    with state["lock"]:
+        chat = _chat_for(db.get("ubt_chat"), sess, claim, state)
     if not sess:
         return {"ubt_chat": chat}
     db["ubt_chat"] = chat
@@ -1219,8 +1246,8 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
         <button class="btn btn-sm" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,.4)" onclick="closeChat()">✕</button>
       </div>
       <div id="chat-gate" style="padding:20px 16px;background:#f0f0f0">
-        <p style="margin-bottom:12px">Админге тек тіркелген оқушылар жаза алады. Алдымен аккаунтыңызға кіріңіз немесе тіркеліңіз.</p>
-        <button class="btn btn-ok" style="width:100%;margin-bottom:8px" onclick="showLoginBox()">Кіру</button>
+        <div class="fg"><label>Админге жазу үшін тіркелген логиніңізді енгізіңіз</label><input id="chat-login" placeholder="Логин" maxlength="40" style="background:#fff" onkeydown="if(event.key==='Enter')enterChat()"></div>
+        <button class="btn btn-ok" style="width:100%;margin-bottom:8px" onclick="enterChat()">Логинді тексеру және чатқа өту</button>
         <button class="btn btn-s" style="width:100%" onclick="showRegister()">Тіркелу</button>
       </div>
       <div id="chat-room" style="display:none">
@@ -1735,13 +1762,14 @@ function setAdminPass(p){}
 function authCall(type,data){
   try{return window.__bridge.call(type,data)}catch(e){return Promise.resolve({ok:false,msg:'Серверге қосылу мүмкін болмады'})}
 }
-function getChatClaim(){return (typeof chatLogin!=='undefined'&&chatLogin)?chatLogin:''}
+function getChatClaim(){return window.__chatToken||''}
 let __busy=false;
 async function guarded(fn){
   if(__busy)return;__busy=true;document.body.style.cursor='progress';
   try{await fn()}finally{__busy=false;document.body.style.cursor=''}
 }
 async function startSession(r){
+  window.__chatToken='';chatLogin=null;
   window.__token=r.token;user=r.user;
   LS.set('ubt_current',Object.assign({},r.user,{token:r.token}));
   try{await window.__bridge.refresh()}catch(e){}
@@ -1776,11 +1804,14 @@ function showContactAdmin(){
   if(user&&!user.isAdmin&&user.role!=='teacher'&&window.__token){
     chatLogin=user.name;
     openChatRoom();
+  }else if(chatLogin&&window.__chatToken){
+    openChatRoom();
   }else{
     chatLogin=null;
     document.getElementById('chat-room').style.display='none';
     document.getElementById('chat-gate').style.display='block';
     document.getElementById('chat-sub').textContent='ҰБТ+ қолдау';
+    document.getElementById('chat-login').value='';
   }
 }
 function openContactFromApp(){
@@ -1789,9 +1820,16 @@ function openContactFromApp(){
   showScr('s-login');showContactAdmin();
 }
 function enterChat(){
-  if(!user||user.isAdmin||user.role==='teacher'||!window.__token){alert('Админге тек аккаунтына кірген оқушылар жаза алады');return}
-  chatLogin=user.name;
-  openChatRoom();
+  const login=document.getElementById('chat-login').value.trim();
+  if(login.length<2){alert('Тіркелген логиніңізді жазыңыз');return}
+  guarded(async()=>{
+    const r=await authCall('chat_claim',{login:login});
+    if(!r.ok){alert(r.msg||'Логин табылмады');return}
+    chatLogin=r.login;
+    window.__chatToken=r.chatToken||'';
+    try{await window.__bridge.refresh()}catch(e){}
+    openChatRoom();
+  });
 }
 function openChatRoom(){
   document.getElementById('chat-gate').style.display='none';
@@ -1800,7 +1838,7 @@ function openChatRoom(){
   updChatBar();renderChatMessages();
 }
 function closeChat(){
-  chatLogin=null;showLoginBox();
+  chatLogin=null;window.__chatToken='';showLoginBox();
   if(user&&!user.isAdmin)showScr('s-home');
 }
 function findUserByLogin(login){
@@ -1845,9 +1883,8 @@ function threadKey(x){return String(x||'').trim().toLowerCase()}
 function threadOf(m){return threadKey(m.role==='admin'?m.to:m.from)}
 function newMsgId(){return 'm_'+Date.now()+'_'+Math.random().toString(36).slice(2,7)}
 function sendChatMsg(){
-  if(!user||user.isAdmin||user.role==='teacher'||!window.__token){alert('Админге тек аккаунтына кірген оқушылар жаза алады');return}
-  chatLogin=user.name;
-  if(!chatLogin){alert('Алдымен логиніңізді жазыңыз');return}
+  if(!chatLogin||(!window.__chatToken&&!(user&&!user.isAdmin&&user.role!=='teacher'&&window.__token))){alert('Алдымен тіркелген логиніңізді тексеріңіз');return}
+  if(user&&window.__token)chatLogin=user.name;
   const text=document.getElementById('chat-text').value.trim();
   if(!text){alert('Хабарлама жазыңыз');return}
   const msgs=getChatMessages();
@@ -1967,7 +2004,7 @@ function adminDelThread(key){
 }
 function doLogout(){
   try{authCall('logout',{})}catch(e){}
-  window.__token='';LS.set('ubt_current',null);user=null;chatLogin=null;
+  window.__token='';window.__chatToken='';LS.set('ubt_current',null);user=null;chatLogin=null;
   try{window.__bridge.clearLocal()}catch(e){}
   showLoginBox();showScr('s-login')
 }
@@ -3027,7 +3064,7 @@ function shuffleOpts(q){
 function kickedOut(){
   if(!user)return;
   const adm=!!user.isAdmin;
-  window.__token='';LS.set('ubt_current',null);user=null;chatLogin=null;
+  window.__token='';window.__chatToken='';LS.set('ubt_current',null);user=null;chatLogin=null;
   try{lockEnd()}catch(e){}
   try{window.__bridge.clearLocal()}catch(e){}
   try{showLoginBox()}catch(e){}
@@ -4612,7 +4649,7 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
   function push(items){
     items.forEach(function(it){
       n++;unacked=unacked.filter(function(o){return o.key!==it.key});
-      unacked.push({n:n,key:it.key,value:it.value,tok:window.__token||''});pend[it.key]=n;
+      unacked.push({n:n,key:it.key,value:it.value,tok:window.__token||'',chat_tok:window.__chatToken||''});pend[it.key]=n;
     });
     if(flushT)clearTimeout(flushT);
     flushT=setTimeout(function(){flushT=null;send()},250);
