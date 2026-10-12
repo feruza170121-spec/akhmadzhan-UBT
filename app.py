@@ -3215,7 +3215,7 @@ function saveAllTests(a){
   if(user) a.filter(t=>t.authorId===user.id&&t.subject).forEach(t=>rememberQuestionsInBank(t.subject,t.questions||[],'Тест: '+(t.topic||'')));
 }
 function myTests(){return allTests().filter(t=>t.authorId===user.id)}
-function publicTests(){return allTests().filter(t=>t.authorId!=='admin'&&(t.isPublic||t.status==='approved')&&!t.classId&&t.questions.length>0)}
+function publicTests(){return allTests().filter(t=>(user&&user.isAdmin||t.authorId!=='admin')&&(t.isPublic||t.status==='approved')&&!t.classId&&t.questions.length>0)}
 function showFormulas(){
   renderFormulas();showScr('s-formulas');
 }
@@ -6439,9 +6439,15 @@ function showPublicTests(subj){
     h+=`<div class="card"><h3>🎲 ${esc(nm)}: аралас тест</h3><p class="sub" style="margin:4px 0 10px">Осы пәннің барлық жария тесттерінен кездейсоқ ${Math.min(20,n)} сұрақ (қолжетімді: ${n})</p><button class="btn btn-p btn-sm" onclick="startSubjectMix(${jsq(pubSubj)})">▶ Бастау</button></div>`;
   }
   if(!tests.length)h+='<div class="empty"><div class="ic">🌐</div><p>Әзірге жария тест жоқ.<br>Тест құрып, «Жариялауға жіберу» белгілеңіз — админ мақұлдаған соң осында шығады.</p></div>';
-  else h+=tests.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic)}</h4><p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ${t.timerMin?' · ⏱ '+t.timerMin+' мин':''}${t.limit?' · лимит: '+t.limit:''} · Автор: ${esc(t.authorName||'Аноним')}${t.desc?' · '+esc(t.desc):''}</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest(${jsq(t.id)})">Тапсыру</button>${t.isPublic===true&&t.status==='approved'&&t.adminApproved===true?`<button class="btn btn-s btn-sm" onclick="importPublicTestToBank(${jsq(t.id)})">📥 Сұрақтарды базаға жүктеу</button>`:''}</div></div>`).join('');
+  else h+=tests.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic)}</h4><p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ${t.timerMin?' · ⏱ '+t.timerMin+' мин':''}${t.limit?' · лимит: '+t.limit:''} · Автор: ${esc(t.authorName||'Аноним')}${t.desc?' · '+esc(t.desc):''}</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest(${jsq(t.id)})">Тапсыру</button>${t.isPublic===true&&t.status==='approved'&&t.adminApproved===true?`<button class="btn btn-s btn-sm" onclick="importPublicTestToBank(${jsq(t.id)})">📥 Сұрақтарды базаға жүктеу</button>`:''}${user&&user.isAdmin?`<button class="btn btn-d btn-sm" onclick="adminDelPublished(${jsq(t.id)})">🗑 Өшіру</button>`:''}</div></div>`).join('');
   list.innerHTML=h;
   showScr('s-public');
+}
+function adminDelPublished(id){
+  if(!user||!user.isAdmin)return;
+  if(!confirm('Бұл жарияланған тестті біржола өшіру керек пе?'))return;
+  saveAllTests(allTests().filter(t=>t.id!==id));
+  showPublicTests(pubSubj);
 }
 function importPublicTestToBank(id){
   if(!user){alert('Сұрақтарды базаңызға жүктеу үшін жүйеге кіріңіз.');return}
