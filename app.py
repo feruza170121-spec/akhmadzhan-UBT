@@ -3966,11 +3966,7 @@ function renderQ(){
   if(!feedback){feedback=document.createElement('div');feedback.id='ubt-answer-feedback';document.getElementById('opts').after(feedback)}
   feedback.innerHTML=revealed?`<div class="ubt-feedback ${chosen===q.correct?'yes':'no'}">${chosen===q.correct?'✅ Дұрыс жауап!':'❌ Қате жауап.'} <span>Дұрысы: <b>${L[q.correct]||''}) ${esc(q.options[q.correct]||'')}</b></span></div>`:'';
   const aiArea=document.getElementById('ubt-ai-area');
-  if(aiArea){
-    const answered=chosen!==undefined;
-    aiArea.innerHTML=answered?'<button class="ubt-ai-btn" onclick="ubtExplainCurrent()">🧠 AI мұғалімнен түсіндіру сұрау</button><div id="ubt-ai-response" class="ubt-ai-panel" style="display:none"></div>':'';
-    if(answered&&st.aiCache&&st.aiCache[q.id]){const panel=document.getElementById('ubt-ai-response');panel.style.display='block';panel.textContent=st.aiCache[q.id]}
-  }
+  if(aiArea)aiArea.innerHTML=''; // AI тек нәтижені талдағанда көрінеді
   document.getElementById('prev').disabled=st.currentIndex===0;
   document.getElementById('next').textContent=st.currentIndex===st.questions.length-1?'Аяқтау':'Келесі →';
   updNav();updateProg();
@@ -4927,19 +4923,20 @@ function lesSave(){
 function lesDel(id){if(!user||!user.isAdmin)return;if(!confirm('Сабақты өшіру керек пе?'))return;saveLessons(allLessons().filter(x=>x.id!==id));renderLessons()}
 
 function selOpt(i){const q=st.questions[st.currentIndex];if(st.instantFeedback&&st.answers[q.id]!==undefined)return;st.answers[q.id]=i;renderQ()}
-async function ubtExplainCurrent(){
+async function ubtExplainReview(index){
   if(!user){alert('Алдымен кіріңіз');return}
-  const q=st.questions[st.currentIndex],chosen=st.answers[q.id];
-  if(!Number.isInteger(chosen)){alert('Алдымен жауап таңдаңыз');return}
-  const panel=document.getElementById('ubt-ai-response');
+  const q=st.questions[index];if(!q)return;
+  const panel=document.getElementById('ubt-ai-review-'+index);
   if(!panel)return;
   panel.style.display='block';
-  if(st.aiCache&&st.aiCache[q.id]){panel.textContent=st.aiCache[q.id];return}
+  st.aiCache=st.aiCache||{};
+  if(st.aiCache[q.id]){panel.textContent=st.aiCache[q.id];return}
   panel.textContent='AI мұғалім түсіндіріп жатыр…';
+  const chosen=Number.isInteger(st.answers[q.id])?st.answers[q.id]:-1;
   const r=await authCall('ai_explain',{question:q.text,options:q.options,chosen,correct:q.correct});
-  const result=r.ok?r.text:(r.msg||'Қызмет қолжетімсіз');
-  st.aiCache=st.aiCache||{};if(r.ok)st.aiCache[q.id]=result;
-  if(document.getElementById('ubt-ai-response')===panel)panel.textContent=result;
+  const result=r.ok?r.text:(r.msg||'AI түсіндірмесі уақытша қолжетімсіз');
+  if(r.ok)st.aiCache[q.id]=result;
+  if(document.getElementById('ubt-ai-review-'+index)===panel)panel.textContent=result;
 }
 
 function togFlag(){const q=st.questions[st.currentIndex];st.flags[q.id]=!st.flags[q.id];renderQ()}
@@ -5007,7 +5004,9 @@ function reviewAns(){
   document.getElementById('rev-list').innerHTML=st.questions.map((q,i)=>{const ua=st.answers[q.id],ok=ua===q.correct;
     return `<div class="rev ${ok?'ok':'bad'}"><div class="rh"><span>Сұрақ ${i+1}</span><span>${ok?'✓ Дұрыс':'✗ Қате'}</span></div>
       <div class="rq">${esc(q.text)}</div>${qMedia(q)}${ua!==undefined?`<div class="ra u">Сіз: <b>${L[ua]}) ${esc(q.options[ua])}</b></div>`:'<div class="ra u">Жауап жоқ</div>'}
-      ${!ok?`<div class="ra c">Дұрыс: <b>${L[q.correct]}) ${esc(q.options[q.correct])}</b></div>`:''}</div>`}).join('');
+      ${!ok?`<div class="ra c">Дұрыс: <b>${L[q.correct]}) ${esc(q.options[q.correct])}</b></div>`:''}
+      <button class="ubt-ai-btn" onclick="ubtExplainReview(${i})">🧠 AI мұғалімнен түсіндіру сұрау</button>
+      <div id="ubt-ai-review-${i}" class="ubt-ai-panel" style="display:none"></div></div>`}).join('');
   showScr('s-rev');
 }
 function showHistory(){
