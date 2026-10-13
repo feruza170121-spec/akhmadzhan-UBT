@@ -452,52 +452,6 @@ def _handle_req(state, sid, rq):
     d = rq.get("data") if isinstance(rq.get("data"), dict) else {}
     sess = _session(state, rq.get("tok"))
 
-    if typ == "ai_explain":
-        if not sess:
-            return {"ok": False, "msg": "Алдымен жүйеге кіріңіз"}
-        api_key = _secret("OPENAI_API_KEY")
-        if not api_key:
-            return {"ok": False, "msg": "AI мұғалім үшін Streamlit Secrets ішіне OPENAI_API_KEY енгізіңіз"}
-        question = str(d.get("question") or "")[:1200]
-        options = d.get("options")
-        chosen = d.get("chosen")
-        correct = d.get("correct")
-        if not question or not isinstance(options, list) or not 2 <= len(options) <= 5 or any(not isinstance(o, str) for o in options) or type(chosen) is not int or type(correct) is not int or not (-1 <= chosen < len(options) and 0 <= correct < len(options)):
-            return {"ok": False, "msg": "Сұрақ мәліметі жарамсыз"}
-        with state["lock"]:
-            key = "ai:" + sess["uid"]
-            now = time.time()
-            recent = [t for t in state["fails"].get(key, []) if now - t < 3600]
-            if len(recent) >= 20:
-                return {"ok": False, "msg": "AI сұрау лимиті: сағатына 20 сұрақ"}
-            recent.append(now)
-            state["fails"][key] = recent
-        prompt = ("Қазақ тілінде қысқа әрі нақты түсіндір. Бұл ҰБТ жаттығу сұрағы. "
-                  "Дұрыс жауаптың себебін түсіндір. Оқушы жауап бермесе, жауап бермегенін ескер; жауап берсе, таңдауының неге дұрыс не қате екенін түсіндір. "
-                  "Берілген жауап кілтіне күмән болса, оны ашық айт. 120 сөзден аспасын.\n"
-                  + "Сұрақ: " + question + "\nНұсқалар: " + json.dumps(options, ensure_ascii=False)
-                  + "\nОқушы жауабы: " + (options[chosen][:300] if chosen >= 0 else "Оқушы жауап бермеген")
-                  + "\nКілт бойынша дұрыс жауап: " + options[correct][:300])
-        payload = {"model": os.environ.get("UBT_AI_MODEL", "gpt-4.1-mini"),
-                   "messages": [{"role": "user", "content": prompt}], "max_tokens": 330, "temperature": 0.3}
-        try:
-            req = urllib.request.Request("https://api.openai.com/v1/chat/completions",
-                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"}, method="POST")
-            with urllib.request.urlopen(req, timeout=22) as resp:
-                answer = json.load(resp)["choices"][0]["message"]["content"]
-            return {"ok": True, "text": str(answer)[:2500]}
-        except urllib.error.HTTPError as e:
-            code = e.code
-            print("[ubt-ai] HTTP", code)
-            messages = {401: "AI API кілті жарамсыз. Streamlit Secrets тексеріңіз.",
-                        403: "AI API рұқсаты шектелген. Жоба құқықтарын тексеріңіз.",
-                        429: "AI API лимиті немесе балансы таусылған. OpenAI Billing бөлімін тексеріңіз."}
-            return {"ok": False, "msg": messages.get(code, "AI сервері жауап бермеді (HTTP %s)." % code)}
-        except Exception as e:
-            print("[ubt-ai]", type(e).__name__)
-            return {"ok": False, "msg": "AI серверіне қосылу мүмкін болмады. Кейін қайталап көріңіз."}
-
     if typ == "admin_assign_test":
         if not (sess and sess["admin"]):
             return {"ok": False, "msg": "Рұқсат жоқ"}
@@ -1950,11 +1904,8 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
 @media(max-width:768px){.wrap{padding:20px 13px 105px}.card{padding:17px}.item{padding:13px 14px}.mode{padding:19px 12px}.qc{padding:19px}.tmain{padding:13px}.hdr h1{font-size:26px}.stat{padding:12px}.btn{padding:10px 14px}}
 @media(prefers-reduced-motion:reduce){.btn,.mode,.item{transition:none!important;animation:none!important}}
 
-/* AI мұғалім және сертификат */
-.ubt-ai-panel{margin-top:13px;padding:15px;border-radius:17px;background:linear-gradient(135deg,#eef2ff,#f5f3ff);border:1px solid #c7d2fe;color:#312e81;line-height:1.65;font-size:13px;white-space:pre-wrap}
-.ubt-ai-btn{margin-top:12px;background:linear-gradient(110deg,#4f46e5,#7c3aed);color:white;border:0;border-radius:13px;padding:11px 16px;font-weight:700;cursor:pointer}
+/* Сертификат */
 .ubt-cert-btn{background:linear-gradient(110deg,#047857,#0d9488);color:#fff}
-body.dark .ubt-ai-panel{background:#252344;color:#ddd6fe;border-color:#51468a}
 /* ===== END VISUAL REFRESH ===== */
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
@@ -2525,7 +2476,6 @@ body.dark .ubt-ai-panel{background:#252344;color:#ddd6fe;border-color:#51468a}
         <div class="qt" id="qtext"></div>
         <div id="qmedia"></div>
         <div class="opts" id="opts"></div>
-        <div id="ubt-ai-area"></div>
       </div>
       <div class="navb">
         <button class="btn btn-s" id="prev" onclick="prevQ()">← Алдыңғы</button>
@@ -3972,8 +3922,6 @@ function renderQ(){
   let feedback=document.getElementById('ubt-answer-feedback');
   if(!feedback){feedback=document.createElement('div');feedback.id='ubt-answer-feedback';document.getElementById('opts').after(feedback)}
   feedback.innerHTML=revealed?`<div class="ubt-feedback ${chosen===q.correct?'yes':'no'}">${chosen===q.correct?'✅ Дұрыс жауап!':'❌ Қате жауап.'} <span>Дұрысы: <b>${L[q.correct]||''}) ${esc(q.options[q.correct]||'')}</b></span></div>`:'';
-  const aiArea=document.getElementById('ubt-ai-area');
-  if(aiArea)aiArea.innerHTML=''; // AI тек нәтижені талдағанда көрінеді
   document.getElementById('prev').disabled=st.currentIndex===0;
   document.getElementById('next').textContent=st.currentIndex===st.questions.length-1?'Аяқтау':'Келесі →';
   updNav();updateProg();
@@ -4930,27 +4878,6 @@ function lesSave(){
 function lesDel(id){if(!user||!user.isAdmin)return;if(!confirm('Сабақты өшіру керек пе?'))return;saveLessons(allLessons().filter(x=>x.id!==id));renderLessons()}
 
 function selOpt(i){const q=st.questions[st.currentIndex];if(st.instantFeedback&&st.answers[q.id]!==undefined)return;st.answers[q.id]=i;renderQ()}
-async function ubtExplainReview(index){
-  if(!user){alert('Алдымен кіріңіз');return}
-  const q=st.questions[index];if(!q)return;
-  const panel=document.getElementById('ubt-ai-review-'+index);
-  if(!panel)return;
-  panel.style.display='block';
-  st.aiCache=st.aiCache||{};
-  if(st.aiCache[q.id]){panel.textContent=st.aiCache[q.id];return}
-  if(panel.dataset.loading==='1')return;
-  panel.dataset.loading='1';
-  panel.textContent='AI мұғалім түсіндіріп жатыр…';
-  const chosen=Number.isInteger(st.answers[q.id])?st.answers[q.id]:-1;
-  let r;
-  try{r=await authCall('ai_explain',{question:q.text,options:q.options,chosen,correct:q.correct});}
-  catch(e){r={ok:false,msg:'AI серверіне қосылу мүмкін болмады'};}
-  panel.dataset.loading='0';
-  const result=r.ok?r.text:(r.msg||'AI түсіндірмесі уақытша қолжетімсіз');
-  if(r.ok)st.aiCache[q.id]=result;
-  if(document.getElementById('ubt-ai-review-'+index)===panel)panel.textContent=result;
-}
-
 function togFlag(){const q=st.questions[st.currentIndex];st.flags[q.id]=!st.flags[q.id];renderQ()}
 function nextQ(){if(st.currentIndex<st.questions.length-1){st.currentIndex++;renderQ()}else finishTest()}
 function prevQ(){if(st.currentIndex>0){st.currentIndex--;renderQ()}}
@@ -5017,8 +4944,7 @@ function reviewAns(){
     return `<div class="rev ${ok?'ok':'bad'}"><div class="rh"><span>Сұрақ ${i+1}</span><span>${ok?'✓ Дұрыс':'✗ Қате'}</span></div>
       <div class="rq">${esc(q.text)}</div>${qMedia(q)}${ua!==undefined?`<div class="ra u">Сіз: <b>${L[ua]}) ${esc(q.options[ua])}</b></div>`:'<div class="ra u">Жауап жоқ</div>'}
       ${!ok?`<div class="ra c">Дұрыс: <b>${L[q.correct]}) ${esc(q.options[q.correct])}</b></div>`:''}
-      <button class="ubt-ai-btn" onclick="ubtExplainReview(${i})">🧠 AI мұғалімнен түсіндіру сұрау</button>
-      <div id="ubt-ai-review-${i}" class="ubt-ai-panel" style="display:none"></div></div>`}).join('');
+      </div>`}).join('');
   showScr('s-rev');
 }
 function showHistory(){
