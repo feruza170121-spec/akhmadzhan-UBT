@@ -1867,6 +1867,28 @@ body.has-app-header{padding-top:var(--app-header-height,76px)}
 .ro-note{background:linear-gradient(135deg,#eff6ff,#f5f3ff);border-style:dashed;font-size:13px;text-align:center;color:#334155}
 body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd5e1}
 @media(max-width:768px){.mode{padding:16px 10px}.mode .ic{width:48px;height:48px;font-size:24px}}
+/* ===== UBT PLUS 2026 VISUAL REFRESH — CSS ONLY ===== */
+:root{--p:#6257ed;--pd:#4f46d5;--bg:#f5f6fc;--c:#fff;--t:#18213a;--m:#68758d;--b:#e6e9f3;--grad:linear-gradient(125deg,#6257ed,#9460f3);--ok:#159d73;--err:#e04e65;--warn:#f0a22c}
+body{background:radial-gradient(ellipse at 12% 0%,#eae8ff 0%,transparent 34%),radial-gradient(ellipse at 92% 14%,#e5f4ff 0%,transparent 32%),var(--bg);font-family:'Inter',system-ui,sans-serif;letter-spacing:-.012em}
+.wrap{max-width:980px;padding:38px 22px 120px}.wrap.wide{max-width:1320px}
+.hdr{margin-bottom:30px}.hdr h1{font-size:clamp(25px,3vw,35px);font-weight:800;letter-spacing:-.045em}.hdr h2{font-size:clamp(21px,2.5vw,29px);font-weight:800;letter-spacing:-.035em}
+.logo{width:80px;height:80px;border-radius:25px;background:var(--grad);box-shadow:0 14px 32px #6257ed45}
+.card,.item,.mode,.qc,.rev,.plan-day,.gl-item,.stat,.fcard{border:1px solid var(--b);border-radius:22px;box-shadow:0 6px 25px rgba(28,38,84,.045)}
+.card{padding:23px;margin-bottom:16px}.card h3{font-weight:750;font-size:17px}.item{padding:17px 19px}.item:hover,.mode:hover{border-color:#bbb6fb;box-shadow:0 12px 34px #6257ed18;transform:translateY(-2px)}
+.mode{padding:28px 20px;transition:transform .2s,box-shadow .2s,border-color .2s}.mode .ic{font-size:34px}.mode h3{font-size:16px}
+.btn{border-radius:13px;padding:11px 19px;font-weight:650;transition:transform .18s,box-shadow .18s,background .18s}.btn:hover:not(:disabled){transform:translateY(-1px)}.btn-p{background:var(--grad);box-shadow:0 5px 14px #6257ed30}.btn-p:hover{background:linear-gradient(125deg,#5147d8,#8051db);box-shadow:0 9px 22px #6257ed40}.btn-s{background:var(--c);border-color:var(--b)}.btn-sm{border-radius:10px;padding:8px 12px}
+.fg label{font-size:12px;color:var(--m);font-weight:700}.fg input,.fg select,.fg textarea,.sch-fr input{border-radius:12px;background:var(--c);padding:12px 14px;transition:border-color .2s,box-shadow .2s}.fg input:focus,.fg select:focus,.fg textarea:focus{border-color:#8d84f7;box-shadow:0 0 0 4px #6257ed17}
+.profile-bar{border-bottom-color:var(--b);padding:16px 22px;background:color-mix(in srgb,var(--c) 93%,transparent)}.avatar{background:var(--grad);box-shadow:0 3px 12px #6257ed30}
+.side{background:var(--c);border-right-color:var(--b)}.side-h{padding:18px}.qn{border-radius:12px}.qn.cur{background:#efedff;border-color:#b9b3ff;color:var(--p)}.qn.ans{background:#e0f7ed;border-color:#91d9b8;color:#117b58}
+.qc{padding:27px}.qt{font-size:17px;font-weight:550;line-height:1.75}.op{border-radius:15px;padding:14px 16px}.op.sel{background:#f0eeff;border-color:var(--p)}.ol{width:28px;height:28px}.timer,.prog-t,.qnum{background:#eeecff;color:var(--p)}.prog-f,.tbar .tb i{background:var(--grad)}
+.stat{padding:17px;background:var(--c)}.stat b{font-size:25px}.stat span{font-size:12px}.score-c{background:var(--grad);box-shadow:0 12px 30px #6257ed38}.badge{border-radius:9px;padding:5px 10px}
+.ovl{background:#10162ab8;backdrop-filter:blur(7px)}.ovl .box{border:1px solid var(--b);border-radius:24px;box-shadow:0 24px 80px #10162a40}
+.chip{border-radius:12px}.quote{border-radius:17px;background:linear-gradient(120deg,#efedff,#f4f1ff);border-left-color:var(--p)}
+body.dark{--bg:#0c1020;--c:#171e31;--t:#f0f2ff;--m:#a0abc2;--b:#2c3650;--p:#a69bff;--pd:#8e82f7;--grad:linear-gradient(125deg,#6257ed,#8b5cf6);color-scheme:dark}
+body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34%),var(--bg)}body.dark .card,body.dark .item,body.dark .mode,body.dark .qc{box-shadow:0 8px 28px #0002}body.dark .op.sel{background:#29234d}body.dark .qn.cur{background:#29234d;color:#c5beff}
+@media(max-width:768px){.wrap{padding:20px 13px 105px}.card{padding:17px}.item{padding:13px 14px}.mode{padding:19px 12px}.qc{padding:19px}.tmain{padding:13px}.hdr h1{font-size:26px}.stat{padding:12px}.btn{padding:10px 14px}}
+@media(prefers-reduced-motion:reduce){.btn,.mode,.item{transition:none!important;animation:none!important}}
+/* ===== END VISUAL REFRESH ===== */
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
