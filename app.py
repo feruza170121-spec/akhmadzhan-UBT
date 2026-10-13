@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import datetime
 import json
 import os
 import re
@@ -54,7 +55,7 @@ _ADMIN_TTL = 12 * 3600
 _USER_PREFIXES = ("ubt_mistakes_", "ubt_hist_", "ubt_prog_", "ubt_bm_", "ubt_plan_done_",
                   "ubt_plan_", "ubt_qotd_", "ubt_streak_", "ubt_avatar_", "ubt_viol_",
                   "ubt_qbank_", "ubt_qbank_hidden_", "ubt_ubt140_selection_")
-_PRIVATE_PREFIXES = _USER_PREFIXES
+_PRIVATE_PREFIXES = _USER_PREFIXES + ("ubt_exam_done_",)
 _SINGLE_DEVICE = True   # True: бір аккаунт бір уақытта тек бір құрылғыда (жаңа кіру ескісін шығарады)
 _MAX_FAILS = 5
 _FAIL_WINDOW = 600
@@ -173,7 +174,7 @@ def _store():
         data = {}
     state = {"db": data, "sb": _sb_conf(), "ok": False, "err": "", "dirty": set(), "deleted": set(),
              "lock": threading.RLock(), "flush_lock": threading.Lock(), "retry_t": 0.0,
-             "sessions": {}, "chat_claims": {}, "fails": {}, "reg": {}}
+             "sessions": {}, "chat_claims": {}, "fails": {}, "reg": {}, "exams": {}, "rev": 1}
     _remote_sync(state)
     _migrate_start(state)
     return state
@@ -181,12 +182,14 @@ def _store():
 
 def _put(state, k, v):
     state["db"][k] = v
+    state["rev"] = state.get("rev", 1) + 1
     state["dirty"].add(k)
     state["deleted"].discard(k)
 
 
 def _drop(state, k):
     state["db"].pop(k, None)
+    state["rev"] = state.get("rev", 1) + 1
     state["dirty"].discard(k)
     state["deleted"].add(k)
 
@@ -281,6 +284,8 @@ def _db_save(db):
     tmp = DATA_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(db, f, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, DATA_FILE)
 
 
@@ -447,10 +452,184 @@ def _clean_name(raw):
     return name
 
 
+def _start_exam(state, sess, d):
+    tid = d.get("testId")
+    if not sess or not isinstance(tid, str) or len(tid) > 100:
+        return {"ok": False, "msg": "Алдымен аккаунтыңызға кіріңіз"}
+    with state["lock"]:
+        test = next((t for t in _jload(state["db"].get("ubt_tests", "[]"), list, [])
+                     if isinstance(t, dict) and t.get("id") == tid), None)
+        if not test:
+            return {"ok": False, "msg": "Тест табылмады"}
+        qs = test.get("questions")
+        if not isinstance(qs, list) or not 0 < len(qs) <= 250 or any(not isinstance(q, dict) or
+            not isinstance(q.get("options"), list) or type(q.get("correct")) is not int or
+            not 0 <= q["correct"] < len(q["options"]) for q in qs):
+            return {"ok": False, "msg": "Тест сұрақтарын түзету қажет"}
+        uid = sess["uid"]
+        if any(e.get("uid") == uid and e.get("testId") == tid and e.get("expires", 0) > time.time()
+               for e in state["exams"].values()):
+            return {"ok": False, "msg": "Бұл тест қазір ашық. Оны аяқтаңыз"}
+        owner = bool(sess["admin"] or test.get("authorId") == uid or test.get("authorId") == "system")
+        code_key = "code:" + uid + ":" + tid
+        if not owner and not d.get("assignmentId") and test.get("accessCode"):
+            if _locked(state, code_key):
+                return {"ok": False, "msg": "Көп қате код. 10 минуттан кейін қайталаңыз"}
+            if not hmac.compare_digest(str(test["accessCode"]), str(d.get("accessCode") or "")):
+                _fail(state, code_key)
+                return {"ok": False, "msg": "Кіру коды қате"}
+            state["fails"].pop(code_key, None)
+        aid = d.get("assignmentId")
+        assigned = None
+        if aid:
+            assignments = _jload(state["db"].get("ubt_assigned_tests", "[]"), list, [])
+            assigned = next((a for a in assignments if isinstance(a, dict) and a.get("id") == aid and
+                             a.get("uid") == uid and a.get("testId") == tid), None)
+            token = d.get("attemptToken")
+            if not assigned or not isinstance(token, str) or not token or not hmac.compare_digest(
+                    str(assigned.get("pendingToken") or ""), token) or assigned.get("used", 0) >= assigned.get("limit", 0):
+                return {"ok": False, "msg": "Тапсыру құқығы немесе лимиті жарамсыз"}
+            owner = False
+        elif test.get("assignmentId"):
+            return {"ok": False, "msg": "Жіберілген тестті өз бөлімінен бастаңыз"}
+        elif test.get("classId"):
+            classes = _jload(state["db"].get("ubt_classes", "[]"), list, [])
+            cls = next((c for c in classes if isinstance(c, dict) and c.get("id") == test["classId"]), None)
+            if not cls or (not owner and uid not in cls.get("students", []) and
+                           not (cls.get("teacherId") == uid and _is_teacher(state, uid))):
+                return {"ok": False, "msg": "Сынып тестіне рұқсат жоқ"}
+            owner = owner or cls.get("teacherId") == uid
+            key = "ubt_att_" + tid
+            attempts = _jload(state["db"].get(key, "{}"), dict, {})
+            if not owner:
+                limit = test.get("limit")
+                if isinstance(limit, int) and limit > 0 and int(attempts.get(uid, 0)) >= limit:
+                    return {"ok": False, "msg": "Тапсыру лимиті аяқталды"}
+        elif not (owner or test.get("isPublic") is True or test.get("status") == "approved"):
+            return {"ok": False, "msg": "Тест жарияланбаған"}
+        if len(state["exams"]) > 2000:
+            now = time.time()
+            state["exams"] = {k: e for k, e in state["exams"].items() if e["expires"] > now}
+        nonce = secrets.token_urlsafe(32)
+        try:
+            timer = int(test.get("timerMin") or 0) * 60
+        except (TypeError, ValueError, OverflowError):
+            timer = 0
+        timer = min(max(timer if timer > 0 else max(len(qs) * 90, 600), 60), 18000)
+        state["exams"][nonce] = {"uid": uid, "testId": tid, "assignmentId": aid, "classId": test.get("classId"),
+                                 "owner": owner, "reward": bool(aid or test.get("classId") or test.get("adminApproved")),
+                                 "limit": test.get("limit"), "questions": [dict(q) for q in qs],
+                                 "topic": (str(test.get("subjectName") or "") + " · " + str(test.get("topic") or "Тест")).strip(" ·"),
+                                 "expires": time.time() + timer + 90}
+        visible = [{**{k: v for k, v in q.items() if k != "correct"}, "id": "examq" + str(i)} for i, q in enumerate(qs)]
+        return {"ok": True, "exam": nonce, "questions": visible, "topic": state["exams"][nonce]["topic"], "timer": timer}
+
+
+def _finish_exam(state, sess, d):
+    token = d.get("exam")
+    answers = d.get("answers")
+    if not sess or not isinstance(token, str) or not isinstance(answers, dict) or len(answers) > 250:
+        return {"ok": False, "msg": "Нәтиже жарамсыз"}
+    with state["lock"]:
+        exam = state["exams"].get(token)
+        if not exam or exam["uid"] != sess["uid"] or exam["expires"] < time.time():
+            return {"ok": False, "msg": "Тест мерзімі өтті немесе аяқталып қойған"}
+        qs = exam["questions"]
+        allowed = {"examq" + str(i): i for i in range(len(qs))}
+        if any(k not in allowed or type(v) is not int or not 0 <= v < len(qs[allowed[k]]["options"])
+               for k, v in answers.items()):
+            return {"ok": False, "msg": "Жауаптар қате"}
+        assignment = None
+        if exam["assignmentId"]:
+            assignments = _jload(state["db"].get("ubt_assigned_tests", "[]"), list, [])
+            assignment = next((a for a in assignments if isinstance(a, dict) and a.get("id") == exam["assignmentId"] and
+                               a.get("uid") == sess["uid"] and a.get("testId") == exam["testId"]), None)
+            if not assignment or assignment.get("used", 0) >= assignment.get("limit", 0):
+                return {"ok": False, "msg": "Тапсыру лимиті аяқталды"}
+        if exam["classId"] and not exam["owner"]:
+            attempts = _jload(state["db"].get("ubt_att_" + exam["testId"], "{}"), dict, {})
+            if isinstance(exam.get("limit"), int) and exam["limit"] > 0 and int(attempts.get(sess["uid"], 0)) >= exam["limit"]:
+                return {"ok": False, "msg": "Тапсыру лимиті аяқталды"}
+        state["exams"].pop(token, None)
+        score = sum(answers.get("examq" + str(i)) == q["correct"] for i, q in enumerate(qs))
+        maximum = len(qs)
+        pct = score / maximum
+        done_key = "ubt_exam_done_" + sess["uid"]
+        done = _jload(state["db"].get(done_key, "[]"), list, [])
+        gained = (score * 10 + (50 if pct == 1 else 25 if pct >= .8 else 10 if pct >= .5 else 0)
+                  if not exam["owner"] and exam["reward"] and exam["testId"] not in done else 0)
+        if not exam["owner"]:
+            stats = _jload(state["db"].get("ubt_user_stats", "{}"), dict, {})
+            current = stats.get(sess["uid"], {})
+            current["points"] = max(0, int(current.get("points", 0) or 0)) + gained
+            stats[sess["uid"]] = current
+            _put(state, "ubt_user_stats", _jdump(stats))
+            today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5)))
+            idx = _jload(state["db"].get("ubt_season_idx", "[]"), list, [])
+            for tag in ("w_" + today.strftime("%G-W%V"), "m_" + today.strftime("%Y-%m")):
+                k = "ubt_season_" + tag
+                board = _jload(state["db"].get(k, "{}"), dict, {})
+                board[sess["uid"]] = int(board.get(sess["uid"], 0)) + gained
+                _put(state, k, _jdump(board))
+                if tag not in idx:
+                    idx.append(tag)
+            _put(state, "ubt_season_idx", _jdump(idx))
+            if assignment:
+                assignment["used"] = int(assignment.get("used", 0)) + 1
+                assignment.pop("pendingToken", None)
+                assignment.setdefault("results", []).append({"score": score, "max": maximum, "at": int(time.time())})
+                _put(state, "ubt_assigned_tests", _jdump(assignments))
+            if exam["classId"]:
+                att_key = "ubt_att_" + exam["testId"]
+                attempts[sess["uid"]] = int(attempts.get(sess["uid"], 0)) + 1
+                _put(state, att_key, _jdump(attempts))
+                key = "ubt_tres_" + exam["testId"]
+                results = _jload(state["db"].get(key, "[]"), list, [])
+                results.append({"uid": sess["uid"], "name": sess["name"], "score": score,
+                                "max": maximum, "t": int(time.time() * 1000)})
+                _put(state, key, _jdump(results[-5000:]))
+            if exam["testId"] not in done:
+                done.append(exam["testId"])
+                _put(state, done_key, _jdump(done[-1000:]))
+            prog_key = "ubt_prog_" + sess["uid"]
+            prog = _jload(state["db"].get(prog_key, "[]"), list, [])
+            prog.append({"t": int(time.time() * 1000), "score": score, "max": maximum, "topic": exam["topic"], "viol": 0})
+            _put(state, prog_key, _jdump(prog[-200:]))
+            hist_key = "ubt_hist_" + sess["uid"]
+            hist = _jload(state["db"].get(hist_key, "[]"), list, [])
+            hist.insert(0, {"date": datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5))).strftime("%d.%m.%Y %H:%M"),
+                            "score": score, "max": maximum, "topic": exam["topic"], "answers": answers,
+                            "questions": [{"id": "examq" + str(i), "text": q.get("text"), "options": q["options"], "correct": q["correct"]}
+                                          for i, q in enumerate(qs)]})
+            _put(state, hist_key, _jdump(hist[:40]))
+        _commit(state)
+        review = [{**q, "id": "examq" + str(i)} for i, q in enumerate(qs)]
+        return {"ok": True, "score": score, "max": maximum, "gained": gained, "owner": exam["owner"],
+                "reward": exam["reward"], "questions": review}
+
+
+def _cancel_exam(state, sess, d):
+    if not sess or not isinstance(d.get("exam"), str):
+        return {"ok": False}
+    with state["lock"]:
+        exam = state["exams"].get(d["exam"])
+        if not exam or exam["uid"] != sess["uid"]:
+            return {"ok": False}
+        state["exams"].pop(d["exam"], None)
+        return {"ok": True}
+
+
 def _handle_req(state, sid, rq):
     typ = rq.get("type")
     d = rq.get("data") if isinstance(rq.get("data"), dict) else {}
     sess = _session(state, rq.get("tok"))
+
+    if typ == "start_exam":
+        return _start_exam(state, sess, d)
+    if typ == "finish_exam":
+        return _finish_exam(state, sess, d)
+    if typ == "cancel_exam":
+        return _cancel_exam(state, sess, d)
 
     if typ == "admin_assign_test":
         if not (sess and sess["admin"]):
@@ -558,7 +737,6 @@ def _handle_req(state, sid, rq):
                 return {"ok": False, "msg": "Тест қолжетімсіз"}
             if a.get("used", 0) >= a.get("limit", 0):
                 return {"ok": False, "msg": "Тапсыру лимиті аяқталды"}
-            a["used"] += 1
             attempt_token = secrets.token_urlsafe(24)
             a["pendingToken"] = attempt_token
             _put(state, "ubt_assigned_tests", _jdump(assignments))
@@ -566,32 +744,7 @@ def _handle_req(state, sid, rq):
         return {"ok": True, "testId": t["id"], "used": a["used"], "attemptToken": attempt_token}
 
     if typ == "submit_assigned_score":
-        if not sess:
-            return {"ok": False, "msg": "Алдымен кіріңіз"}
-        aid = str(d.get("id") or "")
-        token = str(d.get("attemptToken") or "")
-        answers = d.get("answers")
-        if not isinstance(answers, dict) or len(answers) > 250 or not token:
-            return {"ok": False, "msg": "Нәтиже жарамсыз"}
-        with state["lock"]:
-            assignments = _jload(state["db"].get("ubt_assigned_tests", "[]"), list, [])
-            a = next((x for x in assignments if isinstance(x, dict) and x.get("id") == aid and x.get("uid") == sess["uid"]), None)
-            tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
-            t = next((x for x in tests if isinstance(x, dict) and a and x.get("id") == a.get("testId")), None)
-            if not a or not t or not secrets.compare_digest(str(a.get("pendingToken") or ""), token):
-                return {"ok": False, "msg": "Бұл тапсыру есептелген немесе мерзімі өткен"}
-            qs = t.get("questions", [])
-            if not isinstance(qs, list) or not qs:
-                return {"ok": False, "msg": "Тест табылмады"}
-            score = sum(isinstance(q, dict) and isinstance(q.get("options"), list) and
-                        type(q.get("correct")) is int and 0 <= q["correct"] < len(q["options"]) and
-                        answers.get(str(q.get("id"))) == q["options"][q["correct"]]
-                        for q in qs)
-            a.setdefault("results", []).append({"score": score, "max": len(qs), "at": int(time.time())})
-            a.pop("pendingToken", None)
-            _put(state, "ubt_assigned_tests", _jdump(assignments))
-            _commit(state)
-        return {"ok": True, "score": score, "max": len(qs)}
+        return {"ok": False, "msg": "Нәтиже тек finish_exam арқылы есептеледі"}
 
     if typ == "login":
         name = str(d.get("name") or "").strip()[:60]
@@ -727,10 +880,15 @@ def _handle_req(state, sid, rq):
             return {"ok": False, "msg": "Алдымен аккаунтыңызға кіріңіз"}
         code = str(d.get("code") or "").strip().upper()
         with state["lock"]:
+            key = "class-code:" + sess["uid"]
+            if _locked(state, key):
+                return {"ok": False, "msg": "Көп қате код. 10 минуттан кейін қайталаңыз"}
             classes = _jload(state["db"].get("ubt_classes", "[]"), list, [])
             cls = next((c for c in classes if isinstance(c, dict) and c.get("code") == code), None)
             if not cls:
+                _fail(state, key)
                 return {"ok": False, "msg": "Мұндай код табылмады"}
+            state["fails"].pop(key, None)
             if cls.get("teacherId") == sess["uid"]:
                 return {"ok": False, "msg": "Бұл — сіздің сыныбыңыз"}
             if sess["uid"] in cls.get("students", []):
@@ -887,7 +1045,8 @@ def _process_reqs(state, sid, reqs):
     out = st.session_state.setdefault("_ubt_authres", {}).setdefault(sid, {})
     last = done.get(sid, 0)
     new = False
-    valid = [r for r in reqs if isinstance(r, dict) and isinstance(r.get("id"), int)]
+    valid = [r for r in reqs[:100] if isinstance(r, dict) and type(r.get("id")) is int and
+             0 < r["id"] < 1_000_000_000]
     for rq in sorted(valid, key=lambda r: r["id"])[:10]:
         if rq["id"] <= last:
             continue
@@ -1011,17 +1170,14 @@ def _merge_stats(state, sess, v):
     n["title"] = old.get("title", "")
     n["stars"] = old.get("stars", 0)
     n["verified"] = bool(old.get("verified", False))
-    try:
-        n["points"] = max(0, int(n.get("points") or 0))
-    except Exception:
-        n["points"] = int(old.get("points", 0) or 0)
+    n["points"] = int(old.get("points", 0) or 0)
     out[uid] = n
     return _jdump(out)
 
 
 def _merge_tests(state, sess, v):
     inc = _jload(v, list, None)
-    if inc is None:
+    if inc is None or len(inc) > 2000:
         return None
     if sess["admin"]:
         return _jdump([t for t in inc if isinstance(t, dict)])
@@ -1033,6 +1189,9 @@ def _merge_tests(state, sess, v):
     for t in inc:
         if not isinstance(t, dict) or not isinstance(t.get("id"), str):
             continue
+        qs = t.get("questions", [])
+        if not isinstance(qs, list) or len(qs) > 250 or len(_jdump(t)) > 1_000_000:
+            return None
         tid = t["id"]
         if len(tid) > 100:
             continue
@@ -1041,6 +1200,9 @@ def _merge_tests(state, sess, v):
         if s is not None:
             if s.get("authorId") != uid:
                 out.append(s)
+                continue
+            if s.get("assignmentId"):
+                out.append(s)  # жіберілген тесттің сұрақтарын тек админ өзгертеді
                 continue
             n = dict(t)
             n["authorId"] = uid
@@ -1058,10 +1220,6 @@ def _merge_tests(state, sess, v):
                 else:
                     n.pop("status", None)
             out.append(n)
-        elif tid == "seed_funksiya" and t.get("authorId") == "system":
-            n = dict(t)
-            n["adminApproved"] = False
-            out.append(n)
         else:
             n = dict(t)
             n["authorId"] = uid
@@ -1076,7 +1234,8 @@ def _merge_tests(state, sess, v):
     for s in stored:
         if isinstance(s, dict) and s.get("id") not in seen and s.get("authorId") != uid:
             out.append(s)
-    return _jdump(out)
+    result = _jdump(out)
+    return result if len(result) < 7_800_000 else None
 
 
 def _class_manager(state, sess, cid):
@@ -1111,6 +1270,12 @@ def _merge_classes(state, sess, v):
             updated["teacherId"] = c["teacherId"]
             updated["teacherName"] = c.get("teacherName")
             updated["reqId"] = c.get("reqId")
+            registered = {p.get("id") for p in _profiles(state).values() if isinstance(p, dict)}
+            members = updated.get("students", [])
+            if not isinstance(members, list) or len(members) > 100 or any(
+                    not isinstance(member, str) or member not in registered for member in members):
+                return None
+            updated["students"] = list(dict.fromkeys(members))
             out.append(updated)
         elif sess["uid"] in c.get("students", []):
             updated = dict(c)
@@ -1174,6 +1339,8 @@ def _merge_class_chat(state, sess, v):
 
 
 def _merge_attempts(state, sess, key, value):
+    if not sess["admin"]:
+        return None  # тапсыру саны мен баллды start_exam / finish_exam жазуы тиіс
     is_result = key.startswith("ubt_tres_")
     tid = key[len("ubt_tres_"):] if is_result else key[len("ubt_att_"):]
     tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
@@ -1272,6 +1439,8 @@ def _authorize(state, sess, k, v, chat_token=""):
         return _merge_chat(state, sess, v, chat_token)
     if k == "ubt_admin_letters":
         return None  # тек сервердегі тексерілген сұраныстар арқылы өзгертіледі
+    if k.startswith("ubt_exam_done_"):
+        return None
     if not sess:
         return None
     if k == "ubt_profiles":
@@ -1291,15 +1460,11 @@ def _authorize(state, sess, k, v, chat_token=""):
     if k == "ubt_class_chat":
         return _merge_class_chat(state, sess, v)
     if k == "ubt_qotd_day":
-        day = _jload(v, dict, None)
-        old = _jload(state["db"].get(k, "{}"), dict, {})
-        if day and isinstance(day.get("date"), str) and re.fullmatch(r"\d{4}-\d\d-\d\d", day["date"]) and isinstance(day.get("q"), dict) and day["date"] != old.get("date"):
-            return _jdump({"date": day["date"], "q": day["q"]})
         return None
     if k in ("ubt_formulas", "ubt_season_idx", "ubt_awarded", "ubt_trophies") or k.startswith("ubt_season_"):
         return v if sess["admin"] else None
     if k == "ubt_seed_funksiya":
-        return "true" if v == "true" else None
+        return "true" if sess["admin"] and v == "true" else None
     if k.startswith("ubt_att_") or k.startswith("ubt_tres_"):
         return _merge_attempts(state, sess, k, v)
     if k in ("ubt_hist_order", "ubt_hist_hidden"):
@@ -1345,7 +1510,9 @@ def _apply_ops(res):
     changed = False
     with state["lock"]:
         db = state["db"]
-        for op in sorted((o for o in ops if isinstance(o, dict)), key=lambda o: o.get("n", 0)):
+        valid_ops = (o for o in ops[:200] if isinstance(o, dict) and
+                     type(o.get("n")) is int and 0 < o["n"] < 1_000_000_000)
+        for op in sorted(valid_ops, key=lambda o: o["n"]):
             n = op.get("n", 0)
             if not isinstance(n, int) or n <= last:
                 continue
@@ -1391,10 +1558,62 @@ def _chat_for(raw, sess, claim, state):
     return _jdump(out)
 
 
+def _public_class_board(db):
+    classes = _jload(db.get("ubt_classes", "[]"), list, [])
+    tests = _jload(db.get("ubt_tests", "[]"), list, [])
+    stats = _jload(db.get("ubt_user_stats", "{}"), dict, {})
+    scores = {}
+    for t in tests:
+        if not isinstance(t, dict) or not t.get("classId"):
+            continue
+        for r in _jload(db.get("ubt_tres_" + str(t.get("id")), "[]"), list, []):
+            if isinstance(r, dict) and isinstance(r.get("score"), (int, float)) and isinstance(r.get("max"), (int, float)) and r["max"] > 0:
+                scores.setdefault(t["classId"], []).append((r.get("uid"), round(100 * r["score"] / r["max"])))
+    out = []
+    for c in classes:
+        if not isinstance(c, dict) or not isinstance(c.get("students"), list) or not c["students"]:
+            continue
+        students = set(c["students"])
+        total = sum(int((stats.get(uid) or {}).get("points", 0) or 0) for uid in students if isinstance(stats.get(uid), dict))
+        samples = [n for uid, n in scores.get(c.get("id"), []) if uid in students]
+        out.append({"id": c.get("id"), "name": c.get("name", ""), "teacher": c.get("teacherName", ""),
+                    "n": len(students), "total": total, "avg": round(total / len(students)),
+                    "tavg": round(sum(samples) / len(samples)) if samples else 0})
+    return out
+
+
+def _award_finished_seasons(state):
+    db = state["db"]
+    now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5)))
+    current = {"w_" + now.strftime("%G-W%V"), "m_" + now.strftime("%Y-%m")}
+    index = _jload(db.get("ubt_season_idx", "[]"), list, [])
+    awarded = _jload(db.get("ubt_awarded", "[]"), list, [])
+    trophies = _jload(db.get("ubt_trophies", "[]"), list, [])
+    profiles = _profiles(state)
+    names = {p.get("id"): p.get("name", "?") for p in profiles.values() if isinstance(p, dict)}
+    changed = False
+    for tag in index[:1000]:
+        if not isinstance(tag, str) or tag in current or tag in awarded or not re.fullmatch(r"[wm]_\d{4}-(?:W\d{2}|\d{2})", tag):
+            continue
+        board = _jload(db.get("ubt_season_" + tag, "{}"), dict, {})
+        leaders = sorted(((uid, pts) for uid, pts in board.items()
+                          if isinstance(uid, str) and type(pts) is int and pts > 0),
+                         key=lambda x: x[1], reverse=True)[:3]
+        trophies.extend({"tag": tag, "rank": rank, "id": uid, "name": names.get(uid, "?"), "points": pts}
+                        for rank, (uid, pts) in enumerate(leaders, 1))
+        awarded.append(tag)
+        changed = True
+    if changed:
+        _put(state, "ubt_trophies", _jdump(trophies))
+        _put(state, "ubt_awarded", _jdump(awarded))
+        _commit(state)
+
+
 def _snapshot(tok="", claim=""):
     """Браузерге жіберілетін дерек: хэштер жоқ, бөтен чаттар жоқ, кірмеген адамға — ештеңе жоқ."""
     state = _store()
     with state["lock"]:
+        _award_finished_seasons(state)
         db = dict(state["db"])
         sess = _session(state, tok)
         profs = _profiles(state) if sess else {}
@@ -1406,8 +1625,11 @@ def _snapshot(tok="", claim=""):
     if not sess:
         return {"ubt_chat": chat}
     db["ubt_chat"] = chat
+    db["ubt_class_board"] = _jdump(_public_class_board(db))
     assignments = _jload(db.get("ubt_assigned_tests", "[]"), list, [])
-    db["ubt_assigned_tests"] = _jdump(assignments if sess["admin"] else [a for a in assignments if isinstance(a, dict) and a.get("uid") == sess["uid"]])
+    db["ubt_assigned_tests"] = _jdump(assignments if sess["admin"] else
+        [{k: v for k, v in a.items() if k != "pendingToken"} for a in assignments
+         if isinstance(a, dict) and a.get("uid") == sess["uid"]])
     letters = _jload(db.get("ubt_admin_letters", "[]"), list, [])
     db["ubt_admin_letters"] = _jdump(letters if sess["admin"] else [
         m for m in letters if isinstance(m, dict) and m.get("toUid") == sess["uid"]])
@@ -1428,7 +1650,7 @@ def _snapshot(tok="", claim=""):
             own = [a for a in assignments if isinstance(a, dict) and a.get("uid") == sess["uid"]]
             scores = [{k: a.get(k) for k in ("id", "classId", "uid", "login", "title", "limit", "used", "results")}
                       for a in assignments if isinstance(a, dict) and a.get("classId") in managed and a.get("uid") != sess["uid"]]
-            db["ubt_assigned_tests"] = _jdump(own + scores)
+            db["ubt_assigned_tests"] = _jdump([{k: v for k, v in a.items() if k != "pendingToken"} for a in own] + scores)
         db["ubt_classes"] = _jdump([c if c.get("id") in managed else
             {**c, "code": "", "students": [sess["uid"]] if sess["uid"] in c.get("students", []) else []} for c in mine])
         reqs = _jload(db.get("ubt_class_reqs", "[]"), list, [])
@@ -1439,10 +1661,14 @@ def _snapshot(tok="", claim=""):
         db["ubt_class_chat"] = _jdump({k: v for k, v in cc.items() if k in threads})
         tests = _jload(db.get("ubt_tests", "[]"), list, [])
         assigned_ids = {a.get("testId") for a in assignments if isinstance(a, dict) and a.get("uid") == sess["uid"] and a.get("used", 0) < a.get("limit", 0)}
-        db["ubt_tests"] = _jdump([t for t in tests if isinstance(t, dict) and
+        visible = [t for t in tests if isinstance(t, dict) and
             (t.get("authorId") == sess["uid"] or
              t.get("id") in assigned_ids or
-             (t.get("classId") in joined if t.get("classId") else (t.get("isPublic") or t.get("status") == "approved")))])
+             (t.get("classId") in joined if t.get("classId") else (t.get("isPublic") or t.get("status") == "approved")))]
+        db["ubt_tests"] = _jdump([t if t.get("authorId") == sess["uid"] else
+            {**{k: v for k, v in t.items() if k != "accessCode"}, "requiresCode": bool(t.get("accessCode")),
+             "questions": [{k: v for k, v in q.items() if k != "correct"} for q in t.get("questions", []) if isinstance(q, dict)]}
+            for t in visible])
         for k in list(db.keys()):
             if k.startswith(_PRIVATE_PREFIXES) and not any(k == p + sess["uid"] for p in _PRIVATE_PREFIXES):
                 db.pop(k, None)
@@ -1557,6 +1783,10 @@ html,body{overflow-x:hidden}
 .flag{background:none;border:1px solid var(--b);border-radius:17px;padding:4px 8px;cursor:pointer;font-size:14px}
 .flag.on{background:#fef3c7;border-color:#fcd34d}
 .qt{font-size:15px;margin-bottom:16px;line-height:1.6}
+.qt .qprompt{white-space:pre-wrap;overflow-wrap:anywhere}
+.qt .qcode{margin:12px 0 4px;padding:16px 18px;border-radius:12px;background:#0d1117;color:#e6edf3;overflow-x:auto;tab-size:4}
+.qt .qcode code{display:block;white-space:pre;font:14px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}
+.qt .qcontext{white-space:pre-wrap;margin:10px 0 0;font-weight:550}
 .qimg{display:block;max-width:100%;max-height:340px;margin:0 auto 14px;border-radius:14px;border:1px solid var(--b);object-fit:contain;background:#fff}
 .qtbl-w{overflow-x:auto;margin:0 0 14px}
 .qtbl{border-collapse:collapse;margin:0 auto;font-size:14px}
@@ -3077,11 +3307,8 @@ function setUserStats(id,stats){
   all[id]=stats;LS.set('ubt_user_stats',all);
 }
 function addPoints(pts){
-  if(!user||user.isAdmin) return;
-  const s=getUserStats(user.id);
-  s.points=(s.points||0)+pts;
-  setUserStats(user.id,s);
-  refreshProfileBar();
+  // Рейтинг ұпайын тек сервер тексерілген тестке береді.
+  return;
 }
 function refreshProfileBar(){
   if(!user)return;
@@ -3494,11 +3721,8 @@ function showAssignedTests(){
 function startAssignedTest(id){return guarded(async()=>{
   const r=await authCall('start_assigned_test',{id});
   if(!r.ok){alert(r.msg||'Тест қолжетімсіз');await window.__bridge.refresh();showAssignedTests();return}
-  const test=allTests().find(t=>t.id===r.testId);
-  if(!test){await window.__bridge.refresh()}
-  if(!allTests().some(t=>t.id===r.testId)){alert('Тестті ашу мүмкін болмады');return}
-  assignedStartPermit=r.testId;
-  try{startUserTest(r.testId);st.assignedAttempt={id,attemptToken:r.attemptToken}}finally{assignedStartPermit=null}
+  assignedStartPermit={id,testId:r.testId,attemptToken:r.attemptToken};
+  try{await startUserTest(r.testId)}finally{assignedStartPermit=null}
 })}
 function adminUnpublishTest(id){
   if(!user||!user.isAdmin)return;
@@ -3840,14 +4064,13 @@ function baseState(){return{questions:[],currentIndex:0,answers:{},flags:{},time
 let st=baseState();
 
 let assignedStartPermit=null;
-function startUserTest(id){
-  const t=allTests().find(x=>x.id===id);if(!t||!t.questions.length){alert('Сұрақ жоқ!');return}
-  if(user&&!user.isAdmin&&t.authorId!==user.id&&!t.isPublic&&t.status!=='approved'&&!t.classId&&assignedStartPermit!==id){
-    alert('Бұл жеке тестті «Маған жіберілген тесттер» бөлімінен бастаңыз');return;
-  }
-  const label=(t.subjectName?t.subjectName+' · ':'')+(t.topic||'Тест');
-  st=baseState();st.questions=t.questions.map(q=>({...q,subjectName:label}));st.subjectName=label;st.testId=id;
-  st.timerSeconds=Math.max(t.questions.length*90,600);shuf(st.questions);beginTest();
+async function startUserTest(id,accessCode){
+  if(!user){alert('Алдымен аккаунтыңызға кіріңіз');return}
+  const permit=assignedStartPermit&&assignedStartPermit.testId===id?assignedStartPermit:null;
+  const r=await authCall('start_exam',{testId:id,accessCode:accessCode||'',assignmentId:permit&&permit.id,attemptToken:permit&&permit.attemptToken});
+  if(!r.ok){alert(r.msg||'Тест басталмады');return}
+  st=baseState();st.questions=r.questions.map(q=>({...q,subjectName:r.topic}));st.subjectName=r.topic;st.testId=id;
+  st.secureExam=r.exam;st.timerSeconds=r.timer;beginTest();
 }
 const bankSubjectSelection=new Map();
 function bankSubjectMode(){return (document.querySelector('input[name="bs-mode"]:checked')||{}).value||'manual'}
@@ -3947,24 +4170,62 @@ function beginTest(){
   modal.innerHTML=`<div class="box" style="max-width:470px;margin:9vh auto;padding:28px">
     <h2 style="margin-bottom:8px">📘 Тестті бастау</h2>
     <p class="sub" style="margin-bottom:20px">${esc(st.subjectName||'Тест')} · ${st.questions.length} сұрақ</p>
-    <label class="ubt-instant-switch"><input id="ubt-instant-choice" type="checkbox"><span><strong>Жауапты сразу шығару</strong><small>Жауапты белгілегенде дұрыс не қате екенін бірден көрсетеді. Дұрыс жауап та көрінеді.</small></span></label>
-    <p class="sub" style="margin:12px 0 20px">Өшірулі болса, жауаптар тек тест аяқталғанда көрсетіледі.</p>
+    <label class="ubt-instant-switch"><input id="ubt-instant-choice" type="checkbox" ${st.secureExam?'disabled':''}><span><strong>Жауапты бірден шығару</strong><small>${st.secureExam?'Қорғалған тестте жауаптар аяқталғаннан кейін ашылады.':'Жауапты белгілегенде дұрыс не қате екенін бірден көрсетеді.'}</small></span></label>
+    <p class="sub" style="margin:12px 0 20px">${st.secureExam?'Тапсыру саны нәтиже сақталғанда есептеледі.':'Өшірулі болса, жауаптар тест аяқталғанда көрсетіледі.'}</p>
     <div class="row"><button class="btn btn-s" id="ubt-start-cancel">Бас тарту</button><button class="btn btn-p" id="ubt-start-confirm">▶ Тестті бастау</button></div>
   </div>`;
   document.body.appendChild(modal);
-  document.getElementById('ubt-start-cancel').onclick=()=>{modal.remove();if(st.assignedAttempt)st.assignedAttempt=null;};
+  document.getElementById('ubt-start-cancel').onclick=async()=>{modal.remove();if(st.secureExam){const r=await authCall('cancel_exam',{exam:st.secureExam});if(!r.ok)alert(r.msg||'Тапсыру лимиті сақталды')}st=baseState()};
   document.getElementById('ubt-start-confirm').onclick=()=>{
-    st.instantFeedback=document.getElementById('ubt-instant-choice').checked;
-    modal.remove();st.questions=shuf(st.questions.map(q=>shuffleOpts({...q,options:Array.isArray(q.options)?q.options.slice():[]})));st.currentIndex=0;st.answers={};st.flags={};showScr('s-test');renderNav();renderQ();startTimer();updateProg();lockStart();
+    st.instantFeedback=!st.secureExam&&document.getElementById('ubt-instant-choice').checked;
+    modal.remove();st.questions=shuf(st.questions.map(q=>st.secureExam?{...q,options:q.options.slice()}:shuffleOpts({...q,options:Array.isArray(q.options)?q.options.slice():[]})));st.currentIndex=0;st.answers={};st.flags={};showScr('s-test');renderNav();renderQ();startTimer();updateProg();lockStart();
   };
 }
 function renderNav(){document.getElementById('qnav').innerHTML=st.questions.map((_,i)=>`<button class="qn" onclick="goQ(${i})">${i+1}</button>`).join('');updNav()}
 function updNav(){document.querySelectorAll('.qn').forEach((b,i)=>{b.classList.remove('cur','ans','flg');if(i===st.currentIndex)b.classList.add('cur');if(st.answers[st.questions[i].id]!==undefined)b.classList.add('ans');if(st.flags[st.questions[i].id])b.classList.add('flg')})}
+let codeColorsLoading=false;
+function ensureCodeColors(){
+  if(window.hljs){document.querySelectorAll('#qtext pre code').forEach(el=>window.hljs.highlightElement(el));return}
+  if(codeColorsLoading)return;
+  codeColorsLoading=true;
+  const css=document.createElement('link');css.rel='stylesheet';css.href='https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css';document.head.appendChild(css);
+  const js=document.createElement('script');js.src='https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js';
+  js.onload=()=>document.querySelectorAll('#qtext pre code').forEach(el=>window.hljs.highlightElement(el));
+  document.head.appendChild(js);
+}
+function renderQuestionText(text){
+  const box=document.getElementById('qtext');box.replaceChildren();
+  const raw=String(text||'').replace(/\r\n?/g,'\n');
+  const lines=raw.split('\n');
+  let first=lines.findIndex(line=>/^\s*(?:[A-Za-z_]\w*\s*(?:=(?!=)|\+=|-=)|while\b|for\b|if\b|elif\b|else\s*:|print\s*\(|#)/.test(line));
+  let prompt=first>=0?lines.slice(0,first).join('\n').trim():raw;
+  let body=first>=0?lines.slice(first):[];
+  // Some imported tests put the first code statement after the question on the same line.
+  if(first<0){
+    const m=/^(.*?[?؟])\s*((?:[A-Za-z_]\w*\s*(?:=(?!=)|\+=|-=)|while\b|for\b|print\s*\().*)$/s.exec(raw);
+    if(m){
+      prompt=m[1];body=m[2].split('\n');
+      if(body.length===1&&/\bwhile\b.+:\s*\S/.test(body[0])){
+        const chunks=body[0].replace(/\s+(?=while\s)/g,'\n').replace(/:\s+(?=[A-Za-z_]\w*\s*(?:=(?!=)|\+=|-=|\())/g,':\n    ').replace(/\s+(?=print\s*\()/g,'\n    ');
+        body=chunks.split('\n');
+      }
+    }
+  }
+  if(!body.length){box.textContent=raw;box.style.whiteSpace='pre-wrap';return}
+  const intro=document.createElement('div');intro.className='qprompt';intro.textContent=prompt;box.appendChild(intro);
+  const extra=body.findIndex(line=>/^\s*(?:Пернетақтадан енгізілген|Енгізілген|Ввод|Input)\s*:/i.test(line));
+  const code=extra<0?body:body.slice(0,extra);
+  if(code.length){
+    const pre=document.createElement('pre');pre.className='qcode';
+    const el=document.createElement('code');el.className='language-python';el.textContent=code.join('\n').replace(/^\n+|\n+$/g,'');pre.appendChild(el);box.appendChild(pre);ensureCodeColors();
+  }
+  if(extra>=0){const note=document.createElement('div');note.className='qcontext';note.textContent=body.slice(extra).join('\n');box.appendChild(note)}
+}
 function renderQ(){
   const q=st.questions[st.currentIndex];if(!q)return;
   document.getElementById('t-subj').textContent=q.subjectName||st.subjectName;
   document.getElementById('qnum').textContent='Сұрақ '+(st.currentIndex+1);
-  document.getElementById('qtext').textContent=q.text;
+  renderQuestionText(q.text);
   document.getElementById('qmedia').innerHTML=qMedia(q);
   document.getElementById('flag').classList.toggle('on',!!st.flags[q.id]);
   const L=['A','B','C','D','E'];
@@ -4941,6 +5202,7 @@ function stopTimer(){if(st.timerInterval){clearInterval(st.timerInterval);st.tim
 function updTimer(){const t=Math.max(0,st.timerSeconds);const h=Math.floor(t/3600),m=Math.floor((t%3600)/60),s=t%60;const el=document.getElementById('timer');el.textContent=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;el.classList.remove('warn','dang');if(t<=300)el.classList.add('dang');else if(t<=900)el.classList.add('warn')}
 
 function finishTest(force){
+  if(st.examSubmitting)return;
   if(!force){
     const a=1+Math.floor(Math.random()*9),b=1+Math.floor(Math.random()*9);
     const ok=guardPause(()=>{
@@ -4951,31 +5213,40 @@ function finishTest(force){
     });
     if(!ok){lockReassert();return}
   }
+  if(st.secureExam){
+    const exam=st.secureExam,answers={...st.answers};st.secureExam=null;st.examSubmitting=true;
+    stopTimer();lockEnd();
+    authCall('finish_exam',{exam,answers}).then(async r=>{
+      st.examSubmitting=false;
+      if(!r.ok){alert(r.msg||'Сервер нәтижеңізді сақтай алмады');showScr('s-home');return}
+      st.verifiedExam=r;
+      st.questions=r.questions.map(q=>({...q,subjectName:st.subjectName}));
+      finishTest(true);
+      await window.__bridge.refresh();refreshProfileBar();
+    }).catch(()=>{st.examSubmitting=false;alert('Серверге қосылу мүмкін болмады. Нәтижені тексеріңіз');showScr('s-home')});
+    return;
+  }
   stopTimer();lockEnd();
   let score=0,max=st.questions.length,wrong=[];
   st.questions.forEach(q=>{if(st.answers[q.id]===q.correct)score++;else wrong.push({...q,userAnswer:st.answers[q.id]})});
-  if(st.assignedAttempt){
-    const attempt=st.assignedAttempt;st.assignedAttempt=null;
-    const chosen={};st.questions.forEach(q=>{const i=st.answers[q.id];if(Number.isInteger(i)&&i>=0&&i<q.options.length)chosen[q.id]=q.options[i]});
-    authCall('submit_assigned_score',{id:attempt.id,attemptToken:attempt.attemptToken,answers:chosen})
-      .then(r=>{if(!r.ok)alert('Баллыңызды серверге сақтау мүмкін болмады: '+(r.msg||'Қате'))}).catch(()=>alert('Баллыңызды серверге сақтау мүмкін болмады'));
+  if(!st.verifiedExam){
+    if(!st.isMistakes&&wrong.length){let m=LS.get('ubt_mistakes_'+user.id,[]);const ids=new Set(m.map(x=>x.id));wrong.forEach(q=>{if(!ids.has(q.id))m.push(q)});LS.set('ubt_mistakes_'+user.id,m)}
+    let pg=getProg(user.id);pg.push({t:Date.now(),score,max,topic:st.subjectName,viol:lock.viol});if(pg.length>200)pg=pg.slice(-200);LS.set('ubt_prog_'+user.id,pg);
+    let hist=LS.get('ubt_hist_'+user.id,[]);hist.unshift({date:new Date().toLocaleString('kk-KZ'),score,max,topic:st.subjectName,viol:lock.viol,answers:{...st.answers},questions:st.questions.map(q=>({id:q.id,text:q.text,options:q.options,correct:q.correct}))});
+    if(hist.length>40)hist.pop();LS.set('ubt_hist_'+user.id,hist);
   }
-  if(!st.isMistakes&&wrong.length){let m=LS.get('ubt_mistakes_'+user.id,[]);const ids=new Set(m.map(x=>x.id));wrong.forEach(q=>{if(!ids.has(q.id))m.push(q)});LS.set('ubt_mistakes_'+user.id,m)}
-  {let pg=getProg(user.id);pg.push({t:Date.now(),score,max,topic:st.subjectName,viol:lock.viol});if(pg.length>200)pg=pg.slice(-200);LS.set('ubt_prog_'+user.id,pg)}
-  let hist=LS.get('ubt_hist_'+user.id,[]);hist.unshift({date:new Date().toLocaleString('kk-KZ'),score,max,topic:st.subjectName,viol:lock.viol,answers:{...st.answers},questions:st.questions.map(q=>({id:q.id,text:q.text,options:q.options,correct:q.correct}))});
-  if(hist.length>40)hist.pop();LS.set('ubt_hist_'+user.id,hist);
   // Points: 10 per correct + bonus for high %
   let gained=score*10;
   const pct=max?score/max:0;
   if(pct>=1) gained+=50; else if(pct>=0.8) gained+=25; else if(pct>=0.5) gained+=10;
-  if(!st.isMistakes) addPoints(gained);
+  gained=st.verifiedExam?st.verifiedExam.gained:0;
   st.lastWrong=wrong;st.lastScore={score,max,gained};
   document.getElementById('sc').textContent=score;document.getElementById('sm').textContent=max;
   document.getElementById('res-break').innerHTML=`<div class="res-row"><span>${esc(st.subjectName||'Тест')}</span><span style="font-weight:700;color:var(--p)">${score} / ${max}</span></div>
-    ${!st.isMistakes?`<div class="res-row"><span>Алынған ұпай</span><span style="font-weight:700;color:var(--ok)">+${gained} ⭐</span></div>`:''}
+    ${st.verifiedExam&&!st.verifiedExam.owner?`<div class="res-row"><span>Сервер растаған ұпай</span><span style="font-weight:700;color:var(--ok)">+${gained} ⭐</span></div>`:''}
     ${lock.viol?`<div class="res-row"><span>Ереже бұзу ескертулері</span><span style="font-weight:700;color:var(--err)">${lock.viol} / ${MAX_VIOL}</span></div>`:''}`;
   const certArea=document.getElementById('ubt-cert-area');
-  const eligible=max>0&&score/max>=.8&&!st.isMistakes&&lock.viol===0;
+  const eligible=!!st.verifiedExam&&max>0&&score/max>=.8&&!st.isMistakes&&lock.viol===0;
   st.certificate=eligible?{name:user.name,topic:st.subjectName||'ҰБТ тесті',score,max,date:new Date().toLocaleDateString('kk-KZ')}:null;
   certArea.innerHTML=eligible?'<button class="btn ubt-cert-btn" onclick="ubtDownloadCertificate()">🏅 Сертификатты жүктеу</button><p class="sub">80% немесе одан жоғары нәтиже. Бұл — платформаның оқу сертификаты.</p>':'<p class="sub">Сертификат алу үшін тесттен кемінде 80% жинап, ереже бұзбаңыз.</p>';
   showScr('s-res');
@@ -6210,6 +6481,7 @@ function touchStreak(){
 
 // ---------- Маусымдық рейтинг ----------
 function recordSeason(p){
+  return; // Ұпайды сервер есептейді.
   if(!user||user.isAdmin||!p)return;
   const idx=LS.get('ubt_season_idx',[]);let ch=false;
   [['w',weekKey()],['m',monthKey()]].forEach(a=>{
@@ -6224,6 +6496,7 @@ function seasonBoard(tag){
   return Object.keys(d).filter(id=>d[id]>0).map(id=>{const pr=profiles.find(x=>x.id===id);return{id,name:pr?pr.name:'?',points:d[id]}}).sort((a,b)=>b.points-a.points);
 }
 function checkRollover(){
+  return; // Кубокты сервер есептейді.
   const idx=LS.get('ubt_season_idx',[]),done=LS.get('ubt_awarded',[]);
   const cw='w_'+weekKey(),cm='m_'+monthKey();
   const tr=LS.get('ubt_trophies',[]);let ch=false;
@@ -6235,12 +6508,8 @@ function checkRollover(){
   if(ch){LS.set('ubt_trophies',tr);LS.set('ubt_awarded',done)}
 }
 function classBoard(){
-  return getClasses().filter(c=>c.students&&c.students.length).map(c=>{
-    const total=c.students.reduce((a,id)=>a+(getUserStats(id).points||0),0);
-    const withT=c.students.map(id=>studentStats(id)).filter(x=>x.n);
-    const tavg=withT.length?Math.round(withT.reduce((a,x)=>a+x.avg,0)/withT.length):0;
-    return{id:c.id,name:c.name,teacher:c.teacherName||'',n:c.students.length,total,avg:Math.round(total/c.students.length),tavg,mine:!!(user&&(c.teacherId===user.id||c.students.includes(user.id)))};
-  }).sort((a,b)=>b.avg-a.avg||b.total-a.total||b.n-a.n);
+  const mine=new Set(getClasses().map(c=>c.id));
+  return LS.get('ubt_class_board',[]).map(c=>({...c,mine:mine.has(c.id)})).sort((a,b)=>b.avg-a.avg||b.total-a.total||b.n-a.n);
 }
 function showClassRanking(){
   const board=classBoard().slice(0,10),cups=['🏆','🥈','🥉'],medals=['🥇','🥈','🥉'];
@@ -6301,7 +6570,7 @@ function toggleBm(q){
   if(i>=0)a.splice(i,1);else a.unshift({id:q.id,text:q.text,options:q.options.slice(),correct:q.correct,subjectName:q.subjectName||st.subjectName||'',points:1});
   LS.set('ubt_bm_'+user.id,a);
 }
-function togBm(){const q=st.questions[st.currentIndex];if(!q)return;toggleBm(q);updBmBtn()}
+function togBm(){const q=st.questions[st.currentIndex];if(!q)return;if(st.secureExam){alert('Тесттен кейін сұрақты таңдаулыға қосуға болады');return}toggleBm(q);updBmBtn()}
 function updBmBtn(){const q=st.questions[st.currentIndex],b=document.getElementById('bm');if(!b||!q)return;const on=isBm(q);b.textContent=on?'★':'☆';b.classList.toggle('on',on)}
 function showBookmarks(){renderBookmarks();showScr('s-bm')}
 function renderBookmarks(){
@@ -6320,15 +6589,11 @@ function startBm(){
 
 // ---------- Күн сұрағы ----------
 function getQotd(){
-  const today=dayKey(),saved=LS.get('ubt_qotd_day',null);
-  if(saved&&saved.date===today&&saved.q)return saved.q;
+  const today=dayKey();
   const pool=[];
   Object.values(BANK).forEach(b=>b.qs.forEach(q=>pool.push({text:q.text,options:q.options,correct:q.correct,subjectName:b.name})));
-  publicTests().forEach(t=>t.questions.forEach(q=>{if(q.options&&q.options.length>=2)pool.push({text:q.text,options:q.options,correct:q.correct,subjectName:t.topic})}));
   if(!pool.length)return null;
-  const q=pool[hash(today)%pool.length];
-  LS.set('ubt_qotd_day',{date:today,q});
-  return q;
+  return pool[hash(today)%pool.length];
 }
 function qotdHTML(){
   const q=getQotd();if(!q)return '';
@@ -6339,14 +6604,14 @@ function qotdHTML(){
     if(answered){cls+=' lock';if(i===q.correct)cls+=' ok';else if(i===rec.ans)cls+=' bad'}
     return `<div class="${cls}" ${answered?'':`onclick="answerQotd(${i})"`}><b>${L[i]}</b><span>${esc(o)}</span></div>`;
   }).join('');
-  const msg=answered?(rec.ans===q.correct?'<div style="color:var(--ok);font-weight:700;font-size:13px">✅ Дұрыс! +20 ⭐ бонус алдыңыз</div>':'<div style="color:var(--err);font-weight:700;font-size:13px">❌ Бұл жолы болмады. Ертең жаңа сұрақ!</div>'):'<div class="sub">Дұрыс жауап берсеңіз +20 ⭐</div>';
+  const msg=answered?(rec.ans===q.correct?'<div style="color:var(--ok);font-weight:700;font-size:13px">✅ Дұрыс жауап!</div>':'<div style="color:var(--err);font-weight:700;font-size:13px">❌ Бұл жолы болмады. Ертең жаңа сұрақ!</div>'):'<div class="sub">Өзіңізді тексеріңіз</div>';
   return `<div class="card"><h3 style="margin-bottom:8px">❓ Күн сұрағы <span class="sub" style="font-weight:400">· ${esc(q.subjectName||'')}</span></h3><div style="font-size:14px;margin-bottom:10px">${esc(q.text)}</div>${ops}${msg}</div>`;
 }
 function answerQotd(i){
   const q=getQotd();if(!q||!user||user.isAdmin)return;
   const rec=LS.get('ubt_qotd_'+user.id,null);if(rec&&rec.date===dayKey())return;
   LS.set('ubt_qotd_'+user.id,{date:dayKey(),ans:i});
-  if(i===q.correct){addPoints(20);confetti(90)}
+  if(i===q.correct)confetti(90);
   renderHomeExtras();
 }
 
@@ -6618,8 +6883,8 @@ function afterFinish(){
   let extra='';
   const sk=touchStreak();
   if(sk.isNew){
-    if(sk.bonus)addPoints(sk.bonus);
-    extra+=`<div class="res-row"><span>🔥 Streak: ${sk.count} күн қатарынан</span><span style="font-weight:700;color:var(--ok)">+${sk.bonus} ⭐</span></div>`;
+    // Күндер тізбегі оқу жетістігі ретінде көрсетіледі.
+    extra+=`<div class="res-row"><span>🔥 Streak: ${sk.count} күн қатарынан</span><span style="font-weight:700;color:var(--ok)">Жаңа күн</span></div>`;
   }else extra+=`<div class="res-row"><span>🔥 Streak</span><span style="font-weight:700">${sk.count} күн</span></div>`;
   const prev=getProg(user.id).slice(0,-1).filter(p=>p.max>=5).map(pctOf);
   const isRec=!st.isMistakes&&ls.max>=5&&prev.length>0&&cur>Math.max.apply(null,prev);
@@ -7253,23 +7518,16 @@ function startUbt140(){
   const _et=editTest;
   editTest=function(id){_et(id);try{renderTestSettings()}catch(e){}};
   const _sut=startUserTest;
-  startUserTest=function(id){
+  startUserTest=async function(id){
     const t=allTests().find(x=>x.id===id);
     let owner=false;
     if(t&&user){
       const c=t.classId?getClasses().find(x=>x.id===t.classId):null;
       owner=!!(user.isAdmin||t.authorId===user.id||(c&&c.teacherId===user.id));
       if(t.classId&&!owner&&!(c&&c.students.includes(user.id))){alert('Бұл тест тек сынып оқушыларына арналған');return}
-      if(t.limit>0&&!owner&&attemptsOf(id,user.id)>=t.limit){alert('Лимит таусылды: бұл тестті '+t.limit+' рет қана тапсыруға болады');return}
-      if(t.accessCode&&!owner){const typed=prompt('🔑 Тестке кіру кодын енгізіңіз:');if(typed===null||typed.trim()!==t.accessCode){alert('Кіру коды қате');return}}
+      if(t.requiresCode&&!owner&&!assignedStartPermit){var typed=prompt('🔑 Тестке кіру кодын енгізіңіз:');if(typed===null)return}
     }
-    _sut(id);
-    try{
-      if(t&&user&&document.getElementById('s-test').classList.contains('active')&&st.testId===id){
-        if(t.timerMin>0){st.timerSeconds=t.timerMin*60;updTimer()}
-        if(!owner)bumpAttempt(id,user.id);
-      }
-    }catch(e){}
+    await _sut(id,typed);
   };
   const _rt=renderTeacher;
   renderTeacher=function(){
@@ -7299,7 +7557,7 @@ function startUbt140(){
       if(!user||user.isAdmin||st.isMistakes||!st.lastScore)return;
       if(st.testId){
         const t=allTests().find(x=>x.id===st.testId);
-        if(t&&t.classId){const r=LS.get('ubt_tres_'+t.id,[]);r.push({uid:user.id,name:user.name,score:st.lastScore.score,max:st.lastScore.max,t:Date.now()});LS.set('ubt_tres_'+t.id,r)}
+        // Расталған сынып бағасын сервер сақтайды.
       }
       if(st.is140){
         const by={},order=[];
