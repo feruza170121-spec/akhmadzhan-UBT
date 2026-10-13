@@ -1482,6 +1482,7 @@ html_code = r"""
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ҰБТ+</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/mammoth@1.9.1/mammoth.browser.min.js"></script>
 <style>
 :root{--p:#2563eb;--pd:#1d4ed8;--ok:#16a34a;--err:#dc2626;--warn:#f59e0b;--bg:#f1f5f9;--c:#fff;--t:#0f172a;--m:#64748b;--b:#e2e8f0}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -2665,7 +2666,7 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
         <div class="fg"><label>Сұрақты іздеу</label><input id="u-bank-search" placeholder="Сұрақ мәтіні" oninput="renderUbtBank()"></div>
       </div>
       <div class="row" style="justify-content:flex-start;margin-bottom:16px"><button class="btn btn-ok" onclick="showAddQuestionFromBank()">➕ Сұрақ қосу</button><button class="btn btn-s" onclick="showPublicTests()">🌐 Жария тесттен жүктеу</button></div>
-      <div id="u-bank-list"></div>
+      <p class="sub" style="margin-bottom:8px">📁 Пән → тест файлы → ішіндегі сұрақтар. Файлды ашып, қажетті сұрақтарды белгілеңіз.</p><div id="u-bank-list"></div>
     </div>
     <div class="row"><button class="btn btn-s" onclick="goHome()">Басты бет</button></div>
   </div>
@@ -5178,19 +5179,23 @@ function autoFillCreate(){
   if(tp&&!tp.value.trim()){const v=(r.meta&&r.meta.topic)||nm;if(v)tp.value=v}
   const so=matchSubject(r.meta&&r.meta.subject);if(so&&sel&&!sel.value)sel.value=so.value;
 }
-function bulkFromFile(ctx,inp){
+async function bulkFromFile(ctx,inp){
   const f=inp.files&&inp.files[0];if(!f)return;
-  if(f.size>2*1024*1024){alert('Файл тым үлкен (2 МБ-тан аспауы керек)');inp.value='';return}
-  const rd=new FileReader();
-  rd.onload=()=>{
-    const txt=String(rd.result);
-    if(txt.indexOf('\uFFFD')>=0)alert('Файл UTF-8 кодтауында емес болуы мүмкін. Excel-де «CSV UTF-8» ретінде сақтаңыз.');
+  if(f.size>5*1024*1024){alert('Файл тым үлкен (5 МБ-тан аспауы керек)');inp.value='';return}
+  try{
+    let txt='';
+    if(/\.docx$/i.test(f.name)){
+      if(typeof mammoth==='undefined'){alert('Word оқу кітапханасы жүктелмеді. Интернетті тексеріңіз.');return}
+      const result=await mammoth.extractRawText({arrayBuffer:await f.arrayBuffer()});
+      txt=result.value||'';
+    }else{
+      txt=await f.text();
+      if(txt.indexOf('\uFFFD')>=0)alert('Файл UTF-8 кодтауында емес болуы мүмкін.');
+    }
     document.getElementById(ctx+'-bulk-text').value=txt;
     bulkName[ctx]=f.name;
-    bulkRefresh(ctx,f.name);
-  };
-  rd.onerror=()=>alert('Файлды оқу мүмкін болмады');
-  rd.readAsText(f,'utf-8');
+    bulkRefresh(ctx,/\.docx$/i.test(f.name)?f.name.replace(/\.docx$/i,'.txt'):f.name);
+  }catch(e){alert('Файлды оқу мүмкін болмады: '+String(e.message||e).slice(0,120))}
 }
 function clearBulk(ctx){
   bulk[ctx]=null;bulkName[ctx]='';
@@ -5206,7 +5211,7 @@ function bulkBlock(ctx){
   }[ctx];
   return `<div class="card">
     <h3 style="margin-bottom:6px">📥 ${ctx==='c'?'Сұрақтар файлы (барлық сұрақ бір файлда)':ctx==='f'?'Сұрақтар файлы':'Файлдан сұрақ қосу'}</h3>
-    <p class="sub" style="margin-bottom:10px">Файл таңдаңыз (.txt, .csv) немесе мәтінді / Excel-ден көшірілген кестені қойыңыз. Бір реттен 500 сұраққа дейін.</p>
+    <p class="sub" style="margin-bottom:10px">Файл таңдаңыз (.docx, .txt, .csv, .json) немесе мәтінді / Excel-ден көшірілген кестені қойыңыз. Бір реттен 500 сұраққа дейін.</p>
     <details style="margin-bottom:12px"><summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--p)">Формат үлгісі</summary>
       <pre style="font-size:12px;background:var(--bg);border-radius:20px;padding:10px;margin:8px 0;white-space:pre-wrap">1. Сұрақ мәтіні
 A) нұсқа
@@ -5219,7 +5224,7 @@ D) нұсқа
 Excel/CSV: 6 баған — сұрақ, A, B, C, D, дұрыс жауап (A–D))</pre>
       <button class="btn btn-s btn-sm" onclick="downloadSample()">⬇ Үлгі файл</button>
     </details>
-    <div class="fg"><label>Файлдан жүктеу</label><input type="file" id="${ctx}-bulk-file" accept=".txt,.csv,.tsv,.json,text/plain,text/csv" onchange="bulkFromFile('${ctx}',this)"></div>
+    <div class="fg"><label>Файлдан жүктеу</label><input type="file" id="${ctx}-bulk-file" accept=".docx,.txt,.csv,.tsv,.json,text/plain,text/csv" onchange="bulkFromFile('${ctx}',this)"></div>
     <div class="fg"><label>немесе мәтінді осында қойыңыз</label><textarea id="${ctx}-bulk-text" style="min-height:160px;font-family:monospace;font-size:13px" placeholder="1. Сұрақ...&#10;A) ...&#10;B) ...&#10;C) ...&#10;D) ...&#10;Жауап: B" oninput="bulkRefresh('${ctx}','')"></textarea></div>
     <div id="${ctx}-bulk-info"></div>
     <div class="row" style="justify-content:flex-start">${btns}</div>
@@ -7099,14 +7104,22 @@ function renderUbtBank(){
   const subjectOrder=Array.from(document.querySelectorAll('#c-subject option')).map(o=>o.value);
   groups.sort((a,b)=>subjectOrder.indexOf(a)-subjectOrder.indexOf(b));
   el.innerHTML=`<p class="sub" style="margin-bottom:10px">Барлығы: <b>${bank.length}</b> · Көрсетілгені: <b>${visible.length}</b> · Таңдалғаны: <b>${bank.filter(q=>selected.has(q.id)).length}</b></p>`+
-    (visible.length?groups.map(subject=>`<section style="margin-top:18px"><h3 style="margin-bottom:10px">${esc(subjName(subject))} · ${visible.filter(q=>q.subject===subject).length} сұрақ</h3>`+visible.filter(q=>q.subject===subject).map(q=>{
-      const canPick=manual&&allowed.has(q.subject);
-      return `<div class="ubt-bank-row"><input type="checkbox" aria-label="140 форматқа қосу" ${selected.has(q.id)?'checked':''} ${canPick?'':'disabled'} onchange="toggleUbtQuestion(${jsq(q.id)},this.checked)">
-        <div class="info"><strong>${esc(q.text)}</strong><p>${esc(subjName(q.subject))} · ${esc(q.source)} · Дұрыс жауап: ${esc(q.options[q.correct])}</p>${!allowed.has(q.subject)?'<p>Бұл пән таңдалған ҰБТ құрамына кірмейді</p>':''}</div>
-        <select aria-label="Сұрақтың пәнін ауыстыру" title="Сұрақтың пәнін ауыстыру" style="max-width:125px" onchange="moveUbtBankQuestion(${jsq(q.id)},this.value)">${Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value).map(o=>`<option value="${esc(o.value)}" ${o.value===q.subject?'selected':''}>${esc(o.textContent)}</option>`).join('')}</select>
-        <button class="btn btn-d btn-sm" onclick="deleteUbtBankQuestion(${jsq(q.id)})">Өшіру</button>
-      </div>`;
-    }).join('')+'</section>').join(''):'<p class="sub">Бұл сүзгі бойынша сұрақ жоқ. Жаңа сұрақ қосыңыз немесе өз тестіңізді құрыңыз.</p>');
+    (visible.length?groups.map(subject=>{
+      const sq=visible.filter(q=>q.subject===subject);
+      const folders=[...new Set(sq.map(q=>q.source||'Басқа сұрақтар'))];
+      return `<details class="card" style="margin-top:12px" ${filter?'open':''}><summary style="cursor:pointer;font-weight:700;font-size:16px">📁 ${esc(subjName(subject))} · ${sq.length} сұрақ</summary>`+
+        folders.map(folder=>{
+          const fq=sq.filter(q=>(q.source||'Басқа сұрақтар')===folder);
+          return `<details style="margin:10px 0 0 12px;padding:10px;border:1px solid var(--b);border-radius:14px;background:var(--bg)" ${query?'open':''}><summary style="cursor:pointer;font-weight:600">📄 ${esc(folder)} · ${fq.length} сұрақ</summary><div style="margin-top:12px">`+
+          fq.map(q=>{
+            const canPick=manual&&allowed.has(q.subject);
+            return `<div class="ubt-bank-row"><input type="checkbox" aria-label="140 форматқа қосу" ${selected.has(q.id)?'checked':''} ${canPick?'':'disabled'} onchange="toggleUbtQuestion(${jsq(q.id)},this.checked)">
+            <div class="info"><strong>${esc(q.text)}</strong><p>Дұрыс жауап: ${esc(q.options[q.correct])}</p>${!allowed.has(q.subject)?'<p>Бұл пән таңдалған ҰБТ құрамына кірмейді</p>':''}</div>
+            <select aria-label="Сұрақтың пәнін ауыстыру" title="Сұрақтың пәнін ауыстыру" style="max-width:125px" onchange="moveUbtBankQuestion(${jsq(q.id)},this.value)">${Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value).map(o=>`<option value="${esc(o.value)}" ${o.value===q.subject?'selected':''}>${esc(o.textContent)}</option>`).join('')}</select>
+            <button class="btn btn-d btn-sm" onclick="deleteUbtBankQuestion(${jsq(q.id)})">Өшіру</button></div>`;
+          }).join('')+'</div></details>';
+        }).join('')+'</details>';
+    }).join(''):'<p class="sub">Бұл сүзгі бойынша сұрақ жоқ. Жаңа сұрақ қосыңыз немесе өз тестіңізді құрыңыз.</p>');
 }
 function toggleUbtQuestion(id,on){
   const bank=ubtQuestionBank(),q=bank.find(x=>x.id===id);if(!q)return;
