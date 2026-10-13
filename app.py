@@ -1,3 +1,5 @@
+import base64
+import binascii
 import hashlib
 import hmac
 import datetime
@@ -36,6 +38,8 @@ _NO_SYNC = ("ubt_current", "ubt_dark")
 # Кілт жоқ болса — бұрынғыдай тек ubt_data.json файлы қолданылады.
 # ======================================================================
 _TABLE = "ubt_kv"
+_BOOK_BUCKET = "ubt-books"
+_MAX_BOOK_BYTES = 5 * 1024 * 1024
 
 # ======================================================================
 # ҚАУІПСІЗДІК
@@ -132,6 +136,29 @@ def _sb_upsert(conf, items):
 
 def _sb_delete(conf, key):
     _sb_call(conf, "DELETE", "%s?key=eq.%s" % (_TABLE, urllib.parse.quote(key, safe="")), prefer="return=minimal")
+
+
+def _book_storage(conf, method, path, data=None, content_type="application/json"):
+    base, key = conf
+    headers = {"apikey": key, "Content-Type": content_type}
+    if key.startswith("eyJ"):
+        headers["Authorization"] = "Bearer " + key
+    req = urllib.request.Request(base + "/storage/v1/" + path, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=50) as response:
+        raw = response.read()
+    return json.loads(raw) if raw else {}
+
+
+def _book_storage_bucket(conf):
+    try:
+        bucket = _book_storage(conf, "GET", "bucket/" + _BOOK_BUCKET)
+        if bucket.get("public") is True:
+            raise ValueError("Кітаптар қоймасы жабық болуы тиіс")
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+        _book_storage(conf, "POST", "bucket", _jdump({"id": _BOOK_BUCKET, "name": _BOOK_BUCKET,
+            "public": False, "file_size_limit": _MAX_BOOK_BYTES, "allowed_mime_types": ["application/pdf"]}).encode("utf-8"))
 
 
 # ---------------------------------------------------------------- хэштеу
@@ -665,6 +692,71 @@ def _handle_req(state, sid, rq):
     typ = rq.get("type")
     d = rq.get("data") if isinstance(rq.get("data"), dict) else {}
     sess = _session(state, rq.get("tok"))
+
+    if typ == "book_add":
+        if not sess or not sess["admin"]:
+            return {"ok": False, "msg": "Кітапты тек админ жүктей алады"}
+        subject, title, encoded = d.get("subject"), d.get("title"), d.get("base64")
+        allowed = {"history", "reading", "mathlit", "math", "physics", "chemistry", "biology",
+                   "geography", "informatics", "english", "kazakh", "worldhistory", "law", "other"}
+        if subject not in allowed or not isinstance(title, str) or not 1 <= len(title.strip()) <= 120 or \
+           not isinstance(encoded, str) or len(encoded) > (_MAX_BOOK_BYTES * 4 // 3 + 8):
+            return {"ok": False, "msg": "Пәнді, атауды және PDF файлын тексеріңіз"}
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError):
+            return {"ok": False, "msg": "PDF файлы оқылмады"}
+        if not 10 <= len(data) <= _MAX_BOOK_BYTES or not data.startswith(b"%PDF-"):
+            return {"ok": False, "msg": "Тек 5 МБ-қа дейінгі PDF файлын таңдаңыз"}
+        conf = _sb_conf()
+        if not conf or conf[1].startswith("sb_publishable_"):
+            return {"ok": False, "msg": "Кітаптарды сақтау үшін серверде Supabase құпия кілті қажет"}
+        with state["lock"]:
+            books = _jload(state["db"].get("ubt_books", "[]"), list, [])
+            if len(books) >= 200:
+                return {"ok": False, "msg": "Кітап санының шегі: 200"}
+            book_id = "book_" + secrets.token_hex(12)
+            path = book_id + ".pdf"
+            try:
+                _book_storage_bucket(conf)
+                _book_storage(conf, "POST", "object/" + _BOOK_BUCKET + "/" + path,
+                              data=data, content_type="application/pdf")
+            except (urllib.error.URLError, ValueError, TimeoutError) as exc:
+                return {"ok": False, "msg": "PDF сақталмады. Қойма рұқсатын және орын көлемін тексеріңіз"}
+            books.append({"id": book_id, "subject": subject, "title": title.strip(),
+                          "size": len(data), "created": int(time.time())})
+            _put(state, "ubt_books", _jdump(books))
+            _commit(state)
+        return {"ok": True, "id": book_id}
+
+    if typ in ("book_open", "book_delete"):
+        if not sess or (typ == "book_delete" and not sess["admin"]):
+            return {"ok": False, "msg": "Рұқсат жоқ"}
+        book_id = d.get("id")
+        if not isinstance(book_id, str) or not re.fullmatch(r"book_[0-9a-f]{24}", book_id):
+            return {"ok": False, "msg": "Кітап табылмады"}
+        with state["lock"]:
+            books = _jload(state["db"].get("ubt_books", "[]"), list, [])
+            book = next((b for b in books if isinstance(b, dict) and b.get("id") == book_id), None)
+            if not book:
+                return {"ok": False, "msg": "Кітап табылмады"}
+            conf = _sb_conf()
+            if not conf:
+                return {"ok": False, "msg": "Кітаптар қоймасы қолжетімсіз"}
+            path = "object/" + ("" if typ == "book_delete" else "sign/") + _BOOK_BUCKET + "/" + book_id + ".pdf"
+            try:
+                if typ == "book_delete":
+                    _book_storage(conf, "DELETE", path)
+                    _put(state, "ubt_books", _jdump([b for b in books if b.get("id") != book_id]))
+                    _commit(state)
+                    return {"ok": True}
+                signed = _book_storage(conf, "POST", path, _jdump({"expiresIn": 600}).encode("utf-8"))
+                relative = signed.get("signedURL") or signed.get("signedUrl")
+                if not isinstance(relative, str) or not relative.startswith("/object/sign/" + _BOOK_BUCKET + "/"):
+                    raise ValueError("Signed URL invalid")
+                return {"ok": True, "url": conf[0] + "/storage/v1" + relative}
+            except (urllib.error.URLError, ValueError, TimeoutError):
+                return {"ok": False, "msg": "Кітап қазір ашылмайды. Қайта байқап көріңіз"}
 
     if typ == "start_exam":
         return _start_exam(state, sess, d)
@@ -1505,6 +1597,8 @@ def _authorize(state, sess, k, v, chat_token=""):
         return _merge_class_chat(state, sess, v)
     if k == "ubt_qotd_day":
         return None
+    if k == "ubt_books":
+        return None  # тек сервер арқылы админ жазады
     if k in ("ubt_formulas", "ubt_season_idx", "ubt_awarded", "ubt_trophies") or k.startswith("ubt_season_"):
         return v if sess["admin"] else None
     if k == "ubt_seed_funksiya":
@@ -1834,7 +1928,19 @@ html,body{overflow-x:hidden}
 .chem-table-dialog{border:0;border-radius:18px;padding:0;width:min(1100px,96vw);max-width:96vw;box-shadow:0 20px 70px #0005}
 .chem-table-dialog::backdrop{background:#0b122bcc}
 .chem-table-dialog .chem-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 18px;background:var(--c)}
-.chem-table-dialog iframe{display:block;width:100%;height:min(76vh,850px);border:0;background:white}
+.test-tools{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}
+.chem-table-dialog .periodic-scroll{max-height:75vh;overflow:auto;padding:15px}
+.periodic-grid{display:grid;grid-template-columns:repeat(18,minmax(45px,1fr));gap:4px;min-width:880px}
+.periodic-cell{min-height:47px;border-radius:7px;background:#e5ebff;color:#14265c;padding:3px;font-size:11px;text-align:center}
+.periodic-cell b{display:block;font-size:15px}.periodic-cell small{display:block;text-align:left;font-size:9px}
+.periodic-cell.lanth{background:#fce4b8}.periodic-cell.actin{background:#fad5e0}
+.periodic-cell.marker{background:#e7ddfb;font-size:10px;display:grid;place-items:center}
+.calc-dialog,.finish-dialog{border:0;border-radius:18px;padding:18px;width:min(360px,94vw);background:var(--c);color:var(--t)}
+.calc-dialog::backdrop,.finish-dialog::backdrop{background:#0b122bcc}
+.calc-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px}
+.calc-grid button{min-height:48px;border-radius:12px;border:1px solid var(--b);background:var(--bg);color:var(--t);font-size:18px;cursor:pointer}
+.finish-dialog input{width:100%;font-size:20px;padding:12px;margin:12px 0;border-radius:10px;border:1px solid var(--b);background:var(--bg);color:var(--t)}
+@media(max-width:600px){.chem-table-dialog{width:100vw;max-width:100vw;height:100dvh;max-height:100dvh;border-radius:0}.chem-table-dialog .periodic-scroll{max-height:calc(100dvh - 115px)}.test-tools .btn{flex:1;min-height:44px}}
 .qimg{display:block;max-width:100%;max-height:340px;margin:0 auto 14px;border-radius:14px;border:1px solid var(--b);object-fit:contain;background:#fff}
 .qtbl-w{overflow-x:auto;margin:0 0 14px}
 .qtbl{border-collapse:collapse;margin:0 auto;font-size:14px}
@@ -2373,6 +2479,7 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
       <div class="mode" onclick="showAddQ()"><div class="ic">🖼</div><h3>Сұрақ қосу</h3><p>Сурет · кесте · барлық пән</p></div>
       <div class="mode" onclick="showSchemes()"><div class="ic">🗺</div><h3>Схема құру</h3><p>Кезеңдер · карточка · фото</p></div>
       <div class="mode" onclick="showLessons()"><div class="ic">🎬</div><h3>Анимациялық сабақтар</h3><p>Анимация + код</p></div>
+      <div class="mode" onclick="showLibrary()"><div class="ic">📖</div><h3>Кітапхана</h3><p>Әр пәннің кітаптары бөлек</p></div>
       <div class="mode" onclick="showRanking()" style="grid-column:1/-1"><div class="ic">🏆</div><h3>Рейтинг</h3><p>Ортақ көшбасшылар</p></div>
     </div>
     <div class="grid2 home-tools">
@@ -2664,6 +2771,22 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
   </div>
 </div>
 
+<div id="s-library" class="screen">
+  <div class="wrap">
+    <div class="hdr"><h2>📖 Кітапхана</h2><p class="sub">Кітапты пәні бойынша таңдаңыз</p></div>
+    <div class="card" id="library-admin" style="display:none">
+      <h3>➕ Кітап жүктеу · тек админ</h3>
+      <div class="grid2"><div class="fg"><label>Пән</label><select id="library-subject"></select></div>
+      <div class="fg"><label>Кітап атауы</label><input id="library-title" maxlength="120" placeholder="Мысалы: 8-сынып химия"></div></div>
+      <div class="fg"><label>PDF кітабы (5 МБ-қа дейін)</label><input id="library-file" type="file" accept=".pdf,application/pdf"></div>
+      <button class="btn btn-p" id="library-upload" onclick="uploadBook()">📤 Жүктеу</button><p class="sub" id="library-status" role="status"></p>
+    </div>
+    <div class="fg"><label>Пән бойынша қарау</label><select id="library-filter" onchange="renderLibrary()"></select></div>
+    <div id="library-list"></div>
+    <div class="row" style="margin-top:20px"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+  </div>
+</div>
+
 <div id="s-lessons" class="screen">
   <div class="wrap">
     <div class="hdr"><h2>🎬 Анимациялық сабақтар</h2><p class="sub">Тақырыпты анимация арқылы түсіндіретін сабақтар</p></div>
@@ -2771,10 +2894,10 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
       <div class="ttop">
         <div class="prog-t" id="prog-t">Сұрақ 1 / 10</div>
         <div class="prog-w"><div class="prog-f" id="prog-f" style="width:0%"></div></div>
-        <button class="btn btn-s btn-sm" id="chem-table-button" onclick="openChemTable()" style="display:none" title="Менделеев кестесін ашу">⚗️ Кесте</button>
         <div class="timer" id="timer">00:30:00</div>
         <div class="prog-t" id="viol" style="display:none;background:#fef2f2;color:var(--err)"></div>
       </div>
+      <div class="test-tools"><button class="btn btn-s btn-sm" onclick="openChemTable()">⚗️ Менделеев кестесі</button><button class="btn btn-s btn-sm" onclick="openCalculator()">🧮 Калькулятор</button></div>
       <div class="qc">
         <div class="qh"><span class="qnum" id="qnum">Сұрақ 1</span><span style="display:flex;gap:6px"><button class="flag" id="bm" onclick="togBm()" title="Таңдаулыға сақтау">☆</button><button class="flag" id="flag" onclick="togFlag()">🚩</button></span></div>
         <div class="qt" id="qtext"></div>
@@ -2791,8 +2914,19 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
 
 <dialog id="chem-table-dialog" class="chem-table-dialog" aria-label="Менделеевтің периодтық кестесі">
   <div class="chem-head"><b>⚗️ Менделеевтің периодтық кестесі</b><button class="btn btn-s btn-sm" onclick="closeChemTable()">Жабу ✕</button></div>
-  <iframe id="chem-table-frame" title="IUPAC элементтердің периодтық кестесі" loading="lazy"></iframe>
-  <div style="padding:10px 18px"><a href="https://iupac.org/wp-content/uploads/2022/07/IUPAC_Periodic_Table-04May22_CRA.pdf" target="_blank" rel="noopener noreferrer">Кесте ашылмаса, PDF түрінде ашу</a></div>
+  <div class="periodic-scroll"><div id="periodic-grid" class="periodic-grid"></div></div>
+  <div style="padding:10px 18px"><a href="https://iupac.org/wp-content/uploads/2022/07/IUPAC_Periodic_Table-04May22_CRA.pdf" target="_blank" rel="noopener noreferrer">Толық кесте және атомдық массалар (IUPAC PDF)</a></div>
+</dialog>
+<dialog id="calc-dialog" class="calc-dialog" aria-label="Калькулятор">
+  <div class="row" style="justify-content:space-between"><b>🧮 Калькулятор</b><button class="btn btn-s btn-sm" onclick="document.getElementById('calc-dialog').close()">Жабу ✕</button></div>
+  <input id="calc-display" aria-label="Калькулятор нәтижесі" readonly value="0" style="width:100%;font-size:27px;text-align:right;margin-top:12px;padding:10px;border:1px solid var(--b);border-radius:10px;background:var(--bg);color:var(--t)">
+  <div id="calc-keys" class="calc-grid"></div>
+</dialog>
+<dialog id="finish-dialog" class="finish-dialog" aria-label="Тестті аяқтау">
+  <h3>Тестті аяқтау</h3><p id="finish-puzzle"></p>
+  <input id="finish-puzzle-answer" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" aria-label="Есептің жауабы">
+  <p id="finish-puzzle-error" style="color:var(--err);min-height:20px" role="alert"></p>
+  <div class="row"><button class="btn btn-s" onclick="closeFinishDialog()">Қайту</button><button class="btn btn-p" onclick="confirmFinishDialog()">Аяқтау</button></div>
 </dialog>
 
 <div id="s-res" class="screen">
@@ -4241,20 +4375,66 @@ function beginTest(){
   document.getElementById('ubt-start-cancel').onclick=async()=>{modal.remove();if(st.secureExam){const r=await authCall('cancel_exam',{exam:st.secureExam});if(!r.ok)alert(r.msg||'Тапсыру лимиті сақталды')}st=baseState()};
   document.getElementById('ubt-start-confirm').onclick=()=>{
     st.instantFeedback=!st.secureExam&&document.getElementById('ubt-instant-choice').checked;
-    modal.remove();st.questions=shuf(st.questions.map(q=>st.secureExam?{...q,options:q.options.slice()}:shuffleOpts({...q,options:Array.isArray(q.options)?q.options.slice():[]})));st.currentIndex=0;st.answers={};st.flags={};showScr('s-test');updateChemTableButton();renderNav();renderQ();startTimer();updateProg();lockStart();
+    modal.remove();st.questions=shuf(st.questions.map(q=>st.secureExam?{...q,options:q.options.slice()}:shuffleOpts({...q,options:Array.isArray(q.options)?q.options.slice():[]})));st.currentIndex=0;st.answers={};st.flags={};showScr('s-test');renderNav();renderQ();startTimer();updateProg();lockStart();
   };
 }
-const PERIODIC_TABLE_URL='https://iupac.org/wp-content/uploads/2022/07/IUPAC_Periodic_Table-04May22_CRA.pdf';
-function updateChemTableButton(){
-  const isChem=/химия|chemistry|chemical/i.test(st.subjectName||'')||st.questions.some(q=>/химия|chemistry|chemical/i.test(q.subjectName||''));
-  document.getElementById('chem-table-button').style.display=isChem?'inline-flex':'none';
-}
+const PERIODIC_ROWS=[
+  ['H','','','','','','','','','','','','','','','','','He'],
+  ['Li','Be','','','','','','','','','','','B','C','N','O','F','Ne'],
+  ['Na','Mg','','','','','','','','','','','Al','Si','P','S','Cl','Ar'],
+  'K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr'.split(' '),
+  'Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te I Xe'.split(' '),
+  ['Cs','Ba','57–71',...'Hf Ta W Re Os Ir Pt Au Hg Tl Pb Bi Po At Rn'.split(' ')],
+  ['Fr','Ra','89–103',...'Rf Db Sg Bh Hs Mt Ds Rg Cn Nh Fl Mc Lv Ts Og'.split(' ')],
+  ['', '', ...'La Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu'.split(' '),''],
+  ['', '', ...'Ac Th Pa U Np Pu Am Cm Bk Cf Es Fm Md No Lr'.split(' '),'']
+];
+const PERIODIC_SYMBOLS=('H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar '+
+  'K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr '+
+  'Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te I Xe '+
+  'Cs Ba La Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu Hf Ta W Re Os Ir Pt Au Hg Tl Pb Bi Po At Rn '+
+  'Fr Ra Ac Th Pa U Np Pu Am Cm Bk Cf Es Fm Md No Lr Rf Db Sg Bh Hs Mt Ds Rg Cn Nh Fl Mc Lv Ts Og').split(' ');
 function openChemTable(){
   const dialog=document.getElementById('chem-table-dialog');
-  document.getElementById('chem-table-frame').src=PERIODIC_TABLE_URL;
+  const grid=document.getElementById('periodic-grid');
+  if(!grid.children.length){
+    grid.innerHTML=PERIODIC_ROWS.flatMap((row,y)=>row.map((symbol,x)=>{
+      if(!symbol)return '<span></span>';
+      if(symbol.includes('–'))return `<span class="periodic-cell marker">${symbol}</span>`;
+      const n=PERIODIC_SYMBOLS.indexOf(symbol)+1;
+      return `<span class="periodic-cell${y===7?' lanth':y===8?' actin':''}" title="${symbol} · ${n}"><small>${n}</small><b>${symbol}</b></span>`;
+    })).join('');
+  }
   if(!dialog.open)dialog.showModal();
 }
 function closeChemTable(){document.getElementById('chem-table-dialog').close()}
+const calcState={value:'0',saved:null,operator:null,fresh:true};
+function openCalculator(){
+  const keys=document.getElementById('calc-keys');
+  if(!keys.children.length){
+    ['C','⌫','÷','×','7','8','9','−','4','5','6','+','1','2','3','=','±','0','.','%'].forEach(key=>{
+      const button=document.createElement('button');button.type='button';button.textContent=key;
+      button.onclick=()=>pressCalculator(key);keys.appendChild(button);
+    });
+  }
+  document.getElementById('calc-dialog').showModal();
+}
+function pressCalculator(key){
+  const c=calcState;
+  if(key==='C'){c.value='0';c.saved=null;c.operator=null;c.fresh=true}
+  else if(key==='⌫'){c.value=c.value.length>1?c.value.slice(0,-1):'0'}
+  else if(/[0-9]/.test(key)&&key.length===1){c.value=c.fresh||c.value==='0'?key:c.value+key;c.fresh=false}
+  else if(key==='.'){if(c.fresh){c.value='0.';c.fresh=false}else if(!c.value.includes('.'))c.value+='.'}
+  else if(key==='±'){c.value=String(-Number(c.value))}
+  else if(key==='%'){c.value=String(Number(c.value)/100)}
+  else if(['+','−','×','÷'].includes(key)){c.saved=Number(c.value);c.operator=key;c.fresh=true}
+  else if(key==='='&&c.operator&&c.saved!==null){
+    const b=Number(c.value),a=c.saved;
+    const result=c.operator==='+'?a+b:c.operator==='−'?a-b:c.operator==='×'?a*b:b===0?NaN:a/b;
+    c.value=Number.isFinite(result)?String(Number(result.toPrecision(12))):'Қате';c.saved=null;c.operator=null;c.fresh=true;
+  }
+  document.getElementById('calc-display').value=c.value;
+}
 function renderNav(){document.getElementById('qnav').innerHTML=st.questions.map((_,i)=>`<button class="qn" onclick="goQ(${i})">${i+1}</button>`).join('');updNav()}
 function updNav(){document.querySelectorAll('.qn').forEach((b,i)=>{b.classList.remove('cur','ans','flg');if(i===st.currentIndex)b.classList.add('cur');if(st.answers[st.questions[i].id]!==undefined)b.classList.add('ans');if(st.flags[st.questions[i].id])b.classList.add('flg')})}
 let codeColorsLoading=false;
@@ -5180,6 +5360,63 @@ function lesCopyOld(txt,done){
   const t=document.createElement('textarea');t.value=txt;t.style.position='fixed';t.style.opacity='0';document.body.appendChild(t);t.select();
   try{document.execCommand('copy');done()}catch(e){alert('Көшіру мүмкін болмады')}t.remove();
 }
+function showLibrary(){
+  if(!user){alert('Алдымен аккаунтыңызға кіріңіз');return}
+  const opts=Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value)
+    .map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('');
+  const sub=document.getElementById('library-subject'),filter=document.getElementById('library-filter');
+  if(!sub.options.length)sub.innerHTML=opts;
+  const previous=filter.value;
+  filter.innerHTML='<option value="">Барлық пәндер</option>'+opts;
+  filter.value=previous;
+  document.getElementById('library-admin').style.display=user.isAdmin?'':'none';
+  renderLibrary();showScr('s-library');
+}
+function renderLibrary(){
+  const books=LS.get('ubt_books',[]),filter=document.getElementById('library-filter').value;
+  const available=Array.isArray(books)?books.filter(b=>b&&b.id&&b.title&&b.subject):[];
+  const visible=filter?available.filter(b=>b.subject===filter):available;
+  const names=[...new Set(visible.map(b=>b.subject))];
+  document.getElementById('library-list').innerHTML=visible.length?names.map(subject=>{
+    const rows=visible.filter(b=>b.subject===subject);
+    return `<div class="card" style="margin:14px 0"><h3>📚 ${esc(subjName(subject))} · ${rows.length} кітап</h3>`+
+      rows.map(b=>`<div class="item"><div class="info"><h4>${esc(b.title)}</h4><p>PDF · ${(Number(b.size)/1048576).toFixed(1)} МБ</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="openBook(${jsq(b.id)})">📖 Ашу</button>${user&&user.isAdmin?`<button class="btn btn-d btn-sm" onclick="deleteBook(${jsq(b.id)})">Өшіру</button>`:''}</div></div>`).join('')+'</div>';
+  }).join(''):'<div class="card">Бұл пәнде әзірше кітап жоқ.</div>';
+}
+async function uploadBook(){
+  if(!user||!user.isAdmin)return;
+  const subject=document.getElementById('library-subject').value;
+  const title=document.getElementById('library-title').value.trim();
+  const file=document.getElementById('library-file').files[0];
+  if(!subject||!title||!file){alert('Пәнді, атауды және PDF файлын таңдаңыз');return}
+  if(file.size<10||file.size>5*1024*1024||!file.name.toLowerCase().endsWith('.pdf')){alert('Тек 5 МБ-қа дейінгі PDF файлын жүктеңіз');return}
+  const button=document.getElementById('library-upload'),status=document.getElementById('library-status');
+  button.disabled=true;status.textContent='Кітап жүктеліп жатыр…';
+  try{
+    const base64=await new Promise((resolve,reject)=>{
+      const reader=new FileReader();reader.onerror=()=>reject(new Error('Файл оқылмады'));
+      reader.onload=()=>resolve(String(reader.result).split(',',2)[1]||'');reader.readAsDataURL(file);
+    });
+    const result=await authCall('book_add',{subject,title,base64});
+    if(!result.ok)throw new Error(result.msg||'Кітап жүктелмеді');
+    status.textContent='✅ Кітап жүктелді';document.getElementById('library-title').value='';document.getElementById('library-file').value='';
+    await window.__bridge.refresh();renderLibrary();
+  }catch(e){status.textContent='❌ '+(e.message||'Жүктеу қатесі')}
+  finally{button.disabled=false}
+}
+async function openBook(id){
+  // Open a placeholder immediately so phone browsers permit the new tab after the async request.
+  const tab=window.open('about:blank','_blank');
+  const result=await authCall('book_open',{id});
+  if(!result.ok){if(tab)tab.close();alert(result.msg||'Кітап ашылмады');return}
+  if(tab){tab.opener=null;tab.location.replace(result.url)}else window.location.href=result.url;
+}
+async function deleteBook(id){
+  if(!user||!user.isAdmin||!confirm('Кітапты өшіру керек пе?'))return;
+  const result=await authCall('book_delete',{id});
+  if(!result.ok){alert(result.msg||'Кітап өшірілмеді');return}
+  await window.__bridge.refresh();renderLibrary();
+}
 function showLessons(){
   const sel=document.getElementById('les-f-subj');
   sel.innerHTML=schSubjOptions('Барлық пәндер');
@@ -5275,18 +5512,32 @@ function startTimer(){stopTimer();updTimer();st.timerInterval=setInterval(()=>{s
 function stopTimer(){if(st.timerInterval){clearInterval(st.timerInterval);st.timerInterval=null}}
 function updTimer(){const t=Math.max(0,st.timerSeconds);const h=Math.floor(t/3600),m=Math.floor((t%3600)/60),s=t%60;const el=document.getElementById('timer');el.textContent=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;el.classList.remove('warn','dang');if(t<=300)el.classList.add('dang');else if(t<=900)el.classList.add('warn')}
 
+let finishPuzzleAnswer=null;
+function showFinishDialog(){
+  const a=1+Math.floor(Math.random()*9),b=1+Math.floor(Math.random()*9);
+  finishPuzzleAnswer=a+b;
+  document.getElementById('finish-puzzle').textContent='Аяқтау үшін есепті шешіңіз: '+a+' + '+b+' = ?';
+  document.getElementById('finish-puzzle-answer').value='';
+  document.getElementById('finish-puzzle-error').textContent='';
+  const dialog=document.getElementById('finish-dialog');if(!dialog.open)dialog.showModal();
+  document.getElementById('finish-puzzle-answer').focus();
+}
+function closeFinishDialog(){
+  const dialog=document.getElementById('finish-dialog');if(dialog.open)dialog.close();
+  finishPuzzleAnswer=null;
+}
+function confirmFinishDialog(){
+  const value=document.getElementById('finish-puzzle-answer').value.trim();
+  if(value!==String(finishPuzzleAnswer)){
+    document.getElementById('finish-puzzle-error').textContent='Жауап қате. Қайта тексеріңіз.';return;
+  }
+  closeFinishDialog();finishTest(true);
+}
+document.getElementById('finish-puzzle-answer').addEventListener('keydown',e=>{if(e.key==='Enter')confirmFinishDialog()});
 function finishTest(force){
   if(st.examSubmitting)return;
-  if(!force){
-    const a=1+Math.floor(Math.random()*9),b=1+Math.floor(Math.random()*9);
-    const ok=guardPause(()=>{
-      const answer=prompt('Тестті аяқтау үшін есепті шығарыңыз: '+a+' + '+b+' = ?');
-      if(answer===null)return false;
-      if(answer.trim()!==String(a+b)){alert('Жауап қате. Тест жалғасады.');return false}
-      return true;
-    });
-    if(!ok){lockReassert();return}
-  }
+  if(!force){showFinishDialog();return}
+  closeFinishDialog();
   if(st.secureExam){
     const exam=st.secureExam,answers={...st.answers};st.secureExam=null;st.examSubmitting=true;
     stopTimer();lockEnd();
