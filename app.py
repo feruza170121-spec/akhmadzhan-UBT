@@ -2273,6 +2273,7 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
       </div>
       <div class="fg" id="c-topic-field"><label>Тест атауы * <span class="sub">(мыс: «Функция», «Ньютон заңдары»)</span></label><input id="c-topic" placeholder="Атауын жазыңыз (файл атынан автоматты толады)"></div>
       <div class="fg" id="c-desc-field"><label>Сипаттама (міндетті емес)</label><input id="c-desc" placeholder="Қысқаша сипаттама"></div>
+      <div class="fg"><label>📁 Папка жолы (міндетті емес)</label><input id="c-folder-path" maxlength="120" placeholder="Мысалы: 7-сынып/Орта ғасырлар"></div>
       <div class="fg" id="c-request-field"><label class="switch"><input type="checkbox" id="c-request"> 🌐 Жариялауға жіберу (админ мақұлдаған соң шығады)</label></div>
     </div>
     <div class="card" id="c-teacher-opts" style="display:none">
@@ -2280,6 +2281,7 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
       <div class="fg"><label>Кімге арналған тест?</label><select id="c-class"></select></div>
       <div class="fg"><label>⏱ Таймер (минут) <span class="sub">(бос = автоматты)</span></label><input type="number" id="c-timer" min="1" max="300" placeholder="Мыс: 40"></div>
       <div class="fg"><label>Лимит: бір оқушы неше рет тапсыра алады? <span class="sub">(бос = шексіз)</span></label><input type="number" id="c-limit" min="1" max="20" placeholder="Мыс: 1"></div>
+      <div class="fg"><label>🔑 Тестке кіру коды (міндетті емес)</label><input id="c-access-code" maxlength="32" autocomplete="off" placeholder="Мысалы: UBT2026"></div>
     </div>
     <p class="sub" id="c-bank-hint" style="display:none;margin-bottom:10px">Сұрақты қоссаңыз, ол бірден базаға сақталады. Тест атауын жазудың қажеті жоқ.</p>
     <div class="card" id="c-bank-create">
@@ -2460,8 +2462,11 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
         <label><input type="radio" name="bs-mode" value="random" onchange="renderBankSubjectList()"> 🎲 Базадан кездейсоқ</label>
       </div>
       <div class="fg" id="bs-count-wrap" style="display:none"><label>Кездейсоқ алынатын сұрақ саны</label><input id="bs-count" type="number" min="1" max="500" value="20"></div>
+      <div class="grid2"><div class="fg"><label>🔎 Сұрақ іздеу</label><input id="bs-search" placeholder="Сұрақ немесе папка атауы" oninput="renderBankSubjectList()"></div>
+      <div class="fg"><label>⏱ Тест уақыты (минут)</label><input id="bs-timer" type="number" min="1" max="300" placeholder="Бос болса — автоматты"></div></div>
+      <div class="fg"><label>📁 Тек осы файлдан сұрақ алу</label><select id="bs-source" onchange="renderBankSubjectList()"><option value="">Барлық файлдар</option></select></div>
       <div class="row" style="justify-content:flex-start;margin:12px 0 16px;position:sticky;top:8px;z-index:25;padding:10px;background:var(--c);border:1px solid var(--b);border-radius:18px;box-shadow:0 5px 20px #00000012"><button class="btn btn-p" id="bs-start" onclick="startBankSubject(bankSubjectMode()==='random')">▶ Тестті бастау</button><button class="btn btn-s" onclick="showQuestionBank()">📚 Сұрақтар базасы</button></div>
-      <div id="bs-list"></div>
+      <p class="sub" style="margin:6px 0">📁 Файлдарды ашып, сұрақтарды белгілеңіз. Іздеу сұрақтарды сүзеді; белгіленген сұрақтар сақталады.</p><div id="bs-list"></div>
     </div>
     <h3 style="margin:18px 0 12px">Дайын жаттығулар</h3>
     <div id="subj-grid" class="grid2"></div>
@@ -3699,7 +3704,7 @@ function showCreate(){
   document.getElementById('c-bank-create').style.display='';
   document.getElementById('c-subject').value='';
   document.getElementById('c-topic').value='';
-  document.getElementById('c-desc').value='';
+  document.getElementById('c-desc').value='';document.getElementById('c-folder-path').value='';
   const req=document.getElementById('c-request');if(req)req.checked=false;
   clearManual('c');renderCreateBank();showScr('s-create');
 }
@@ -3713,13 +3718,16 @@ function createFromFile(){
   if(!topic){alert('Тест атауын жазыңыз!');return}
   if(!draftQs.length){alert('Кемінде 1 сұрақ қосыңыз!');return}
   const r={qs:draftQs.slice()};
-  const test={id:'t_'+Date.now(),subject,subjectName,topic,desc:document.getElementById('c-desc').value.trim(),isPublic:false,status:requestPub?'pending':'private',authorId:user.id,authorName:user.name,questions:r.qs,createdAt:new Date().toISOString()};
+  const folderPath=(document.getElementById('c-folder-path')?.value||'').trim().replace(/\\/g,'/').replace(/^\/+|\/+$/g,'');
+  const test={id:'t_'+Date.now(),subject,subjectName,topic:folderPath?folderPath+'/'+topic:topic,desc:document.getElementById('c-desc').value.trim(),isPublic:false,status:requestPub?'pending':'private',authorId:user.id,authorName:user.name,questions:r.qs,createdAt:new Date().toISOString()};
   if((user.isAdmin||isTeacherUser())&&requestPub){test.isPublic=true;test.status='approved';if(user.isAdmin)test.adminApproved=true}
   if(isTeacherUser()){
     const cid=(document.getElementById('c-class')||{}).value||'';
     const tm=parseInt((document.getElementById('c-timer')||{}).value,10),lm=parseInt((document.getElementById('c-limit')||{}).value,10);
     if(tm>0)test.timerMin=Math.min(tm,300);
     if(lm>0)test.limit=Math.min(lm,20);
+    const ac=(document.getElementById('c-access-code')?.value||'').trim();
+    if(ac)test.accessCode=ac;
     if(cid){const c=getClasses().find(x=>x.id===cid);if(c&&canManageClass(c)){test.classId=cid;test.className=c.name;test.isPublic=false;test.status='private'}}
   }
   const all=allTests();all.unshift(test);saveAllTests(all);
@@ -3743,7 +3751,9 @@ function showMyTests(){
       <button class="btn btn-p btn-sm" onclick="startUserTest('${t.id}')">Бастау</button>
       <button class="btn btn-s btn-sm" onclick="previewTest('${t.id}')">👁</button>
       <button class="btn btn-s btn-sm" onclick="editTest('${t.id}')">+ Сұрақ қосу</button>
-      <button class="btn btn-s btn-sm" onclick="exportTest('${t.id}')">⬇ Файл</button>
+      <button class="btn btn-s btn-sm" onclick="exportTest('${t.id}')">⬇ TXT</button>
+      <button class="btn btn-s btn-sm" onclick="exportWordTest('${t.id}')">⬇ Word</button>
+      <button class="btn btn-s btn-sm" onclick="exportPdfTest('${t.id}')">⬇ PDF</button>
       ${isTeacherUser()?`<button class="btn btn-s btn-sm" onclick="exportJsonTest(${jsq(t.id)})">⬇ JSON</button>`:''}
       ${isTeacherUser()&&!user.isAdmin?`<button class="btn btn-ok btn-sm" onclick="showClassSend(${jsq(t.id)})">🏫 Сыныбыма тарату</button>`:''}
       ${t.status!=='pending'&&t.status!=='approved'&&!t.isPublic&&!t.classId?`<button class="btn btn-w btn-sm" onclick="requestPub('${t.id}')">Жариялауға</button>`:''}
@@ -3757,7 +3767,7 @@ function requestPub(id){
   if(user.isAdmin||isTeacherUser()){t.isPublic=true;t.status='approved';if(user.isAdmin)t.adminApproved=true;saveAllTests(all);alert('Жарияланды!');showMyTests();return}
   t.status='pending';t.isPublic=false;saveAllTests(all);alert('Админге жіберілді. Мақұлдаған соң жарияланады.');showMyTests();
 }
-function delTest(id){if(!confirm('Тестті өшіру керек пе?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showMyTests()}
+function delTest(id){const t=allTests().find(x=>x.id===id);if(!t||!user||!(user.isAdmin||t.authorId===user.id))return;if(!confirm('Тестті өшіру керек пе?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showMyTests()}
 
 function showPublicTests(){
   const list=document.getElementById('public-list');const tests=publicTests();
@@ -3873,7 +3883,14 @@ function toggleBankSubjectQuestion(id,on){
 }
 function renderBankSubjectList(){
   const sel=document.getElementById('bs-subject'),key=sel.value,bank=ubtQuestionBank();
-  const pool=bank.filter(q=>q.subject===key),manual=bankSubjectMode()==='manual';
+  const allPool=bank.filter(q=>q.subject===key),manual=bankSubjectMode()==='manual';
+  const srcEl=document.getElementById('bs-source');
+  const sources=[...new Set(allPool.map(q=>String(q.source||'Жеке сұрақтар').trim()||'Жеке сұрақтар'))].sort();
+  const oldSrc=srcEl.value;
+  const nextOpts='<option value="">Барлық файлдар</option>'+sources.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('');
+  if(srcEl.innerHTML!==nextOpts){srcEl.innerHTML=nextOpts;if(sources.includes(oldSrc))srcEl.value=oldSrc;}
+  const src=srcEl.value,query=(document.getElementById('bs-search').value||'').trim().toLowerCase();
+  const pool=allPool.filter(q=>(!src||(q.source||'Жеке сұрақтар')===src)&&(!query||q.text.toLowerCase().includes(query)||String(q.source||'').toLowerCase().includes(query)));
   const icons={history:'🏛',reading:'📖',mathlit:'🔢',math:'📐',physics:'⚡',chemistry:'🧪',biology:'🧬',geography:'🌍',informatics:'💻',english:'🇬🇧',kazakh:'📝',worldhistory:'🌐',law:'⚖️',other:'📚'};
   document.getElementById('bs-subject-grid').innerHTML=Array.from(sel.options).filter(o=>o.value).map(o=>{
     const n=bank.filter(q=>q.subject===o.value).length;
@@ -3889,21 +3906,35 @@ function renderBankSubjectList(){
   const folderHtml=Array.from(groups.entries()).map(([folder,questions],idx)=>{
     const selected=questions.filter(q=>picked.has(q.id)).length;
     const items=questions.map(q=>`<label class="ubt-bank-row"><input type="checkbox" class="bs-pick" value="${esc(q.id)}" ${manual?'':'disabled'} ${picked.has(q.id)?'checked':''} onchange="toggleBankSubjectQuestion(this.value,this.checked)"><span class="info"><strong>${esc(q.text)}</strong></span></label>`).join('');
-    return `<details class="bs-folder" ${groups.size===1?'open':''}><summary>📁 <strong>${esc(folder)}</strong><span class="bs-folder-count">${questions.length} сұрақ · ${selected} белгіленген</span></summary><div class="bs-folder-items">${items}</div></details>`;
+    const parts=folder.split('/').map(x=>x.trim()).filter(Boolean);
+    const label=parts.pop()||folder;
+    return {parents:parts,html:`<details class="bs-folder" ${groups.size===1?'open':''}><summary>📄 <strong>${esc(label)}</strong><span class="bs-folder-count">${questions.length} сұрақ · ${selected} белгіленген</span></summary><div class="bs-folder-items">${items}</div></details>`};
+  });
+  const folderTree=new Map();
+  folderHtml.forEach(f=>{const key=f.parents.join('/');if(!folderTree.has(key))folderTree.set(key,[]);folderTree.get(key).push(f.html)});
+  const nestedFolders=Array.from(folderTree.entries()).map(([path,files])=>{
+    let html=files.join('');
+    path.split('/').filter(Boolean).reverse().forEach(part=>{html=`<details class="bs-folder"><summary>📁 <strong>${esc(part)}</strong></summary><div class="bs-folder-items">${html}</div></details>`});
+    return html;
   }).join('');
   document.getElementById('bs-list').innerHTML=`<p class="sub" style="margin-bottom:10px">Базада: <b>${pool.length}</b> сұрақ · Белгіленгені: <b id="bs-selected">${visibleCount}</b>${manual?'':' · Тест үшін сұрақтар автоматты таңдалады'}</p>`+
-    (pool.length?folderHtml:'<p class="sub">Бұл пәннен сұрақ жоқ. Сұрақтар базасына қосыңыз.</p>');
+    (pool.length?nestedFolders:'<p class="sub">Бұл пәннен сұрақ жоқ. Сұрақтар базасына қосыңыз.</p>');
 }
 function startBankSubject(random){
   const key=document.getElementById('bs-subject').value,pool=ubtQuestionBank().filter(q=>q.subject===key);
   const count=Number(document.getElementById('bs-count').value);
   if(random&&(!Number.isInteger(count)||count<1||count>MAX_Q)){alert('1 мен '+MAX_Q+' аралығындағы санды енгізіңіз');return}
-  const ids=new Set(Array.from(document.querySelectorAll('.bs-pick:checked')).map(e=>e.value));
-  const picked=random?shuffled(pool).slice(0,count):pool.filter(q=>ids.has(q.id));
+  const ids=bankSubjectSelection.get(user.id+'|'+key)||new Set();
+  const src=document.getElementById('bs-source').value;
+  const eligible=src?pool.filter(q=>(q.source||'Жеке сұрақтар')===src):pool;
+  const picked=random?shuffled(eligible).slice(0,count):pool.filter(q=>ids.has(q.id));
   if(!picked.length){alert(random?'Бұл пәннің базасында сұрақ жоқ':'Алдымен сұрақтарды белгілеңіз');return}
   if(random&&picked.length<count){alert('Базада '+count+' сұрақ жоқ. Қолжетімді: '+pool.length);return}
   st=baseState();st.questions=picked.map(q=>({id:q.id,text:q.text,options:q.options.slice(),correct:q.correct,points:1,subjectName:subjName(key)}));
-  st.subjectName=subjName(key)+' · өз базам';st.timerSeconds=Math.max(st.questions.length*90,600);beginTest();
+  st.subjectName=subjName(key)+' · өз базам';
+  const mins=Number(document.getElementById('bs-timer').value);
+  if(document.getElementById('bs-timer').value&&(mins<1||mins>300||!Number.isInteger(mins))){alert('Уақыт 1–300 минут болуы керек');return}
+  st.timerSeconds=mins?mins*60:Math.max(st.questions.length*90,600);beginTest();
 }
 function startBank(key){
   const b=BANK[key];st=baseState();st.questions=b.qs.map(q=>({...q,subjectName:b.name,points:1}));st.subjectName=b.name;
@@ -3924,7 +3955,7 @@ function beginTest(){
   document.getElementById('ubt-start-cancel').onclick=()=>{modal.remove();if(st.assignedAttempt)st.assignedAttempt=null;};
   document.getElementById('ubt-start-confirm').onclick=()=>{
     st.instantFeedback=document.getElementById('ubt-instant-choice').checked;
-    modal.remove();st.questions=st.questions.map(shuffleOpts);showScr('s-test');renderNav();renderQ();startTimer();updateProg();lockStart();
+    modal.remove();st.questions=shuf(st.questions.map(q=>shuffleOpts({...q,options:Array.isArray(q.options)?q.options.slice():[]})));st.currentIndex=0;st.answers={};st.flags={};showScr('s-test');renderNav();renderQ();startTimer();updateProg();lockStart();
   };
 }
 function renderNav(){document.getElementById('qnav').innerHTML=st.questions.map((_,i)=>`<button class="qn" onclick="goQ(${i})">${i+1}</button>`).join('');updNav()}
@@ -5325,6 +5356,24 @@ function exportJsonTest(id){
   const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json;charset=utf-8'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=safeName(t.topic)+'.json';
   document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1000);
+}
+function exportDocumentHtml(t,withAnswers){
+  const safe=x=>String(x==null?'':x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const body=(t.questions||[]).map((q,i)=>'<section style="break-inside:avoid;margin:0 0 17px"><b>'+(i+1)+'. '+safe(q.text)+'</b><div style="margin:7px 0">'+(q.options||[]).map((o,j)=>'<div>'+('ABCD'[j]||String(j+1))+') '+safe(o)+'</div>').join('')+'</div>'+(withAnswers?'<small>Жауап: '+('ABCD'[q.correct]||'?')+'</small>':'')+'</section>').join('');
+  return '<!doctype html><html lang="kk"><head><meta charset="utf-8"><title>'+safe(t.topic)+'</title><style>body{font:14px/1.6 Arial,sans-serif;margin:24mm;color:#111}h1{font-size:22px}@page{size:A4;margin:16mm}</style></head><body><h1>'+safe(t.topic)+'</h1><p>'+safe(t.subjectName||'')+' · '+t.questions.length+' сұрақ</p>'+body+'</body></html>';
+}
+function exportWordTest(id){
+  const t=allTests().find(x=>x.id===id);
+  if(!t||!user||!(user.isAdmin||t.authorId===user.id))return alert('Рұқсат жоқ');
+  const blob=new Blob(['\ufeff'+exportDocumentHtml(t,confirm('Word файлына жауап кілтін қосасыз ба?'))],{type:'application/msword'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=safeName(t.topic)+'.doc';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1000);
+}
+function exportPdfTest(id){
+  const t=allTests().find(x=>x.id===id);
+  if(!t||!user||!(user.isAdmin||t.authorId===user.id))return alert('Рұқсат жоқ');
+  const w=window.open('','_blank');if(!w)return alert('Браузер жаңа терезені бұғаттады');
+  w.document.open();w.document.write(exportDocumentHtml(t,confirm('PDF нұсқасына жауап кілтін қосасыз ба?')));w.document.close();
+  w.onload=()=>{w.focus();w.print()};
 }
 function downloadSample(){downloadText('ulgi_suraqtar.txt',SAMPLE_TXT)}
 let draftQs=[];
@@ -6958,6 +7007,7 @@ function renderTestSettings(){
     <div class="fg"><label>Кімге арналған?</label><select id="es-class">${classOptionsHTML(t.classId||'')}</select></div>
     <div class="fg"><label>⏱ Таймер (минут) <span class="sub">(бос = автоматты)</span></label><input type="number" id="es-timer" min="1" max="300" value="${t.timerMin||''}"></div>
     <div class="fg"><label>Лимит: бір оқушы неше рет тапсыра алады? <span class="sub">(бос = шексіз)</span></label><input type="number" id="es-limit" min="1" max="20" value="${t.limit||''}"></div>
+    <div class="fg"><label>🔑 Кіру коды (бос қалдырсаңыз — кодсыз)</label><input id="es-access-code" maxlength="32" autocomplete="off" value="${esc(t.accessCode||'')}"></div>
     <button class="btn btn-ok btn-sm" onclick="saveTestSettings()">💾 Сақтау</button></div>`;
 }
 function saveTestSettings(){
@@ -6966,6 +7016,8 @@ function saveTestSettings(){
   const tm=parseInt(document.getElementById('es-timer').value,10),lm=parseInt(document.getElementById('es-limit').value,10);
   if(tm>0)t.timerMin=Math.min(tm,300);else delete t.timerMin;
   if(lm>0)t.limit=Math.min(lm,20);else delete t.limit;
+  const code=document.getElementById('es-access-code').value.trim();
+  if(code)t.accessCode=code;else delete t.accessCode;
   const cid=document.getElementById('es-class').value;
   if(cid){const c=getClasses().find(x=>x.id===cid);if(c&&canManageClass(c)){t.classId=cid;t.className=c.name;t.isPublic=false;t.status='private'}}
   else{delete t.classId;delete t.className}
@@ -7134,8 +7186,8 @@ function renderUbtBank(){
             const canPick=manual&&allowed.has(q.subject);
             return `<div class="ubt-bank-row"><input type="checkbox" aria-label="140 форматқа қосу" ${selected.has(q.id)?'checked':''} ${canPick?'':'disabled'} onchange="toggleUbtQuestion(${jsq(q.id)},this.checked)">
             <div class="info"><strong>${esc(q.text)}</strong><p>Дұрыс жауап: ${esc(q.options[q.correct])}</p>${!allowed.has(q.subject)?'<p>Бұл пән таңдалған ҰБТ құрамына кірмейді</p>':''}</div>
-            <select aria-label="Сұрақтың пәнін ауыстыру" title="Сұрақтың пәнін ауыстыру" style="max-width:125px" onchange="moveUbtBankQuestion(${jsq(q.id)},this.value)">${Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value).map(o=>`<option value="${esc(o.value)}" ${o.value===q.subject?'selected':''}>${esc(o.textContent)}</option>`).join('')}</select>
-            <button class="btn btn-d btn-sm" onclick="deleteUbtBankQuestion(${jsq(q.id)})">Өшіру</button></div>`;
+            <select ${q.editable?'':'disabled'} aria-label="Сұрақтың пәнін ауыстыру" title="Сұрақтың пәнін ауыстыру" style="max-width:125px" onchange="moveUbtBankQuestion(${jsq(q.id)},this.value)">${Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value).map(o=>`<option value="${esc(o.value)}" ${o.value===q.subject?'selected':''}>${esc(o.textContent)}</option>`).join('')}</select>
+            ${q.editable?`<button class="btn btn-d btn-sm" onclick="deleteUbtBankQuestion(${jsq(q.id)})">Өшіру</button>`:'<span class="sub">🔒 Тест сұрағы</span>'}</div>`;
           }).join('')+'</div></details>';
         }).join('')+'</details>';
     }).join(''):'<p class="sub">Бұл сүзгі бойынша сұрақ жоқ. Жаңа сұрақ қосыңыз немесе өз тестіңізді құрыңыз.</p>');
@@ -7209,6 +7261,7 @@ function startUbt140(){
       owner=!!(user.isAdmin||t.authorId===user.id||(c&&c.teacherId===user.id));
       if(t.classId&&!owner&&!(c&&c.students.includes(user.id))){alert('Бұл тест тек сынып оқушыларына арналған');return}
       if(t.limit>0&&!owner&&attemptsOf(id,user.id)>=t.limit){alert('Лимит таусылды: бұл тестті '+t.limit+' рет қана тапсыруға болады');return}
+      if(t.accessCode&&!owner){const typed=prompt('🔑 Тестке кіру кодын енгізіңіз:');if(typed===null||typed.trim()!==t.accessCode){alert('Кіру коды қате');return}}
     }
     _sut(id);
     try{
