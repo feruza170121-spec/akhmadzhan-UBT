@@ -525,6 +525,48 @@ def _start_exam(state, sess, d):
         return {"ok": True, "exam": nonce, "questions": visible, "topic": state["exams"][nonce]["topic"], "timer": timer}
 
 
+def _start_public_mix(state, sess, d):
+    if not sess:
+        return {"ok": False, "msg": "Алдымен аккаунтыңызға кіріңіз"}
+    ids, subject, count = d.get("testIds"), d.get("subject"), d.get("count")
+    if (not isinstance(ids, list) or not 1 <= len(ids) <= 20 or
+            any(not isinstance(x, str) or len(x) > 100 for x in ids) or
+            len(set(ids)) != len(ids) or not isinstance(subject, str) or
+            not 1 <= len(subject) <= 50 or type(count) is not int or not 1 <= count <= 120):
+        return {"ok": False, "msg": "Пәнді, тесттерді және сұрақ санын тексеріңіз"}
+    with state["lock"]:
+        tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
+        chosen = [next((t for t in tests if isinstance(t, dict) and t.get("id") == tid), None) for tid in ids]
+        if any(not t or t.get("classId") or t.get("assignmentId") or t.get("accessCode") or
+               t.get("subject") != subject or not (t.get("isPublic") is True or t.get("status") == "approved")
+               for t in chosen):
+            return {"ok": False, "msg": "Тек осы пәннің ашық жария тесттерін таңдаңыз"}
+        pool, seen = [], set()
+        for test in chosen:
+            for q in test.get("questions", []):
+                if not isinstance(q, dict) or not isinstance(q.get("text"), str) or not q["text"].strip() or \
+                   not isinstance(q.get("options"), list) or type(q.get("correct")) is not int or \
+                   not 0 <= q["correct"] < len(q["options"]):
+                    continue
+                key = q["text"].strip().casefold()
+                if key not in seen:
+                    seen.add(key)
+                    pool.append(dict(q))
+        if len(pool) < count:
+            return {"ok": False, "msg": "Таңдалған тесттерде осы пәннен " + str(count) + " бірегей сұрақ жоқ"}
+        qs = secrets.SystemRandom().sample(pool, count)
+        nonce = secrets.token_urlsafe(32)
+        timer = min(max(count * 90, 600), 18000)
+        topic = str(chosen[0].get("subjectName") or subject)[:80] + " · жария тесттерден аралас"
+        state["exams"][nonce] = {"uid": sess["uid"], "testId": "public_mix_" + nonce,
+                                 "assignmentId": None, "classId": None, "owner": False,
+                                 "reward": False, "limit": None, "questions": qs,
+                                 "topic": topic, "expires": time.time() + timer + 90}
+        visible = [{**{k: v for k, v in q.items() if k != "correct"}, "id": "examq" + str(i)}
+                   for i, q in enumerate(qs)]
+        return {"ok": True, "exam": nonce, "questions": visible, "topic": topic, "timer": timer}
+
+
 def _finish_exam(state, sess, d):
     token = d.get("exam")
     answers = d.get("answers")
@@ -626,6 +668,8 @@ def _handle_req(state, sid, rq):
 
     if typ == "start_exam":
         return _start_exam(state, sess, d)
+    if typ == "start_public_mix":
+        return _start_public_mix(state, sess, d)
     if typ == "finish_exam":
         return _finish_exam(state, sess, d)
     if typ == "cancel_exam":
@@ -1787,6 +1831,10 @@ html,body{overflow-x:hidden}
 .qt .qcode{margin:12px 0 4px;padding:16px 18px;border-radius:12px;background:#0d1117;color:#e6edf3;overflow-x:auto;tab-size:4}
 .qt .qcode code{display:block;white-space:pre;font:14px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}
 .qt .qcontext{white-space:pre-wrap;margin:10px 0 0;font-weight:550}
+.chem-table-dialog{border:0;border-radius:18px;padding:0;width:min(1100px,96vw);max-width:96vw;box-shadow:0 20px 70px #0005}
+.chem-table-dialog::backdrop{background:#0b122bcc}
+.chem-table-dialog .chem-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 18px;background:var(--c)}
+.chem-table-dialog iframe{display:block;width:100%;height:min(76vh,850px);border:0;background:white}
 .qimg{display:block;max-width:100%;max-height:340px;margin:0 auto 14px;border-radius:14px;border:1px solid var(--b);object-fit:contain;background:#fff}
 .qtbl-w{overflow-x:auto;margin:0 0 14px}
 .qtbl{border-collapse:collapse;margin:0 auto;font-size:14px}
@@ -2416,8 +2464,16 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
 
 <div id="s-public" class="screen">
   <div class="wrap">
-    <div class="hdr"><h2>🌐 Жария тесттер</h2><p class="sub">Тест тапсырыңыз. Сұрақтарды өз базасына тек админ жүктей алады.</p></div>
+    <div class="hdr"><h2>🌐 Жария тесттер</h2><p class="sub">Пәнді таңдап, бірнеше жария тесттен кездейсоқ сұрақ алыңыз.</p></div>
     <div id="public-subj" class="row" style="justify-content:flex-start;margin-bottom:12px"></div>
+    <div class="card" id="public-mix-panel">
+      <h3>🎲 Таңдалған тесттерден аралас тест</h3>
+      <p class="sub" style="margin:6px 0 12px">Төмендегі тесттерді белгілеңіз. Әр пәннің сұрақтары бөлек алынады.</p>
+      <div class="grid2"><div class="fg"><label>Пән</label><select id="public-mix-subject" onchange="renderPublicMix()"></select></div>
+      <div class="fg"><label>Сұрақ саны</label><input id="public-mix-count" type="number" min="1" max="120" value="20" oninput="renderPublicMixInfo()"></div></div>
+      <p id="public-mix-info" class="sub" style="margin:8px 0"></p>
+      <button class="btn btn-p" onclick="startPublicMix()">▶ Кездейсоқ тестті бастау</button>
+    </div>
     <div id="public-list" class="list"></div>
     <div class="row" style="margin-top:20px"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
@@ -2715,6 +2771,7 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
       <div class="ttop">
         <div class="prog-t" id="prog-t">Сұрақ 1 / 10</div>
         <div class="prog-w"><div class="prog-f" id="prog-f" style="width:0%"></div></div>
+        <button class="btn btn-s btn-sm" id="chem-table-button" onclick="openChemTable()" style="display:none" title="Менделеев кестесін ашу">⚗️ Кесте</button>
         <div class="timer" id="timer">00:30:00</div>
         <div class="prog-t" id="viol" style="display:none;background:#fef2f2;color:var(--err)"></div>
       </div>
@@ -2731,6 +2788,12 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
     </main>
   </div>
 </div>
+
+<dialog id="chem-table-dialog" class="chem-table-dialog" aria-label="Менделеевтің периодтық кестесі">
+  <div class="chem-head"><b>⚗️ Менделеевтің периодтық кестесі</b><button class="btn btn-s btn-sm" onclick="closeChemTable()">Жабу ✕</button></div>
+  <iframe id="chem-table-frame" title="IUPAC элементтердің периодтық кестесі" loading="lazy"></iframe>
+  <div style="padding:10px 18px"><a href="https://iupac.org/wp-content/uploads/2022/07/IUPAC_Periodic_Table-04May22_CRA.pdf" target="_blank" rel="noopener noreferrer">Кесте ашылмаса, PDF түрінде ашу</a></div>
+</dialog>
 
 <div id="s-res" class="screen">
   <div class="wrap">
@@ -4178,9 +4241,20 @@ function beginTest(){
   document.getElementById('ubt-start-cancel').onclick=async()=>{modal.remove();if(st.secureExam){const r=await authCall('cancel_exam',{exam:st.secureExam});if(!r.ok)alert(r.msg||'Тапсыру лимиті сақталды')}st=baseState()};
   document.getElementById('ubt-start-confirm').onclick=()=>{
     st.instantFeedback=!st.secureExam&&document.getElementById('ubt-instant-choice').checked;
-    modal.remove();st.questions=shuf(st.questions.map(q=>st.secureExam?{...q,options:q.options.slice()}:shuffleOpts({...q,options:Array.isArray(q.options)?q.options.slice():[]})));st.currentIndex=0;st.answers={};st.flags={};showScr('s-test');renderNav();renderQ();startTimer();updateProg();lockStart();
+    modal.remove();st.questions=shuf(st.questions.map(q=>st.secureExam?{...q,options:q.options.slice()}:shuffleOpts({...q,options:Array.isArray(q.options)?q.options.slice():[]})));st.currentIndex=0;st.answers={};st.flags={};showScr('s-test');updateChemTableButton();renderNav();renderQ();startTimer();updateProg();lockStart();
   };
 }
+const PERIODIC_TABLE_URL='https://iupac.org/wp-content/uploads/2022/07/IUPAC_Periodic_Table-04May22_CRA.pdf';
+function updateChemTableButton(){
+  const isChem=/химия|chemistry|chemical/i.test(st.subjectName||'')||st.questions.some(q=>/химия|chemistry|chemical/i.test(q.subjectName||''));
+  document.getElementById('chem-table-button').style.display=isChem?'inline-flex':'none';
+}
+function openChemTable(){
+  const dialog=document.getElementById('chem-table-dialog');
+  document.getElementById('chem-table-frame').src=PERIODIC_TABLE_URL;
+  if(!dialog.open)dialog.showModal();
+}
+function closeChemTable(){document.getElementById('chem-table-dialog').close()}
 function renderNav(){document.getElementById('qnav').innerHTML=st.questions.map((_,i)=>`<button class="qn" onclick="goQ(${i})">${i+1}</button>`).join('');updNav()}
 function updNav(){document.querySelectorAll('.qn').forEach((b,i)=>{b.classList.remove('cur','ans','flg');if(i===st.currentIndex)b.classList.add('cur');if(st.answers[st.questions[i].id]!==undefined)b.classList.add('ans');if(st.flags[st.questions[i].id])b.classList.add('flg')})}
 let codeColorsLoading=false;
@@ -5240,6 +5314,10 @@ function finishTest(force){
   const pct=max?score/max:0;
   if(pct>=1) gained+=50; else if(pct>=0.8) gained+=25; else if(pct>=0.5) gained+=10;
   gained=st.verifiedExam?st.verifiedExam.gained:0;
+  // Keep the completed review available after a Streamlit rerun or a page refresh.
+  if(user&&st.questions.length){
+    try{sessionStorage.setItem('ubt_last_review_'+user.id,JSON.stringify({questions:st.questions,answers:st.answers,topic:st.subjectName}))}catch(e){}
+  }
   st.lastWrong=wrong;st.lastScore={score,max,gained};
   document.getElementById('sc').textContent=score;document.getElementById('sm').textContent=max;
   document.getElementById('res-break').innerHTML=`<div class="res-row"><span>${esc(st.subjectName||'Тест')}</span><span style="font-weight:700;color:var(--p)">${score} / ${max}</span></div>
@@ -5262,11 +5340,19 @@ function ubtDownloadCertificate(){
 }
 function reviewAns(){
   const L=['A','B','C','D'];
-  document.getElementById('rev-list').innerHTML=st.questions.map((q,i)=>{const ua=st.answers[q.id],ok=ua===q.correct;
+  let review=null;
+  if(st.lastScore&&st.questions.length&&!st.secureExam)review={questions:st.questions,answers:st.answers};
+  if(!review&&user){try{review=JSON.parse(sessionStorage.getItem('ubt_last_review_'+user.id)||'null')}catch(e){}}
+  if(!review&&user){const latest=LS.get('ubt_hist_'+user.id,[])[0];if(latest&&Array.isArray(latest.questions))review=latest}
+  const questions=review&&Array.isArray(review.questions)?review.questions:[];
+  const answers=review&&review.answers&&typeof review.answers==='object'?review.answers:{};
+  document.getElementById('rev-list').innerHTML=questions.length?questions.map((q,i)=>{const ua=answers[q.id],ok=ua===q.correct;
+    const correct=Number.isInteger(q.correct)&&q.correct>=0&&q.correct<q.options.length?q.correct:null;
     return `<div class="rev ${ok?'ok':'bad'}"><div class="rh"><span>Сұрақ ${i+1}</span><span>${ok?'✓ Дұрыс':'✗ Қате'}</span></div>
-      <div class="rq">${esc(q.text)}</div>${qMedia(q)}${ua!==undefined?`<div class="ra u">Сіз: <b>${L[ua]}) ${esc(q.options[ua])}</b></div>`:'<div class="ra u">Жауап жоқ</div>'}
-      ${!ok?`<div class="ra c">Дұрыс: <b>${L[q.correct]}) ${esc(q.options[q.correct])}</b></div>`:''}
-      </div>`}).join('');
+      <div class="rq" style="white-space:pre-wrap">${esc(q.text)}</div>${qMedia(q)}${ua!==undefined?`<div class="ra u">Сіз: <b>${L[ua]||ua+1}) ${esc(q.options[ua]||'')}</b></div>`:'<div class="ra u">Жауап жоқ</div>'}
+      ${correct!==null?`<div class="ra c">Дұрыс: <b>${L[correct]||correct+1}) ${esc(q.options[correct]||'')}</b></div>`:''}
+      </div>`}).join(''):'';
+  if(!questions.length)document.getElementById('rev-list').innerHTML='<div class="card">Бұл жерде көрсету үшін алдымен тестті аяқтаңыз.</div>';
   showScr('s-rev');
 }
 function showHistory(){
@@ -7291,9 +7377,42 @@ function saveTestSettings(){
 
 // --- Пән бойынша тапсыру ---
 let pubSubj='';
+const publicMixSelected=new Set();
+function togglePublicMix(id,on){if(on)publicMixSelected.add(id);else publicMixSelected.delete(id);renderPublicMixInfo()}
+function renderPublicMix(){
+  const sel=document.getElementById('public-mix-subject');
+  const chosen=publicTests().filter(t=>publicMixSelected.has(t.id)&&!t.accessCode&&t.subject);
+  const subjects=[...new Set(chosen.map(t=>t.subject))];
+  const previous=sel.value;
+  sel.innerHTML=subjects.map(s=>`<option value="${esc(s)}">${esc(subjName(s))}</option>`).join('');
+  if(subjects.includes(previous))sel.value=previous;
+  else if(subjects.includes(pubSubj))sel.value=pubSubj;
+  renderPublicMixInfo();
+}
+function renderPublicMixInfo(){
+  const subject=document.getElementById('public-mix-subject').value;
+  const selected=publicTests().filter(t=>publicMixSelected.has(t.id)&&!t.accessCode&&t.subject===subject);
+  const unique=new Set(selected.flatMap(t=>(t.questions||[]).map(q=>String(q.text||'').trim().toLowerCase())).filter(Boolean));
+  document.getElementById('public-mix-info').textContent=selected.length+' тест таңдалды · '+unique.size+' бірегей сұрақ қолжетімді';
+}
+async function startPublicMix(){
+  if(!user){alert('Алдымен аккаунтыңызға кіріңіз');return}
+  const subject=document.getElementById('public-mix-subject').value;
+  const ids=publicTests().filter(t=>publicMixSelected.has(t.id)&&!t.accessCode&&t.subject===subject).map(t=>t.id);
+  const count=Number(document.getElementById('public-mix-count').value);
+  if(!ids.length){alert('Бір пәннен кемінде бір жария тестті таңдаңыз');return}
+  if(ids.length>20){alert('Бір ретте 20 тесттен артық таңдамаңыз');return}
+  if(!Number.isInteger(count)||count<1||count>120){alert('Сұрақ саны 1–120 арасында болуы керек');return}
+  const r=await authCall('start_public_mix',{testIds:ids,subject,count});
+  if(!r.ok){alert(r.msg||'Аралас тест басталмады');return}
+  st=baseState();st.questions=r.questions.map(q=>({...q,subjectName:subjName(subject)}));
+  st.subjectName=r.topic;st.secureExam=r.exam;st.timerSeconds=r.timer;beginTest();
+}
 function showPublicTests(subj){
   pubSubj=(typeof subj==='string')?subj:'';
   const all=publicTests(),subs=[];
+  const allowed=new Set(all.map(t=>t.id));
+  for(const id of publicMixSelected)if(!allowed.has(id))publicMixSelected.delete(id);
   all.forEach(t=>{if(t.subject&&!subs.some(s=>s[0]===t.subject))subs.push([t.subject,subjName(t.subject)])});
   document.getElementById('public-subj').innerHTML=[['','Барлығы']].concat(subs).map(s=>`<button class="btn ${pubSubj===s[0]?'btn-p':'btn-s'} btn-sm" onclick="showPublicTests(${jsq(s[0])})">${esc(s[1])}</button>`).join('');
   const tests=pubSubj?all.filter(t=>t.subject===pubSubj):all;
@@ -7304,8 +7423,9 @@ function showPublicTests(subj){
     h+=`<div class="card"><h3>🎲 ${esc(nm)}: аралас тест</h3><p class="sub" style="margin:4px 0 10px">Осы пәннің барлық жария тесттерінен кездейсоқ ${Math.min(20,n)} сұрақ (қолжетімді: ${n})</p><button class="btn btn-p btn-sm" onclick="startSubjectMix(${jsq(pubSubj)})">▶ Бастау</button></div>`;
   }
   if(!tests.length)h+='<div class="empty"><div class="ic">🌐</div><p>Әзірге жария тест жоқ.<br>Тест құрып, «Жариялауға жіберу» белгілеңіз — админ мақұлдаған соң осында шығады.</p></div>';
-  else h+=tests.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic)}</h4><p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ${t.timerMin?' · ⏱ '+t.timerMin+' мин':''}${t.limit?' · лимит: '+t.limit:''} · Автор: ${esc(t.authorName||'Аноним')}${t.desc?' · '+esc(t.desc):''}</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest(${jsq(t.id)})">Тапсыру</button>${user&&user.isAdmin&&t.authorId!==user.id?`<button class="btn btn-s btn-sm" onclick="adminCopyTest(${jsq(t.id)})">📥 Өзіме жүктеу</button>`:''}${user&&user.isAdmin?`<button class="btn btn-d btn-sm" onclick="adminDelPublished(${jsq(t.id)})">🗑 Өшіру</button>`:''}</div></div>`).join('');
+  else h+=tests.map(t=>`<div class="item"><label style="display:flex;align-items:center;gap:8px;margin-right:9px"><input type="checkbox" aria-label="${esc(t.topic)} тестін аралас тестке қосу" ${publicMixSelected.has(t.id)?'checked':''} ${t.accessCode||!t.subject?'disabled':''} onchange="togglePublicMix(${jsq(t.id)},this.checked)"></label><div class="info"><h4>${esc(t.topic)}</h4><p>${esc(t.subjectName||subjName(t.subject)||'')} · ${t.questions.length} сұрақ${t.timerMin?' · ⏱ '+t.timerMin+' мин':''}${t.limit?' · лимит: '+t.limit:''} · Автор: ${esc(t.authorName||'Аноним')}${t.desc?' · '+esc(t.desc):''}${t.accessCode?' · 🔒 Аралас тестке қосылмайды':''}</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest(${jsq(t.id)})">Тапсыру</button>${user&&user.isAdmin&&t.authorId!==user.id?`<button class="btn btn-s btn-sm" onclick="adminCopyTest(${jsq(t.id)})">📥 Өзіме жүктеу</button>`:''}${user&&user.isAdmin?`<button class="btn btn-d btn-sm" onclick="adminDelPublished(${jsq(t.id)})">🗑 Өшіру</button>`:''}</div></div>`).join('');
   list.innerHTML=h;
+  renderPublicMix();
   showScr('s-public');
 }
 function adminDelPublished(id){
