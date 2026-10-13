@@ -1867,6 +1867,21 @@ body.has-app-header{padding-top:var(--app-header-height,76px)}
 .ro-note{background:linear-gradient(135deg,#eff6ff,#f5f3ff);border-style:dashed;font-size:13px;text-align:center;color:#334155}
 body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd5e1}
 @media(max-width:768px){.mode{padding:16px 10px}.mode .ic{width:48px;height:48px;font-size:24px}}
+
+/* Instant answer feedback (opt-in before test) */
+.ubt-instant-switch{display:flex;gap:14px;align-items:flex-start;padding:16px;border:1px solid var(--b);border-radius:16px;background:var(--bg);cursor:pointer}
+.ubt-instant-switch input{width:22px;height:22px;flex:none;accent-color:var(--p)}
+.ubt-instant-switch strong{display:block;font-size:15px}.ubt-instant-switch small{display:block;color:var(--m);margin-top:5px;line-height:1.5}
+.op.ubt-correct{border-color:#16a34a!important;background:#dcfce7!important;color:#14532d!important}
+.op.ubt-incorrect{border-color:#dc2626!important;background:#fee2e2!important;color:#7f1d1d!important}
+.op.ubt-correct .ol{background:#16a34a;color:white}.op.ubt-incorrect .ol{background:#dc2626;color:white}
+.ubt-mark{font-size:12px;font-weight:800;margin-left:auto;white-space:nowrap}
+.ubt-feedback{margin-top:12px;padding:14px;border-radius:14px;font-size:14px;line-height:1.6}
+.ubt-feedback.yes{background:#dcfce7;color:#14532d}.ubt-feedback.no{background:#fee2e2;color:#7f1d1d}
+.ubt-feedback span{display:block;margin-top:4px}
+body.dark .op.ubt-correct,body.dark .ubt-feedback.yes{background:#123c29!important;color:#bbf7d0!important}
+body.dark .op.ubt-incorrect,body.dark .ubt-feedback.no{background:#451b23!important;color:#fecaca!important}
+
 /* ===== UBT PLUS 2026 VISUAL REFRESH — CSS ONLY ===== */
 :root{--p:#6257ed;--pd:#4f46d5;--bg:#f5f6fc;--c:#fff;--t:#18213a;--m:#68758d;--b:#e6e9f3;--grad:linear-gradient(125deg,#6257ed,#9460f3);--ok:#159d73;--err:#e04e65;--warn:#f0a22c}
 body{background:radial-gradient(ellipse at 12% 0%,#eae8ff 0%,transparent 34%),radial-gradient(ellipse at 92% 14%,#e5f4ff 0%,transparent 32%),var(--bg);font-family:'Inter',system-ui,sans-serif;letter-spacing:-.012em}
@@ -3795,7 +3810,7 @@ function addBankToMyTest(random){
   saveAllTests(all);renderEditList(t);
 }
 
-function baseState(){return{questions:[],currentIndex:0,answers:{},flags:{},timerSeconds:0,timerInterval:null,subjectName:'',isMistakes:false,testId:null,lastWrong:null}}
+function baseState(){return{questions:[],currentIndex:0,answers:{},flags:{},timerSeconds:0,timerInterval:null,subjectName:'',isMistakes:false,testId:null,lastWrong:null,instantFeedback:false}}
 let st=baseState();
 
 let assignedStartPermit=null;
@@ -3870,7 +3885,24 @@ function startBank(key){
   const b=BANK[key];st=baseState();st.questions=b.qs.map(q=>({...q,subjectName:b.name,points:1}));st.subjectName=b.name;
   st.timerSeconds=Math.max(b.qs.length*90,600);shuf(st.questions);beginTest();
 }
-function beginTest(){st.questions=st.questions.map(shuffleOpts);showScr('s-test');renderNav();renderQ();startTimer();updateProg();lockStart()}
+function beginTest(){
+  // Тест басталмай тұрып жауапты бірден көрсету режимін таңдау.
+  const existing=document.getElementById('ubt-start-overlay');if(existing)existing.remove();
+  const modal=document.createElement('div');modal.id='ubt-start-overlay';modal.className='ovl';
+  modal.innerHTML=`<div class="box" style="max-width:470px;margin:9vh auto;padding:28px">
+    <h2 style="margin-bottom:8px">📘 Тестті бастау</h2>
+    <p class="sub" style="margin-bottom:20px">${esc(st.subjectName||'Тест')} · ${st.questions.length} сұрақ</p>
+    <label class="ubt-instant-switch"><input id="ubt-instant-choice" type="checkbox"><span><strong>Жауапты сразу шығару</strong><small>Жауапты белгілегенде дұрыс не қате екенін бірден көрсетеді. Дұрыс жауап та көрінеді.</small></span></label>
+    <p class="sub" style="margin:12px 0 20px">Өшірулі болса, жауаптар тек тест аяқталғанда көрсетіледі.</p>
+    <div class="row"><button class="btn btn-s" id="ubt-start-cancel">Бас тарту</button><button class="btn btn-p" id="ubt-start-confirm">▶ Тестті бастау</button></div>
+  </div>`;
+  document.body.appendChild(modal);
+  document.getElementById('ubt-start-cancel').onclick=()=>{modal.remove();if(st.assignedAttempt)st.assignedAttempt=null;};
+  document.getElementById('ubt-start-confirm').onclick=()=>{
+    st.instantFeedback=document.getElementById('ubt-instant-choice').checked;
+    modal.remove();st.questions=st.questions.map(shuffleOpts);showScr('s-test');renderNav();renderQ();startTimer();updateProg();lockStart();
+  };
+}
 function renderNav(){document.getElementById('qnav').innerHTML=st.questions.map((_,i)=>`<button class="qn" onclick="goQ(${i})">${i+1}</button>`).join('');updNav()}
 function updNav(){document.querySelectorAll('.qn').forEach((b,i)=>{b.classList.remove('cur','ans','flg');if(i===st.currentIndex)b.classList.add('cur');if(st.answers[st.questions[i].id]!==undefined)b.classList.add('ans');if(st.flags[st.questions[i].id])b.classList.add('flg')})}
 function renderQ(){
@@ -3881,7 +3913,11 @@ function renderQ(){
   document.getElementById('qmedia').innerHTML=qMedia(q);
   document.getElementById('flag').classList.toggle('on',!!st.flags[q.id]);
   const L=['A','B','C','D','E'];
-  document.getElementById('opts').innerHTML=q.options.map((o,i)=>`<div class="op${st.answers[q.id]===i?' sel':''}" onclick="selOpt(${i})"><span class="ol">${L[i]}</span><span class="ot">${esc(o)}</span></div>`).join('');
+  const chosen=st.answers[q.id],revealed=st.instantFeedback&&chosen!==undefined;
+  document.getElementById('opts').innerHTML=q.options.map((o,i)=>`<div class="op${chosen===i?' sel':''}${revealed&&i===q.correct?' ubt-correct':''}${revealed&&i===chosen&&i!==q.correct?' ubt-incorrect':''}" ${revealed?'':'onclick="selOpt('+i+')"'}><span class="ol">${L[i]}</span><span class="ot">${esc(o)}</span>${revealed&&i===q.correct?'<span class="ubt-mark">✓ Дұрыс</span>':revealed&&i===chosen?'<span class="ubt-mark">✕ Қате</span>':''}</div>`).join('');
+  let feedback=document.getElementById('ubt-answer-feedback');
+  if(!feedback){feedback=document.createElement('div');feedback.id='ubt-answer-feedback';document.getElementById('opts').after(feedback)}
+  feedback.innerHTML=revealed?`<div class="ubt-feedback ${chosen===q.correct?'yes':'no'}">${chosen===q.correct?'✅ Дұрыс жауап!':'❌ Қате жауап.'} <span>Дұрысы: <b>${L[q.correct]||''}) ${esc(q.options[q.correct]||'')}</b></span></div>`:'';
   document.getElementById('prev').disabled=st.currentIndex===0;
   document.getElementById('next').textContent=st.currentIndex===st.questions.length-1?'Аяқтау':'Келесі →';
   updNav();updateProg();
@@ -4837,7 +4873,7 @@ function lesSave(){
 }
 function lesDel(id){if(!user||!user.isAdmin)return;if(!confirm('Сабақты өшіру керек пе?'))return;saveLessons(allLessons().filter(x=>x.id!==id));renderLessons()}
 
-function selOpt(i){st.answers[st.questions[st.currentIndex].id]=i;renderQ()}
+function selOpt(i){const q=st.questions[st.currentIndex];if(st.instantFeedback&&st.answers[q.id]!==undefined)return;st.answers[q.id]=i;renderQ()}
 function togFlag(){const q=st.questions[st.currentIndex];st.flags[q.id]=!st.flags[q.id];renderQ()}
 function nextQ(){if(st.currentIndex<st.questions.length-1){st.currentIndex++;renderQ()}else finishTest()}
 function prevQ(){if(st.currentIndex>0){st.currentIndex--;renderQ()}}
