@@ -16,40 +16,40 @@ import urllib.request
 import streamlit as st
 import streamlit.components.v1 as components
 
-# ======================================================================
-# Ортақ дерекқор: барлық құрылғы мен қолданушы бір деректі көреді
-# (аккаунттар, тесттер, сұрақтар, сыныптар, чаттар, рейтинг...).
-# Деректер ubt_data.json файлында сақталады (UBT_DATA_FILE арқылы жолын өзгертуге болады).
-# Қосымша порт керек емес: байланыс Streamlit-тің өзі арқылы өтеді.
-# ======================================================================
+
+
+
+
+
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.environ.get("UBT_DATA_FILE") or os.path.join(_HERE, "ubt_data.json")
 FRONT_DIR = os.path.join(_HERE, "ubt_frontend")
 _NO_SYNC = ("ubt_current", "ubt_dark")
 
-# ======================================================================
-# ТҰРАҚТЫ САҚТАУ (деректер ешқашан өшпеуі үшін)
-# Streamlit Cloud-та файлдар қайта іске қосылғанда өшеді. Сондықтан барлық
-# өзгеріс сыртқы Supabase дерекқорына да жазылады (кесте: ubt_kv).
-# Кілттер Streamlit "Secrets" бөлімінде тұрады:
-#   SUPABASE_URL   = "https://xxxx.supabase.co"
-#   SUPABASE_KEY   = "sb_secret_... (secret кілт)"
-#   ADMIN_PASSWORD = "админ паролі (кемінде 8 таңба)"
-# Кілт жоқ болса — бұрынғыдай тек ubt_data.json файлы қолданылады.
-# ======================================================================
+
+
+
+
+
+
+
+
+
+
 _TABLE = "ubt_kv"
 _BOOK_BUCKET = "ubt-books"
 _MAX_BOOK_BYTES = 5 * 1024 * 1024
 
-# ======================================================================
-# ҚАУІПСІЗДІК
-#  * Парольдер PBKDF2-SHA256 + жеке salt арқылы хэштеледі (ашық мәтін сақталмайды).
-#  * Хэштер мен админ паролі браузерге ЕШҚАШАН жіберілмейді.
-#  * Кіру/тіркелу/пароль ауыстыру толығымен серверде тексеріледі.
-#  * Әр қолданушыға сервер жасаған жеке сессия токені беріледі.
-#  * Деректерді жазу құқығы токен бойынша серверде тексеріледі.
-#  * Қате парольді қайта-қайта енгізуге шектеу бар (бұғаттау).
-# ======================================================================
+
+
+
+
+
+
+
+
+
 _PBKDF_ITER = 100_000
 _MIN_PASS = 10
 _SERVER_ONLY = ("ubt_admin_pass", "ubt_admin_ph")
@@ -60,7 +60,7 @@ _USER_PREFIXES = ("ubt_mistakes_", "ubt_hist_", "ubt_prog_", "ubt_bm_", "ubt_pla
                   "ubt_plan_", "ubt_qotd_", "ubt_streak_", "ubt_avatar_", "ubt_viol_",
                   "ubt_qbank_", "ubt_qbank_hidden_", "ubt_ubt140_selection_")
 _PRIVATE_PREFIXES = _USER_PREFIXES + ("ubt_exam_done_",)
-_SINGLE_DEVICE = True   # True: бір аккаунт бір уақытта тек бір құрылғыда (жаңа кіру ескісін шығарады)
+_SINGLE_DEVICE = True   
 _MAX_FAILS = 5
 _FAIL_WINDOW = 600
 
@@ -161,7 +161,7 @@ def _book_storage_bucket(conf):
             "public": False, "file_size_limit": _MAX_BOOK_BYTES, "allowed_mime_types": ["application/pdf"]}).encode("utf-8"))
 
 
-# ---------------------------------------------------------------- хэштеу
+
 def _hash_pw(pw, salt=None, it=_PBKDF_ITER):
     salt = salt or secrets.token_hex(16)
     dk = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), bytes.fromhex(salt), it)
@@ -188,7 +188,7 @@ def _jdump(v):
     return json.dumps(v, ensure_ascii=False)
 
 
-# ---------------------------------------------------------------- күй (state)
+
 @st.cache_resource
 def _store():
     data = {}
@@ -316,7 +316,7 @@ def _db_save(db):
     os.replace(tmp, DATA_FILE)
 
 
-# ---------------------------------------------------------------- ескі парольдерді хэшке көшіру
+
 def _migrate_once(state):
     """Ашық мәтінді парольдерді хэшке айналдырады. Ескі ubt_admin_pass кілтін өшіреді."""
     with state["lock"]:
@@ -373,7 +373,7 @@ def _migrate_start(state):
     threading.Thread(target=run, daemon=True).start()
 
 
-# ---------------------------------------------------------------- профильдер, сессиялар
+
 def _profiles(state):
     return _jload(state["db"].get("ubt_profiles", "{}"), dict, {})
 
@@ -442,7 +442,7 @@ def _guest_chat(state, token):
     return claim
 
 
-# ---------------------------------------------------------------- қате әрекеттерді шектеу
+
 def _locked(state, key):
     now = time.time()
     lst = [t for t in state["fails"].get(key, []) if now - t < _FAIL_WINDOW]
@@ -961,7 +961,7 @@ def _handle_req(state, sid, rq):
                 tok = _new_session(state, "admin", "Админ", True)
             return {"ok": True, "token": tok, "user": {"name": "Админ", "id": "admin", "isAdmin": True}}
         if not isinstance(prof, dict):
-            _check_pw(pw, {"salt": "00", "it": _PBKDF_ITER, "hash": ""})  # уақытты теңестіру
+            _check_pw(pw, {"salt": "00", "it": _PBKDF_ITER, "hash": ""})  
             with state["lock"]:
                 _fail(state, lk, sk)
             return {"ok": False, "msg": _MSG_BAD}
@@ -969,7 +969,7 @@ def _handle_req(state, sid, rq):
         if isinstance(ph, dict):
             good = _check_pw(pw, ph)
         elif isinstance(prof.get("password"), str) and prof["password"]:
-            # көшіру әлі аяқталмаған ескі аккаунт
+            
             good = hmac.compare_digest(pw.encode("utf-8"), prof["password"].encode("utf-8"))
         else:
             return {"ok": False, "msg": "Бұл аккаунтқа пароль орнатылмаған. «Админге хабарласу» арқылы жазыңыз."}
@@ -1121,8 +1121,8 @@ def _handle_req(state, sid, rq):
                 return {"ok": False, "msg": "Қолданушы табылмады"}
             for k in names:
                 profs.pop(k, None)
-            # Профиль өшкенмен, автордың тесттері, сыныптары, нәтижелері және
-            # жеке жазбалары админ оларды бөлек өшіргенше сақталады.
+            
+            
             _put(state, "ubt_profiles", _jdump(profs))
             _revoke_uid(state, uid)
             _commit(state)
@@ -1251,7 +1251,7 @@ def _process_reqs(state, sid, reqs):
     return new
 
 
-# ---------------------------------------------------------------- жазу құқығын тексеру
+
 def _merge_chat(state, sess, v, chat_token=""):
     if not sess:
         return None
@@ -1389,7 +1389,7 @@ def _merge_tests(state, sess, v):
                 out.append(s)
                 continue
             if s.get("assignmentId"):
-                out.append(s)  # жіберілген тесттің сұрақтарын тек админ өзгертеді
+                out.append(s)  
                 continue
             n = dict(t)
             n["authorId"] = uid
@@ -1446,7 +1446,7 @@ def _merge_classes(state, sess, v):
             continue
         proposal = inc.get(c.get("id"))
         if not proposal:
-            # Мұғалім өзі басқаратын сыныпты ғана өшіре алады.
+            
             if _is_teacher(state, sess["uid"]) and c.get("teacherId") == sess["uid"]:
                 continue
             out.append(c)
@@ -1527,7 +1527,7 @@ def _merge_class_chat(state, sess, v):
 
 def _merge_attempts(state, sess, key, value):
     if not sess["admin"]:
-        return None  # тапсыру саны мен баллды start_exam / finish_exam жазуы тиіс
+        return None  
     is_result = key.startswith("ubt_tres_")
     tid = key[len("ubt_tres_"):] if is_result else key[len("ubt_att_"):]
     tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
@@ -1587,7 +1587,7 @@ def _merge_schemes(state, sess, v):
         seen.add(tid)
         s0 = sby.get(tid)
         if s0 is not None and s0.get("authorId") != uid:
-            out.append(s0)          # бөтен схеманы өзгертуге болмайды
+            out.append(s0)          
             continue
         if len(_jdump(t)) > _SCH_MAX_ONE:
             if s0 is not None:
@@ -1629,7 +1629,7 @@ def _authorize(state, sess, k, v, chat_token=""):
     if _jload(state["db"].get("ubt_site_controls", "{}"), dict, {}).get("maintenance") and not (sess and sess["admin"]):
         return None
     if k == "ubt_admin_letters":
-        return None  # тек сервердегі тексерілген сұраныстар арқылы өзгертіледі
+        return None  
     if k.startswith("ubt_exam_done_"):
         return None
     if not sess:
@@ -1641,7 +1641,7 @@ def _authorize(state, sess, k, v, chat_token=""):
     if k == "ubt_tests":
         return _merge_tests(state, sess, v)
     if k == "ubt_assigned_tests":
-        return None  # тек тексерілген сервер сұраныстары өзгертеді
+        return None  
     if k == "ubt_schemes":
         return _merge_schemes(state, sess, v)
     if k == "ubt_classes":
@@ -1653,7 +1653,7 @@ def _authorize(state, sess, k, v, chat_token=""):
     if k == "ubt_qotd_day":
         return None
     if k == "ubt_books":
-        return None  # тек сервер арқылы админ жазады
+        return None  
     if k in ("ubt_formulas", "ubt_season_idx", "ubt_awarded", "ubt_trophies") or k.startswith("ubt_season_"):
         return v if sess["admin"] else None
     if k == "ubt_seed_funksiya":
@@ -2052,7 +2052,7 @@ html,body{overflow-x:hidden}
  .sch-card-in .ph{width:96px}
 }
 
-/* Анимациялы mind-map схемасы: тақырыптар қолданушы енгізгенде ғана көрсетіледі */
+
 .sch-bg.mindmap{background:radial-gradient(ellipse at top,#fff 0%,#f7faf7 60%,#edf4ed 100%);border:1px solid #dce8dc;padding:26px 18px 34px;overflow:hidden;position:relative}
 .mindmap .sch-h{font-size:clamp(20px,3vw,28px);color:#20352a;margin:0 0 18px;animation:mindFade .55s both}
 .mind-top{width:max-content;max-width:100%;margin:0 auto 12px;padding:8px 24px;border-radius:22px;background:#fff;border:1px solid #d7e4d8;color:#385b42;font-weight:700;box-shadow:0 4px 12px #1d462010}
@@ -2146,7 +2146,7 @@ body.shield #shield-msg{display:flex}
 .tbar .tb i{display:block;height:100%;background:var(--p);border-radius:20px}
 .tbar .tv{width:44px;text-align:right;font-weight:600}
 @media(max-width:768px){.stat-grid{grid-template-columns:repeat(2,1fr)}}
-/* ===== Қосымша мүмкіндіктер ===== */
+
 #theme-btn{position:fixed;right:12px;bottom:12px;z-index:90;width:42px;height:42px;border-radius:50%;padding:0;font-size:18px;box-shadow:0 2px 10px rgba(0,0,0,.18)}
 body.in-test #theme-btn{display:none}
 #confetti{position:fixed;left:0;top:0;width:100%;height:var(--vh);pointer-events:none;z-index:99990}
@@ -2196,7 +2196,7 @@ body.in-test #theme-btn{display:none}
 .katex-display{overflow-x:auto;overflow-y:hidden}
 
 
-/* Сұрақтарды тест файлдары бойынша жинақтау */
+
 .bs-folder{border:1px solid var(--b);border-radius:18px;background:var(--c);margin:10px 0;overflow:hidden}
 .bs-folder summary{cursor:pointer;list-style:none;padding:16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .bs-folder summary::-webkit-details-marker{display:none}
@@ -2206,7 +2206,7 @@ body.in-test #theme-btn{display:none}
 .bs-folder-items{padding:8px 12px 12px;border-top:1px solid var(--b)}
 .bs-folder-items .ubt-bank-row:last-child{margin-bottom:0}
 
-/* ===== Қараңғы режим ===== */
+
 body.dark{--bg:#0b1220;--c:#162033;--t:#e5e7eb;--m:#9aa8bd;--b:#2b3a52;--p:#3b82f6;--pd:#2563eb;color-scheme:dark}
 body.dark .prog-t,body.dark .timer,body.dark .qnum{background:#1e3a5f;color:#93c5fd}
 body.dark .timer.warn{background:#3b2f0b;color:#fbbf24}
@@ -2244,7 +2244,7 @@ body.dark #admin-chat input,body.dark #admin-chat textarea{color:#111}
 .crow input{flex:1;padding:10px 12px;border:1px solid var(--b);border-radius:20px;background:var(--bg);color:var(--t);font-family:inherit;font-size:14px}
 body.dark .cmsg.sys{background:#422006;color:#fcd34d}
 
-/* ===== Жаңа дизайн (v2) ===== */
+
 :root{--r:28px;--sh:0 6px 24px rgba(30,41,59,.07);--grad:linear-gradient(135deg,#2563eb,#7c3aed)}
 body{background:radial-gradient(900px 420px at 0% -5%,rgba(37,99,235,.14),transparent 60%),radial-gradient(800px 420px at 100% 0%,rgba(124,58,237,.13),transparent 55%),var(--bg);background-attachment:fixed}
 body.dark{background:radial-gradient(900px 420px at 0% -5%,rgba(59,130,246,.16),transparent 60%),radial-gradient(800px 420px at 100% 0%,rgba(139,92,246,.14),transparent 55%),var(--bg);background-attachment:fixed}
@@ -2325,7 +2325,7 @@ body.has-app-header{padding-top:var(--app-header-height,76px)}
 body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd5e1}
 @media(max-width:768px){.mode{padding:16px 10px}.mode .ic{width:48px;height:48px;font-size:24px}}
 
-/* Instant answer feedback (opt-in before test) */
+
 .ubt-instant-switch{display:flex;gap:14px;align-items:flex-start;padding:16px;border:1px solid var(--b);border-radius:16px;background:var(--bg);cursor:pointer}
 .ubt-instant-switch input{width:22px;height:22px;flex:none;accent-color:var(--p)}
 .ubt-instant-switch strong{display:block;font-size:15px}.ubt-instant-switch small{display:block;color:var(--m);margin-top:5px;line-height:1.5}
@@ -2339,7 +2339,7 @@ body.dark .ro-note{background:linear-gradient(135deg,#16233a,#1d1a38);color:#cbd
 body.dark .op.ubt-correct,body.dark .ubt-feedback.yes{background:#123c29!important;color:#bbf7d0!important}
 body.dark .op.ubt-incorrect,body.dark .ubt-feedback.no{background:#451b23!important;color:#fecaca!important}
 
-/* ===== UBT PLUS 2026 VISUAL REFRESH — CSS ONLY ===== */
+
 :root{--p:#6257ed;--pd:#4f46d5;--bg:#f5f6fc;--c:#fff;--t:#18213a;--m:#68758d;--b:#e6e9f3;--grad:linear-gradient(125deg,#6257ed,#9460f3);--ok:#159d73;--err:#e04e65;--warn:#f0a22c}
 body{background:radial-gradient(ellipse at 12% 0%,#eae8ff 0%,transparent 34%),radial-gradient(ellipse at 92% 14%,#e5f4ff 0%,transparent 32%),var(--bg);font-family:'Inter',system-ui,sans-serif;letter-spacing:-.012em}
 .wrap{max-width:980px;padding:38px 22px 120px}.wrap.wide{max-width:1320px}
@@ -2361,15 +2361,14 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
 @media(max-width:768px){.wrap{padding:20px 13px 105px}.card{padding:17px}.item{padding:13px 14px}.mode{padding:19px 12px}.qc{padding:19px}.tmain{padding:13px}.hdr h1{font-size:26px}.stat{padding:12px}.btn{padding:10px 14px}}
 @media(prefers-reduced-motion:reduce){.btn,.mode,.item{transition:none!important;animation:none!important}}
 
-/* Сертификат */
+
 .ubt-cert-btn{background:linear-gradient(110deg,#047857,#0d9488);color:#fff}
-/* ===== END VISUAL REFRESH ===== */
+
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" onload="window.mathScreen&&mathScreen()"></script>
 <script>
-// Жүйе мәзірін бастапқы жүктелуден бастап жасыру; админ бетінде ғана ашу.
 (function(){
   var hidden=new WeakMap(),documents=[];
   try{documents.push(window.parent.document)}catch(e){}
@@ -2557,7 +2556,7 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
       <button class="mode" id="teacher-home-card" onclick="showTeacher()"><span class="ic">🏫</span><h3>Сынып / Мұғалім</h3><p>Сыныппен жұмыс</p></button>
       <button class="mode" id="admin-copied-card" style="display:none" onclick="showCopiedTests()"><span class="ic">📥</span><h3>Жүктелген тесттер</h3><p>Тестті бір адамға жіберу</p></button>
       <button class="mode" onclick="showQuestionBank()" style="grid-column:1/-1"><span class="ic">📚</span><h3>Сұрақтар базасы</h3><p>Пәндер бойынша өз сұрақтарым</p></button>
-      <button class="mode" id="registered-btn" style="display:none;grid-column:1/-1" onclick="showRegistered()"><span class="ic">👥</span><h3>Тіркелгендер</h3><p>Қолданушылар мен рұқсаттар</p></button>
+      <button class="mode" id="registered-btn" style="display:none" onclick="showRegistered()"><span class="ic">👥</span><h3>Тіркелгендер</h3><p>Қолданушылар мен рұқсаттар</p></button>
       <button class="mode" id="admin-btn" style="display:none;grid-column:1/-1" onclick="showAdmin()"><span class="ic">🛠</span><h3>Админ</h3><p>Басқару панелі</p></button>
       <button class="mode" id="admin-requests-card" style="display:none;grid-column:1/-1" onclick="showAccessRequests()"><span class="ic">📨</span><h3>Өтініштер <span id="home-requests-count"></span></h3><p>Жаңа аккаунттар және мұғалім өтініштері</p></button>
     </div>
@@ -3262,7 +3261,6 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
 </div>
 
 <script type="text/plain" id="app-src">
-// ===== Ортақ дерекқор (Streamlit арқылы синхрондау) =====
 function noSync(k){return k==='ubt_current'||k==='ubt_dark'||k.indexOf('ubt_cd_')===0||k.indexOf('ubt_')!==0}
 function syncPush(items){try{if(window.__bridge)window.__bridge.push(items)}catch(e){}}
 const LS={get(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}},set(k,v){try{const s=JSON.stringify(v);localStorage.setItem(k,s);if(!noSync(k))syncPush([{key:k,value:s}])}catch{}}};
@@ -3452,7 +3450,6 @@ function sendChatMsg(){
   document.getElementById('chat-text').value='';
   renderChatMessages();
 }
-// Пайдаланушы тек өз логинінің чатын көреді; өшіру батырмасы жоқ
 function updChatBar(){
   const el=document.getElementById('chat-me');if(!el||!chatLogin)return;
   const me=(user&&!user.isAdmin&&user.name&&user.name.toLowerCase()===chatLogin.toLowerCase())?user:null;
@@ -3483,8 +3480,6 @@ function renderChatMessages(){
   }).join('');
   el.scrollTop=el.scrollHeight;
 }
-
-// ---------- Админ жағы: әр логин бөлек чат, өшіруді тек админ жасай алады ----------
 let adminOpenThread=null;
 function renderAdminChat(){
   const el=document.getElementById('admin-chat');if(!el)return;
@@ -3582,7 +3577,6 @@ function setUserStats(id,stats){
   all[id]=stats;LS.set('ubt_user_stats',all);
 }
 function addPoints(pts){
-  // Рейтинг ұпайын тек сервер тексерілген тестке береді.
   return;
 }
 function refreshProfileBar(){
@@ -3716,7 +3710,6 @@ function getLeaderboard(){
   list.sort((a,b)=>b.points-a.points);
   return list;
 }
-// ================= Профиль фотосы =================
 function getAvatar(id){return id?LS.get('ubt_avatar_'+id,null):null}
 function setAv(el,id,name){
   if(!el)return;
@@ -3760,15 +3753,11 @@ function afterAvatarChange(){
   if(cb&&cb.style.display==='block'&&document.getElementById('s-login').classList.contains('active')){try{updChatBar();renderChatMessages()}catch(e){}}
   else showMyProfile();
 }
-
-// ================= Рейтинг: топ-10 =================
 function podiumHTML(board){
   if(!board.length)return '';
   const cups=['🏆','🥈','🥉'];
   return '<div class="podium">'+[1,0,2].filter(i=>board[i]).map(i=>`<div class="pod p${i+1}" onclick="openPubProfile(${jsq(board[i].id)})"><div class="pcup">${cups[i]}</div><div style="display:flex;justify-content:center;margin:4px 0">${avHTML(board[i].id,board[i].name,i===0?64:48)}</div><div class="pname">${esc(board[i].name)}</div><div class="ppts">⭐ ${board[i].points}</div><div class="pbase">${i+1}</div></div>`).join('')+'</div>';
 }
-
-// ================= Басқа қолданушының профилі (тек оқуға) =================
 let ppId=null;
 function openPubProfile(id){
   if(!user)return;
@@ -3889,7 +3878,6 @@ function showAdmin(){
 
   try{renderHist()}catch(e){}
   try{renderAdminSchemes()}catch(e){}
-  // password change block
   let passBox=document.getElementById('admin-pass-box');
   if(!passBox){
     const wrap=document.getElementById('admin-users').parentElement;
@@ -4472,7 +4460,6 @@ function startBank(key){
   st.timerSeconds=Math.max(b.qs.length*90,600);shuf(st.questions);beginTest();
 }
 function beginTest(){
-  // Тест басталмай тұрып жауапты бірден көрсету режимін таңдау.
   const existing=document.getElementById('ubt-start-overlay');if(existing)existing.remove();
   const modal=document.createElement('div');modal.id='ubt-start-overlay';modal.className='ovl';
   modal.innerHTML=`<div class="box" style="max-width:470px;margin:9vh auto;padding:28px">
@@ -4565,7 +4552,6 @@ function renderQuestionText(text){
   let first=lines.findIndex(line=>/^\s*(?:[A-Za-z_]\w*\s*(?:=(?!=)|\+=|-=)|while\b|for\b|if\b|elif\b|else\s*:|print\s*\(|#)/.test(line));
   let prompt=first>=0?lines.slice(0,first).join('\n').trim():raw;
   let body=first>=0?lines.slice(first):[];
-  // Some imported tests put the first code statement after the question on the same line.
   if(first<0){
     const m=/^(.*?[?؟])\s*((?:[A-Za-z_]\w*\s*(?:=(?!=)|\+=|-=)|while\b|for\b|print\s*\().*)$/s.exec(raw);
     if(m){
@@ -4603,8 +4589,6 @@ function renderQ(){
   document.getElementById('next').textContent=st.currentIndex===st.questions.length-1?'Аяқтау':'Келесі →';
   updNav();updateProg();
 }
-
-// ================= Сұрақ қосу беті: сурет + кесте =================
 function qMedia(q){
   if(!q)return '';
   let h='';
@@ -4763,7 +4747,6 @@ function aqSave(){
   }
   aqQs=[];showMyTests();
 }
-// ---- Админ (және автор) тесттің сұрақтарын қарай алады
 function previewTest(id){
   const t=allTests().find(x=>x.id===id);if(!t)return;
   if(!user||!(user.isAdmin||t.authorId===user.id))return;
@@ -4774,8 +4757,6 @@ function previewTest(id){
    +t.questions.map((q,i)=>`<div class="card"><div class="qt"><b>${i+1}.</b> ${esc(q.text)}</div>${qMedia(q)}${q.options.map((op,j)=>`<div style="padding:4px 0;${j===q.correct?'color:var(--ok);font-weight:600':''}">${L[j]}) ${esc(op)}${j===q.correct?' ✓':''}</div>`).join('')}</div>`).join('')+'</div>';
   document.body.appendChild(o);mathIn(o);
 }
-
-// ================= Схемалар (суретті кесте / карточкалық схема) =================
 const SCH_THEMES={blue:'Көк',green:'Жасыл',red:'Қызыл-күрең',violet:'Күлгін'};
 const SCH_MAX_KIDS=20,SCH_MAX_FIELDS=10,SCH_IMG_BYTES=38000;
 function allSchemes(){return LS.get('ubt_schemes',[])}
@@ -5059,9 +5040,6 @@ function schSave(){
   alert(user.isAdmin&&t.isPublic?'✅ Схема жарияланды':(t.status==='pending'?'✅ Схема сақталды. Админ мақұлдаған соң жарияланады.':'✅ Схема сақталды (тек өзіңізге көрінеді)'));
   schTabCur='mine';showSchemes();
 }
-
-// ================= Қазақстан тарихы: тақырыптар схемасы (тек админ панелі) =================
-// [дәуір, түс, тақырып, жаңа?, [негізгі карточка жолдары], [[белгі, атауы, [жолдар]], ...]]
 const HIST=[
 ['Ежелгі дәуір','blue','Палеолит: Қаратау тұрақтары',0,
  [['Дәуір','Палеолит — ежелгі тас дәуірі'],['Кезеңдері','Ерте, орта және кейінгі палеолит'],['Аймағы','Қаратау өңірі, Оңтүстік Қазақстан']],
@@ -5442,8 +5420,6 @@ function renderHist(){
   });
   el.innerHTML=out;
 }
-
-// ================= Анимациялық сабақтар =================
 const LES_CSP="default-src 'none'; script-src 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; img-src data: blob:; media-src data: blob:; connect-src 'none'; frame-src 'none'; form-action 'none'";
 const LES_TPL={
 canvas:'<canvas id="c" width="600" height="320" style="width:100%;background:#f8fafc;border-radius:12px"></canvas>\n<div style="padding:8px;font:14px sans-serif">Ауырлық күші: <input id="g" type="range" min="1" max="30" value="10"> <button id="b">⏸</button></div>\n<script>\nconst c=document.getElementById("c"),x=c.getContext("2d");let y=40,v=0,run=true;\ndocument.getElementById("b").onclick=e=>{run=!run;e.target.textContent=run?"⏸":"▶"};\nfunction f(){\n  if(run){const g=+document.getElementById("g").value/60;v+=g;y+=v;if(y>300){y=300;v=-v*.85}}\n  x.clearRect(0,0,600,320);x.fillStyle="#2563eb";x.beginPath();x.arc(300,y,18,0,7);x.fill();\n  requestAnimationFrame(f)\n}\nf();\n<\/script>',
@@ -5516,7 +5492,6 @@ async function uploadBook(){
   finally{button.disabled=false}
 }
 async function openBook(id){
-  // Open a placeholder immediately so phone browsers permit the new tab after the async request.
   const tab=window.open('about:blank','_blank');
   const result=await authCall('book_open',{id});
   if(!result.ok){if(tab)tab.close();alert(result.msg||'Кітап ашылмады');return}
@@ -5671,12 +5646,10 @@ function finishTest(force){
     let hist=LS.get('ubt_hist_'+user.id,[]);hist.unshift({date:new Date().toLocaleString('kk-KZ'),score,max,topic:st.subjectName,viol:lock.viol,answers:{...st.answers},questions:st.questions.map(q=>({id:q.id,text:q.text,options:q.options,correct:q.correct}))});
     if(hist.length>40)hist.pop();LS.set('ubt_hist_'+user.id,hist);
   }
-  // Points: 10 per correct + bonus for high %
   let gained=score*10;
   const pct=max?score/max:0;
   if(pct>=1) gained+=50; else if(pct>=0.8) gained+=25; else if(pct>=0.5) gained+=10;
   gained=st.verifiedExam?st.verifiedExam.gained:0;
-  // Keep the completed review available after a Streamlit rerun or a page refresh.
   if(user&&st.questions.length){
     try{sessionStorage.setItem('ubt_last_review_'+user.id,JSON.stringify({questions:st.questions,answers:st.answers,topic:st.subjectName}))}catch(e){}
   }
@@ -5732,8 +5705,6 @@ function showMistakes(){
 function clearMist(){if(confirm('Тазалау?')){LS.set('ubt_mistakes_'+user.id,[]);showMistakes()}}
 function startMistakes(){const m=LS.get('ubt_mistakes_'+user.id,[]);if(!m.length)return;st=baseState();st.questions=m.map(q=>({...q}));st.subjectName='Қателер';st.isMistakes=true;st.timerSeconds=Math.max(m.length*90,600);beginTest()}
 function startMistakesFromLast(){if(!st.lastWrong||!st.lastWrong.length){alert('Қате жоқ!');return}st.questions=st.lastWrong.map(q=>({...q}));st.currentIndex=0;st.answers={};st.flags={};st.subjectName='Қателер';st.isMistakes=true;st.timerSeconds=Math.max(st.questions.length*90,600);beginTest()}
-
-// ================= Көп сұрақты бірден қосу / файлға сақтау / файлдан тапсыру =================
 const MAX_Q=500;
 const SAMPLE_TXT=`Тақырып: Қазақ хандығы
 Пән: Қазақстан тарихы
@@ -6154,8 +6125,6 @@ function addManualQ(ctx){
 ['f'].forEach(c=>{const h=document.getElementById(c+'-bulk-host');if(h)h.innerHTML=bulkBlock(c)});
 
 document.addEventListener('click',e=>{const side=document.getElementById('sidebar');if(side&&side.classList.contains('open')&&!side.contains(e.target)&&!e.target.classList.contains('side-tog'))side.classList.remove('open')});
-
-// ================= Тест кезіндегі толық экран құлпы =================
 const MAX_VIOL=3;
 const lock={on:false,paused:false,viol:0,last:0,fsOk:false,oldStyle:null,pdoc:null,oldOv:''};
 function guardPause(fn){lock.paused=true;try{return fn()}finally{setTimeout(()=>{lock.paused=false},900)}}
@@ -6239,8 +6208,6 @@ function onBeforeUnload(e){if(lock.on){e.preventDefault();e.returnValue='Тес�
 window.addEventListener('beforeunload',onBeforeUnload);
 try{window.parent.addEventListener('beforeunload',onBeforeUnload)}catch(e){}
 window.addEventListener('popstate',()=>{if(lock.on){try{history.pushState({lock:1},'',location.href)}catch(e){}}});
-
-// ================= Скриншот / көшіру / «Manage app» қорғанысы =================
 const isAdminNow=()=>!!(user&&user.isAdmin);
 function syncAdminClass(){document.body.classList.toggle('is-admin',isAdminNow())}
 function inField(t){return !!(t&&t.closest&&t.closest('input,textarea,[contenteditable="true"]'))}
@@ -6271,7 +6238,6 @@ document.addEventListener('keyup',e=>{
   if(isAdminNow())return;
   if(e.key==='PrintScreen'||e.code==='PrintScreen'){clearClip();shieldOn(4000)}
 },true);
-// Терезе фокусын жоғалтса (скриншот құралы, басқа бет) – мазмұн бұлыңғырланады
 let hadFocus=false;
 window.addEventListener('focus',()=>{hadFocus=true;shieldOff()});
 document.addEventListener('pointerdown',()=>{hadFocus=true;shieldOff()},true);
@@ -6280,8 +6246,6 @@ window.addEventListener('blur',()=>{if(hadFocus&&!isAdminNow()&&!(document.activ
 document.addEventListener('visibilitychange',()=>{if(document.hidden)shieldOn(0);else shieldOff()});
 window.addEventListener('beforeprint',()=>shieldOn(0));
 window.addEventListener('afterprint',shieldOff);
-
-// ---- Су белгісі (ватермарк)
 let wmKey='';
 function updWatermark(){
   const el=document.getElementById('wm');if(!el)return;
@@ -6294,7 +6258,6 @@ function updWatermark(){
   el.style.backgroundImage='url("data:image/svg+xml;utf-8,'+encodeURIComponent(svg)+'")';
   el.style.display='block';
 }
-// ---- Бұзушылықтарды тіркеу (админ профильде көреді)
 let lastViolLog={};
 function logViol(kind){
   try{
@@ -6305,7 +6268,6 @@ function logViol(kind){
     LS.set(k,a.slice(0,100));
   }catch(e){}
 }
-// ---- Сұрақ пен жауап ретін араластыру
 const KEEP_ORDER_RE=/жоғарыда|барлығы|барлық жауап|бәрі дұрыс|ешқайсысы|А\s*және|A\s*және|все\s+вышеперечисл|none of|all of the/i;
 function shuf(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
 function shuffleOpts(q){
@@ -6313,7 +6275,6 @@ function shuffleOpts(q){
   const idx=shuf(q.options.map((_,i)=>i));
   return {...q,options:idx.map(i=>q.options[i]),correct:idx.indexOf(q.correct)};
 }
-// ---- Басқа құрылғыдан кіргенде / сессия біткенде шығару
 function kickedOut(){
   if(!user)return;
   const adm=!!user.isAdmin;
@@ -6326,15 +6287,13 @@ function kickedOut(){
 }
 window.__kicked=kickedOut;
 setInterval(updWatermark,5000);
-
-// ---- Қолданбаны бүкіл экранға жаю (iframe-ді терезеге бекіту)
 const PIN_CSS='position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;height:100dvh!important;max-width:none!important;margin:0!important;padding:0!important;border:0!important;z-index:999990!important;background:var(--bg,#f1f5f9)';
 function pinFrame(){
   try{
     const fe=window.frameElement;if(!fe)return;
     if(fe.getAttribute('scrolling')!=='yes')fe.setAttribute('scrolling','yes');
     if(fe.style.position!=='fixed'||fe.style.width!=='100vw'){
-      if(lock&&lock.oldStyle!==null&&lock.oldStyle!==undefined){/* тест кезінде lockExpand басқарады */}
+      if(lock&&lock.oldStyle!==null&&lock.oldStyle!==undefined){}
       fe.style.cssText=PIN_CSS;
     }
     const d=fe.ownerDocument;
@@ -6343,8 +6302,6 @@ function pinFrame(){
   }catch(e){}
 }
 pinFrame();setInterval(pinFrame,1500);window.addEventListener('resize',pinFrame);
-
-// «Manage app» батырмасы: әдепкіде жасырын, тек админ панелінде ғана көрінеді
 const MANAGE_SEL='[data-testid="manage-app-button"],[data-testid*="manage-app"],[data-testid*="manageApp"],[aria-label*="Manage app" i],[title*="Manage app" i],[class*="_terminalButton_"],[class*="_viewerBadge_"],[class*="viewerBadge"],[class*="_profileContainer_"],.stAppDeployButton,[data-testid="stToolbar"],[data-testid="stDecoration"],[data-testid="stStatusWidget"]';
 function chromeSync(){
   syncAdminClass();updWatermark();
@@ -6366,8 +6323,6 @@ function chromeSync(){
 }
 setInterval(chromeSync,1500);
 document.addEventListener('DOMContentLoaded',chromeSync);
-
-// ================= Әр пайдаланушының жеке графигі =================
 function getProg(id){
   let pg=LS.get('ubt_prog_'+id,[]);
   if(!pg.length)pg=LS.get('ubt_hist_'+id,[]).slice().reverse().map(h=>({t:0,score:h.score,max:h.max,topic:h.topic,viol:h.viol||0}));
@@ -6413,8 +6368,6 @@ function renderProgress(chartId,topicId,prog){
     tel.innerHTML=rows.map(x=>`<div class="tbar"><span class="tn" title="${esc(x.k)}">${esc(x.k)} (${x.c})</span><span class="tb"><i style="width:${x.avg}%"></i></span><span class="tv">${x.avg}%</span></div>`).join('');
   }
 }
-
-// ================= Дайын тест: «Функция» (50 сұрақ) =================
 const SEED_FUNKSIYA=`Тақырып: Функция
 Пән: Математика
 
@@ -6783,8 +6736,6 @@ function seedBuiltin(){
   }catch(e){}
 }
 seedBuiltin();
-
-// ================= Қосымша мүмкіндіктер: дерек =================
 const QUOTES=[
 "Бүгін оқыған әр бет — ертеңгі жеңістің бір қадамы.",
 "Тамшыдан көл болады: күн сайын азын-аздап оқы.",
@@ -6856,8 +6807,6 @@ const GLOSS=[].concat([
 ['Әдебиет','Абайдың «Қара сөздері»','Абай Құнанбайұлының прозалық шығармалар жинағы — 45 қара сөз.'],
 ['Әдебиет','«Абай жолы»','Мұхтар Әуезовтің Абай өмірі туралы роман-эпопеясы.']
 ]).map(a=>({c:a[0],t:a[1],d:a[2]}));
-
-// ================= Қосымша мүмкіндіктер: логика =================
 function dayKey(d){d=d||new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
 function parseDay(k){const a=String(k).split('-').map(Number);return new Date(a[0],a[1]-1,a[2])}
 function addDays(d,n){const x=new Date(d);x.setDate(x.getDate()+n);return x}
@@ -6878,21 +6827,15 @@ function seasonLabel(tag){
   if(t==='m'){const p=k.split('-');return p[0]+' · '+MONTHS[(+p[1])-1]}
   const p=k.split('-W');return p[0]+' · '+(+p[1])+'-апта';
 }
-
-// ---------- Қараңғы режим ----------
 function applyTheme(){
   const on=!!LS.get('ubt_dark',false);
   document.body.classList.toggle('dark',on);
   const b=document.getElementById('theme-btn');if(b)b.textContent=on?'☀️':'🌙';
 }
 function toggleTheme(){LS.set('ubt_dark',!LS.get('ubt_dark',false));applyTheme()}
-
-// ---------- LaTeX (KaTeX) ----------
 const MATH_DELIMS=[{left:'$$',right:'$$',display:true},{left:'\\[',right:'\\]',display:true},{left:'\\(',right:'\\)',display:false},{left:'$',right:'$',display:false}];
 function mathIn(el){try{if(el&&window.renderMathInElement)window.renderMathInElement(el,{delimiters:MATH_DELIMS,throwOnError:false})}catch(e){}}
 function mathScreen(){mathIn(document.querySelector('.screen.active'))}
-
-// ---------- Отшашу ----------
 function confetti(n){
   const c=document.getElementById('confetti');if(!c)return;
   c.width=window.innerWidth;c.height=parseInt(getComputedStyle(document.documentElement).getPropertyValue('--vh'))||window.innerHeight;
@@ -6906,14 +6849,10 @@ function confetti(n){
     if(++f<230)requestAnimationFrame(loop);else x.clearRect(0,0,c.width,c.height);
   })();
 }
-
-// ---------- Цитаталар ----------
 let homeQuote=null;
 function randQuote(){return QUOTES[Math.floor(Math.random()*QUOTES.length)]}
 function newQuote(){homeQuote=randQuote();renderHomeExtras()}
 function quoteCard(){if(!homeQuote)homeQuote=randQuote();return `<div class="quote" onclick="newQuote()" title="Басып жаңасын көріңіз">💬 ${esc(homeQuote)}</div>`}
-
-// ---------- Streak ----------
 function getStreak(){return LS.get('ubt_streak_'+user.id,{last:'',count:0,best:0})}
 function currentStreak(){const s=getStreak();return(s.last&&daysBetween(s.last,dayKey())<=1)?s.count:0}
 function touchStreak(){
@@ -6926,8 +6865,6 @@ function touchStreak(){
   if(s.count%7===0)bonus+=50;
   return{count:s.count,bonus,isNew:true};
 }
-
-// ---------- Маусымдық рейтинг ----------
 function recordSeason(p){
   return; // Ұпайды сервер есептейді.
   if(!user||user.isAdmin||!p)return;
@@ -7009,8 +6946,6 @@ function showRanking(mode){
   document.getElementById('rank-hall').innerHTML=tags.length?`<div class="card" style="margin-top:16px"><h3 style="margin-bottom:10px">🏛 Кубоктар залы</h3>`+tags.slice(0,6).map(tag=>`<div style="margin-bottom:8px"><b style="font-size:13px">${esc(seasonLabel(tag))}</b><div class="sub">`+hall.filter(t=>t.tag===tag).sort((a,b)=>a.rank-b.rank).map(t=>cups[t.rank-1]+' '+esc(t.name)+' ('+t.points+'⭐)').join(' · ')+`</div></div>`).join('')+`</div>`:'';
   showScr('s-ranking');
 }
-
-// ---------- Таңдаулылар ----------
 function getBm(){return LS.get('ubt_bm_'+user.id,[])}
 function isBm(q){return getBm().some(x=>x.text===q.text)}
 function toggleBm(q){
@@ -7034,8 +6969,6 @@ function startBm(){
   st.questions=a.map(q=>({...q,id:'bm_'+hash(q.text),subjectName:q.subjectName||'Таңдаулылар'}));
   st.subjectName='Таңдаулылар';st.isMistakes=true;st.timerSeconds=Math.max(a.length*90,600);beginTest();
 }
-
-// ---------- Күн сұрағы ----------
 function getQotd(){
   const today=dayKey();
   const pool=[];
@@ -7062,8 +6995,6 @@ function answerQotd(i){
   if(i===q.correct)confetti(90);
   renderHomeExtras();
 }
-
-// ---------- Оқу жоспары ----------
 let planAll=false;
 function planDays(p){
   const n=daysBetween(p.start||dayKey(),p.date);if(n<0)return[];
@@ -7132,8 +7063,6 @@ function todayPlanHTML(){
   const done=planDone();
   return `<div class="card"><h3 style="margin-bottom:8px">🗓 Бүгінгі жоспар <button class="btn btn-s btn-sm" style="float:right" onclick="showPlanner()">Толық</button></h3><div class="plan-day" style="border:none;padding:0;margin:0">${day.tasks.map((t,i)=>planTaskHTML(day,t,i,done)).join('')}</div></div>`;
 }
-
-// ---------- Флеш-карталар ----------
 let fl={deck:[],total:0,known:0,flip:false};
 function qCard(q){return{f:q.text,b:q.options[q.correct]}}
 function flashCards(k){
@@ -7172,8 +7101,6 @@ function renderFlash(){
 function flFlip(){if(!fl.deck.length)return;fl.flip=!fl.flip;renderFlash()}
 function flKnow(){if(!fl.deck.length)return;fl.deck.shift();fl.known++;fl.flip=false;renderFlash()}
 function flAgain(){if(!fl.deck.length)return;fl.deck.push(fl.deck.shift());fl.flip=false;renderFlash()}
-
-// ---------- Глоссарий ----------
 let glCat='';
 function showGloss(){
   const cats=[''].concat(GLOSS.map(g=>g.c).filter((c,i,a)=>a.indexOf(c)===i));
@@ -7188,8 +7115,6 @@ function renderGloss(){
   el.innerHTML=list.length?list.map(g=>`<div class="gl-item"><div class="gl-cat">${esc(g.c)}</div><h4>${esc(g.t)}</h4><p>${esc(g.d)}</p></div>`).join(''):'<div class="empty"><div class="ic">🔍</div><p>Ештеңе табылмады</p></div>';
   mathIn(el);
 }
-
-// ---------- Мұғалім / Куратор ----------
 let tchOpen=null;
 function getClasses(){return LS.get('ubt_classes',[])}
 function saveClasses(a){LS.set('ubt_classes',a)}
@@ -7306,8 +7231,6 @@ function showStudent(cid,sid){
   </div>`;
   document.getElementById('tch-detail').scrollIntoView({behavior:'smooth',block:'start'});
 }
-
-// ---------- Басты бет блогы ----------
 function renderHomeExtras(){
   const el=document.getElementById('home-extras');if(!el||!user)return;
   try{checkRollover()}catch(e){}
@@ -7319,8 +7242,6 @@ function renderHomeExtras(){
   el.innerHTML=`<div class="chips">${chips}</div>`+quoteCard()+qotdHTML()+todayPlanHTML();
   mathIn(el);
 }
-
-// ---------- Тест аяқталған соң ----------
 let _seenScore=null;
 function afterFinish(){
   if(!user)return;
@@ -7331,7 +7252,6 @@ function afterFinish(){
   let extra='';
   const sk=touchStreak();
   if(sk.isNew){
-    // Күндер тізбегі оқу жетістігі ретінде көрсетіледі.
     extra+=`<div class="res-row"><span>🔥 Streak: ${sk.count} күн қатарынан</span><span style="font-weight:700;color:var(--ok)">Жаңа күн</span></div>`;
   }else extra+=`<div class="res-row"><span>🔥 Streak</span><span style="font-weight:700">${sk.count} күн</span></div>`;
   const prev=getProg(user.id).slice(0,-1).filter(p=>p.max>=5).map(pctOf);
@@ -7341,8 +7261,6 @@ function afterFinish(){
   rb.insertAdjacentHTML('beforeend',extra);
   if(pct>=0.8||isRec)confetti();
 }
-
-// ---------- Профиль: streak + кубоктар ----------
 function profExtra(){
   const el=document.getElementById('prof-extra');if(!el||!user||user.isAdmin){if(el)el.innerHTML='';return}
   const s=getStreak(),tr=LS.get('ubt_trophies',[]).filter(t=>t.id===user.id);
@@ -7351,8 +7269,6 @@ function profExtra(){
     <div class="stat-grid" style="grid-template-columns:repeat(2,1fr)"><div class="stat"><b>${currentStreak()}</b><span>Қазіргі streak (күн)</span></div><div class="stat"><b>${s.best||0}</b><span>Ең ұзақ streak</span></div></div>
     ${tr.length?tr.slice().reverse().map(t=>`<div class="res-row"><span>${cups[t.rank-1]} ${esc(seasonLabel(t.tag))} · ${t.tag.slice(0,1)==='m'?'айлық':'апталық'}</span><b>${t.rank}-орын · ⭐ ${t.points}</b></div>`).join(''):'<div class="sub">Кубок әзірге жоқ. Ай/апта соңында топ-3-ке кіріңіз!</div>'}`;
 }
-
-// ---------- Ілмектер (hooks) ----------
 (function(){
   const _ss=showScr;
   showScr=function(id){
@@ -7394,8 +7310,6 @@ function profExtra(){
 })();
 applyTheme();
 setSyncInd(!!(window.__bridge&&window.__bridge.connected()));
-
-// ================= Мұғалім рөлі =================
 function isTeacherUser(){
   if(!user)return false;if(user.isAdmin)return true;
   const p=findUserByLogin(user.name);
@@ -7479,8 +7393,6 @@ function adminRejectTeacher(id){
       :(user&&!user.isAdmin?'<div class="card"><h3>🔒 Мұғалім кабинеті</h3><p class="sub" style="margin-bottom:10px">Мұғалім болу және сынып ашу тек админ мақұлдағаннан кейін ғана мүмкін. Мұғалім болғыңыз келсе, админге өтініш жіберіңіз. Оқушы болсаңыз, төмендегі кодпен сыныпқа қосыла аласыз.</p><div class="fg"><label>Қай пәннен сабақ бересіз?</label><select id="tch-want-subject"><option value="">Пәнді таңдаңыз</option>'+Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value).map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('')+'</select></div><div class="fg"><input id="tch-want-info" placeholder="Мектеп (мыс: №12 мектеп)" maxlength="80"></div><button class="btn btn-p btn-sm" onclick="requestTeacher()">📨 Мұғалім болуға өтініш жіберу</button></div>':''));
   };
 })();
-
-// ================= Сынып ашу өтініші + сынып чаттары =================
 const RESP_MS=12*3600*1000, CD_MS=60*1000;
 function cdLeft(key){const t=LS.get('ubt_cd_'+key,0);return Math.max(0,CD_MS-(Date.now()-t))}
 function cdCheck(key){
@@ -7520,8 +7432,6 @@ function sendThread(tid,who){
   if(who==='admin')renderAdminClassChat();else renderTeacherChat();
 }
 function scrollChat(){const m=document.getElementById('cmsgs');if(m)m.scrollTop=m.scrollHeight}
-
-// --- Мұғалім жағы ---
 let tchThread=null;
 function submitClassRequest(){
   if(!user||user.isAdmin||!isTeacherUser())return;
@@ -7561,8 +7471,6 @@ function tickCooldown(){
   b.disabled=left>0;l.textContent=left>0?('Келесі өтініш: '+Math.ceil(left/1000)+' сек.'):'';
 }
 setInterval(tickCooldown,1000);
-
-// --- Админ жағы ---
 let admThread=null;
 function renderClassReqs(){
   const el=document.getElementById('admin-class-req');if(!el)return;
@@ -7627,7 +7535,6 @@ function renderAdminClassChat(){
     if(getChatMessages().length>n0)cdStamp(key);
   };
 })();
-// ================= Сынып тесттері, лимит, таймер, пән бойынша, 140 формат =================
 function canManageClass(c){return !!(user&&c&&(user.isAdmin||c.teacherId===user.id))}
 function refreshClassViews(){
   try{renderTeacher()}catch(e){}
@@ -7635,8 +7542,6 @@ function refreshClassViews(){
 }
 function attemptsOf(tid,uid){return (LS.get('ubt_att_'+tid,{})[uid])||0}
 function bumpAttempt(tid,uid){const a=LS.get('ubt_att_'+tid,{});a[uid]=(a[uid]||0)+1;LS.set('ubt_att_'+tid,a)}
-
-// --- Сынып басқаруы (админ және сынып мұғалімі) ---
 function removeStudent(cid,sid){
   const a=getClasses(),c=a.find(x=>x.id===cid);if(!c||!canManageClass(c))return;
   if(!confirm('Оқушыны сыныптан шығару керек пе?'))return;
@@ -7670,8 +7575,6 @@ function changeClassCode(cid){
   c.code=v;saveClasses(a);refreshClassViews();
   alert('✅ Жаңа сынып коды: '+v+'. Ескі код енді жұмыс істемейді.');
 }
-
-// --- Сынып тесттері тізімі ---
 function classTestsHTML(c,mode){
   const ts=allTests().filter(t=>t.classId===c.id);
   if(!ts.length)return `<div class="sub">${mode==='student'?'Бұл сыныпқа әзірге тест жоқ':'Бұл сыныпқа тест жоқ. «Тест құру» бетінде сыныпты таңдап қосыңыз.'}</div>`;
@@ -7706,8 +7609,6 @@ function renderAdminClasses(){
   const cls=getClasses();
   el.innerHTML=cls.length?cls.map(c=>classCardHTML(c)+'<div style="margin:-4px 0 16px 8px">'+classTestsHTML(c,'manage')+'</div>').join(''):'<p class="sub">Сынып жоқ</p>';
 }
-
-// --- Тест құру / баптау: сынып, таймер, лимит ---
 function classOptionsHTML(sel){
   const cls=getClasses().filter(canManageClass);
   return '<option value="">🌐 Жалпы / жеке тест (сыныпсыз)</option>'+cls.map(c=>`<option value="${c.id}" ${sel===c.id?'selected':''}>🏫 ${esc(c.name)}${user.isAdmin?' · '+esc(c.teacherName||''):''}</option>`).join('');
@@ -7736,8 +7637,6 @@ function saveTestSettings(){
   else{delete t.classId;delete t.className}
   saveAllTests(all);alert('✅ Баптаулар сақталды');
 }
-
-// --- Пән бойынша тапсыру ---
 let pubSubj='';
 const publicMixSelected=new Set();
 function togglePublicMix(id,on){if(on)publicMixSelected.add(id);else publicMixSelected.delete(id);renderPublicMixInfo()}
@@ -7825,8 +7724,6 @@ function startSubjectMix(key){
   st=baseState();st.questions=qs.map(q=>({...q,subjectName:nm}));st.subjectName=nm+' · аралас';
   st.timerSeconds=Math.max(qs.length*90,600);beginTest();
 }
-
-// --- ҰБТ 140 формат ---
 const UBT_PROFILE=['math','physics','chemistry','biology','geography','informatics','english','kazakh','worldhistory','law'];
 function ubtSections(p1,p2){return[{key:'history',n:20},{key:'reading',n:10},{key:'mathlit',n:10},{key:p1,n:40},{key:p2,n:40}]}
 function ubtBankIdentity(subject,text){return subject+'|'+String(text||'').trim().toLowerCase()}
@@ -7985,8 +7882,6 @@ function startUbt140(){
   st=baseState();st.questions=qs;st.subjectName='ҰБТ 140 формат';st.is140=true;
   st.timerSeconds=240*60;beginTest();
 }
-
-// --- Ілмектер ---
 (function(){
   const _sc=showCreate;
   showCreate=function(){
@@ -8039,7 +7934,6 @@ function startUbt140(){
       if(!user||user.isAdmin||st.isMistakes||!st.lastScore)return;
       if(st.testId){
         const t=allTests().find(x=>x.id===st.testId);
-        // Расталған сынып бағасын сервер сақтайды.
       }
       if(st.is140){
         const by={},order=[];
@@ -8052,7 +7946,6 @@ function startUbt140(){
 try{if(user&&document.getElementById('s-home').classList.contains('active'))renderHomeExtras()}catch(e){}
 </script>
 <script>
-// ===== Ортақ жоғарғы жолақ: профиль мен «Артқа» =====
 (function(){
   var header=document.querySelector('#s-home .profile-bar');
   var slot=document.createElement('div');slot.className='app-back-slot';
@@ -8097,7 +7990,6 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
 })();
 </script>
 <script>
-// ===== Streamlit екі жақты компонент көпірі =====
 (function(){
   var sid=Math.random().toString(36).slice(2,10),n=0,pend={},unacked=[],pollN=0,booted=false,connected=false,first=true,flushT=null,lastH=0,reqN=0,reqs=[],waiters={},renderWaiters=[];
   function noSync(k){return k==='ubt_current'||k==='ubt_dark'||k.indexOf('ubt_cd_')===0||k.indexOf('ubt_')!==0}
@@ -8200,7 +8092,6 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
   });
   window.__bridge={push:push,call:call,refresh:refresh,clearLocal:clearLocal,connected:function(){return connected}};
   post({type:'streamlit:componentReady',apiVersion:1});height();
-  // Жаңарту бет ашылған сайын қайталанбайды: дерек әрекетке немесе қойындыға оралғанда алынады.
   var lastFocusSync=0;
   function syncOnReturn(){if(!connected||document.visibilityState==='hidden'||!window.__token)return;var now=Date.now();if(now-lastFocusSync<30000)return;lastFocusSync=now;send()}
   document.addEventListener('visibilitychange',syncOnReturn);
@@ -8214,7 +8105,7 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
 """
 
 
-# Frontend (HTML) файлын құрамыз және екі жақты компонент ретінде қосамыз
+
 def _write_frontend():
     os.makedirs(FRONT_DIR, exist_ok=True)
     path = os.path.join(FRONT_DIR, "index.html")
