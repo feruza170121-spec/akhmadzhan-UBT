@@ -489,7 +489,7 @@ def _start_exam(state, sess, d):
         if not test:
             return {"ok": False, "msg": "Тест табылмады"}
         qs = test.get("questions")
-        if not isinstance(qs, list) or not 0 < len(qs) <= 250 or any(not isinstance(q, dict) or
+        if not isinstance(qs, list) or not 0 < len(qs) <= 500 or any(not isinstance(q, dict) or
             not isinstance(q.get("options"), list) or type(q.get("correct")) is not int or
             not 0 <= q["correct"] < len(q["options"]) for q in qs):
             return {"ok": False, "msg": "Тест сұрақтарын түзету қажет"}
@@ -597,7 +597,7 @@ def _start_public_mix(state, sess, d):
 def _finish_exam(state, sess, d):
     token = d.get("exam")
     answers = d.get("answers")
-    if not sess or not isinstance(token, str) or not isinstance(answers, dict) or len(answers) > 250:
+    if not sess or not isinstance(token, str) or not isinstance(answers, dict) or len(answers) > 500:
         return {"ok": False, "msg": "Нәтиже жарамсыз"}
     with state["lock"]:
         exam = state["exams"].get(token)
@@ -1377,7 +1377,7 @@ def _merge_tests(state, sess, v):
         if not isinstance(t, dict) or not isinstance(t.get("id"), str):
             continue
         qs = t.get("questions", [])
-        if not isinstance(qs, list) or len(qs) > 250 or len(_jdump(t)) > 1_000_000:
+        if not isinstance(qs, list) or len(qs) > 500 or len(_jdump(t)) > 1_000_000:
             return None
         tid = t["id"]
         if len(tid) > 100:
@@ -2916,6 +2916,7 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
     <div class="hdr"><h2>📂 JSON / файлдан тест</h2><p class="sub">JSON файлын жүктеңіз. Мұғалім оны сақтап, өз сыныбына лимитпен тарата алады.</p></div>
     <div class="card"><div class="fg" style="margin-bottom:0"><label>Пән (міндетті емес)</label><select id="f-question-subject"></select></div></div>
     <div id="f-bulk-host"></div>
+    <div id="f-topic-list"></div>
     <div class="row" style="margin-top:16px"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
 </div>
@@ -4759,7 +4760,11 @@ function previewTest(id){
 }
 const SCH_THEMES={blue:'Көк',green:'Жасыл',red:'Қызыл-күрең',violet:'Күлгін'};
 const SCH_MAX_KIDS=20,SCH_MAX_FIELDS=10,SCH_IMG_BYTES=38000;
-function allSchemes(){return LS.get('ubt_schemes',[])}
+function allSchemes(){
+  const schemes=LS.get('ubt_schemes',[]);
+  if(Array.isArray(schemes)&&typeof histEnsureEarlyMedieval==='function'&&histEnsureEarlyMedieval(schemes))LS.set('ubt_schemes',schemes);
+  return schemes;
+}
 function saveSchemes(a){LS.set('ubt_schemes',a)}
 function schIsPub(t){return t.isPublic===true&&t.status==='approved'}
 function schSubjOptions(first){
@@ -5067,7 +5072,7 @@ const HIST=[
  [['Оңтүстік бағыт','Жетісу және Оңтүстік Қазақстан',[['Қалалар','Тараз, Испиджаб (Сайрам), Түркістан (Яссы)'],['Маңызы','Керуен жолдарының тоғысқан аймағы']]],
   ['Сырдария','Сырдария бойындағы қалалар',[['Қалалар','Отырар, Сауран, Сығанақ'],['Ерекшелігі','Сауда мен қолөнер орталықтары']]]]],
 ['Ортағасыр','green','Түркі қағанаты',0,
- [['Құрылуы','552 ж. Бумын қаған (Ашина әулеті)'],['Бөлінуі','583 ж. Батыс және Шығыс қағанаттары'],['Жазуы','Орхон-Енисей руна жазуы'],['Ескерткіштер','Күлтегін, Білге қаған жазулары']],
+ [['Құрылуы','552 ж. Бумын қаған (Ашина әулеті)'],['Бөлінуі','603 ж. Батыс және Шығыс қағанаттарына бөлінді'],['Жазуы','Орхон-Енисей руна жазуы'],['Ескерткіштер','Күлтегін, Білге қаған жазулары']],
  [['Құрылымы','Қағанат құрылымы',[['Билеуші','Қаған'],['Бөліну','Батыс және Шығыс қағанаттары']]],
   ['Орхон жазулары','Орхон жазулары',[['Күлтегін','732 ж.'],['Білге қаған','735 ж.'],['Авторы','Йоллығ-тегін']]]]],
 ['Ортағасыр','green','Түргеш және Қарлұқ қағанаттары',0,
@@ -5242,7 +5247,7 @@ const HIST=[
  [['Тас дәуірі','Палеолиттен энеолитке дейін',[['Палеолит','Ежелгі тас дәуірі; төменгі, орта және жоғарғы палеолит болып бөлінеді'],['Мезолит','Орта тас дәуірі; садақ пен жебе, микролиттер таралды'],['Неолит','Жаңа тас дәуірі; тас өңдеу жетілді, қыш ыдыс, өндіруші шаруашылық белгілері'],['Энеолит','Мыс-тас дәуірі; тас пен мыс қатар қолданылды'],['Ескерткіштер','Бөріқазған, Тәңірқазған, Батпақ, Шүлбі; Ботай қонысы — жылқыны қолға үйрету тарихымен белгілі']]],
   ['Қола дәуірі','Б.з.д. XVIII–VIII ғасырлар шамасы',[['Негізгі мәдениеттер','Андронов мәдени-тарихи қауымдастығы; кейінгі қола дәуіріндегі Беғазы-Дәндібай мәдениеті'],['Андронов','Б.з.д. XVIII–XII ғғ. шамасы; мал шаруашылығы, егіншілік, металлургия'],['Беғазы-Дәндібай','Б.з.д. XII–VIII ғғ. шамасы; Орталық Қазақстан, ірі тас кесенелер'],['Ескерткіштер','Петровка, Алексеевка, Атасу, Беғазы, Дәндібай']]],
   ['Ерте темір дәуірі','Б.з.д. VIII ғасыр – б.з. V ғасыры',[['Тайпалар мен мемлекеттер','Сақтар, сарматтар, үйсіндер, қаңлылар, ғұндар'],['Мәдени ерекшелік','Аң стилі, обалар, қару-жарақ пен ат әбзелдері'],['Сақ ескерткіштері','Есік, Бесшатыр, Шілікті, Берел, Түгіскен, Ұйғарақ'],['Сарматтар','Батыс Қазақстан; Прохоров және Суслов кезеңдері деп жіктелетін ескерткіштер кездеседі'],['Үйсін және Қаңлы','Үйсіндер — Жетісу; қаңлылар — Сырдарияның орта ағысы']]],
-  ['Орта ғасырлар','VI–XVII ғасырлар',[['Ерте орта ғасырлар','VI–IX ғғ.: Түрік, Батыс Түрік, Түргеш, Қарлұқ, Оғыз, Қимақ қағанаттары'],['Дамыған орта ғасырлар','X–XIII ғғ. басы: Қарахан, Қыпшақ мемлекеттері; қалалар мен Ұлы Жібек жолы дамыды'],['Моңғол және кейінгі кезең','XIII–XV ғғ.: Моңғол империясы, Жошы ұлысы, Алтын Орда, Ақ Орда, Моғолстан, Әбілқайыр хандығы, Ноғай Ордасы'],['Қазақ хандығы','1465/1466 ж. құрылуы; Керей мен Жәнібек; XVI–XVII ғғ. хандықтың нығаюы'],['Мәдениеттер мен мұра','Түркі жазба ескерткіштері; Қарахан дәуірінің сәулеті; Отырар, Тараз, Сауран, Сығанақ; Қожа Ахмет Ясауи кесенесі']]],
+  ['Орта ғасырлар','VI–XVII ғасырлар',[['Ерте орта ғасырлар','VI–XI ғғ.: Түрік, Батыс және Шығыс Түрік, Түргеш, Ұйғыр, Қарлұқ, Оғыз, Қимақ мемлекеттері'],['Дамыған орта ғасырлар','X–XIII ғғ. басы: Қарахан, Қыпшақ мемлекеттері; қалалар мен Ұлы Жібек жолы дамыды'],['Моңғол және кейінгі кезең','XIII–XV ғғ.: Моңғол империясы, Жошы ұлысы, Алтын Орда, Ақ Орда, Моғолстан, Әбілқайыр хандығы, Ноғай Ордасы'],['Қазақ хандығы','1465/1466 ж. құрылуы; Керей мен Жәнібек; XVI–XVII ғғ. хандықтың нығаюы'],['Мәдениеттер мен мұра','Түркі жазба ескерткіштері; Қарахан дәуірінің сәулеті; Отырар, Тараз, Сауран, Сығанақ; Қожа Ахмет Ясауи кесенесі']]],
   ['Жаңа заман','XVIII ғасыр – 1917 жыл',[['Негізгі кезеңдер','XVIII ғ. жоңғар шапқыншылығына қарсы күрес; Ресей империясының отарлау саясаты; XIX ғ. реформалар мен ұлт-азаттық қозғалыстар'],['Маңызды тұлғалар','Абылай хан, Кенесары Қасымұлы, Исатай Тайманұлы, Махамбет Өтемісұлы, Сырым Датұлы'],['Мәдениет пен ағартушылық','Шоқан Уәлиханов, Ыбырай Алтынсарин, Абай Құнанбайұлы; дәстүрлі күй, жыр, айтыс'],['XX ғасыр басы','1905–1907 жж. оқиғалар; 1916 жылғы ұлт-азаттық көтеріліс; 1917 ж. Алаш қозғалысы']]],
   ['Кеңестік кезең','1917/1920–1991 жылдар',[['Саяси кезеңдер','Алаш қозғалысы; Қазақ АКСР (1920); Қазақ КСР (1936); қайта құру кезеңі'],['Қасіретті оқиғалар','Ұжымдастыру мен ашаршылық (1931–1933); саяси қуғын-сүргін (әсіресе 1937–1938)'],['Соғыс және даму','Екінші дүниежүзілік соғыс (1941–1945); тың игеру (1954 жылдан); индустрияландыру'],['Мәдениет','Мұхтар Әуезов, Сәкен Сейфуллин, Қаныш Сәтбаев; әдебиет, ғылым, театр мен кино дамуы'],['Тәуелсіздікке жол','1986 ж. Желтоқсан оқиғасы; 1990 ж. 25 қазан — Мемлекеттік егемендік туралы декларация']]],
   ['Тәуелсіз Қазақстан','1991 жылдан бүгінге дейін',[['Тәуелсіздік','1991 ж. 16 желтоқсан — тәуелсіздік жарияланды'],['Мемлекеттік нышандар','1992 ж. 4 маусым — Ту мен Елтаңба қабылданды; Әнұранның қазіргі нұсқасы 2006 ж.'],['Конституциялар','1993 ж. 28 қаңтар; 1995 ж. 30 тамыз — Конституция қабылданды'],['Астана','1997 ж. астана Ақмолаға көшті; 1998 ж. Астана аталды; 2019 ж. Нұр-Сұлтан; 2022 ж. Астана атауы қайтарылды'],['Қоғам және мәдениет','Тәуелсіз мемлекеттің институттары, ұлттық мәдениетті жаңғырту, халықаралық байланыстар']]]]],
@@ -5276,6 +5281,31 @@ const HIST=[
  [['Дәуір','Ерте темір дәуірі'],['Аймағы','Батыс Қазақстан, Жайық-Каспий өңірі']],
  [['Аралтөбе','Сармат ескерткіші',[['Аймағы','Батыс Қазақстан']]],['Көшпелі тіршілік','Мал шаруашылығы',[['Белгісі','Жылқы, қару-жарақ және әшекей бұйымдар']]]]]
 ];
+const HIST_EARLY_MEDIEVAL=[
+ ['Түрік қағанаты','552–603 жж.',[['Негізін қалаған','Бумын қаған, 552 ж.'],['Билеушілері','Мұқан қаған; батысқа жорық жүргізген Істеми'],['Аймағы','Алтайдан Қара теңізге дейінгі кеңістік'],['568 ж.','Маниах бастаған елшілік Византияға аттанды'],['603 ж.','Қағанат Батыс және Шығыс болып бөлінді']]],
+ ['Батыс Түрік қағанаты','603–704 жж.',[['Жері','Жетісу және Оңтүстік Қазақстан'],['Тайпалары','Он оқ: бес дулу, бес нушиби'],['Қысқы астана','Суяб'],['Жазғы орда','Мыңбұлақ'],['Билеушілері','Шегу, Тон жабғу; Ешбар Елтеріс он оқ жүйесін бекітті'],['Ыдырауы','Дулу мен нушиби таласы және Таң империясының араласуы']]],
+ ['Шығыс Түрік қағанаты','682–744 жж.',[['Негізін қалаған','Құтлық (Елтеріс) қаған'],['Орталығы','Өтүкен'],['Билеушілері','Қапаған мен Білге қаған'],['Қолбасшы','Күлтегін, 731 ж. қайтыс болды'],['744 ж.','Ұйғырлар мен қарлұқтар қағанатты құлатты']]],
+ ['Түргеш қағанаты','704–756 жж.',[['Негізін қалаған','Үшелік қаған'],['Орталығы','Суяб; Күнгіт қаласы да маңызды орда болды'],['Сұлу қаған','715–738 жж. биледі; ордасы Таразда болды'],['Күресі','Араб әскерлеріне және Таң империясына қарсы'],['751 ж.','Атлах (Талас) шайқасы'],['756 ж.','Билік қарлұқтардың қолына өтті']]],
+ ['Ұйғыр қағанаты','745–840 жж.',[['Негізгі әулет','Яғлақар; кейін Едіз әулеті'],['Аймағы','Моңғолиядағы Өтүкен өңірі'],['840 ж.','Қырғыздардың жорығынан қағанат құлады']]],
+ ['Қарлұқ қағанаты','756–940 жж.',[['Аймағы','Жетісу, Іле мен Талас аңғарлары'],['Орталығы','Суяб'],['751 ж.','Атлах шайқасында арабтар жағына шықты'],['940 ж.','Баласағұн алынған соң билігі тоқтады'],['Жалғасы','Қарахан мемлекетінің қалыптасуына негіз болды']]],
+ ['Оғыз мемлекеті','IX ғ. соңы – XI ғ. ортасы',[['Аймағы','Сырдарияның төменгі ағысы және Арал өңірі'],['Астанасы','Янгикент (Жаңакент)'],['Билеушісі','Жабғу; соңғы билеушілерінің бірі — Шахмәлік'],['Тайпалары','Бозоқ және үшоқ бірлестіктері; 24 тайпа'],['Құлдырауы','Қыпшақ тайпаларының қысымы']]],
+ ['Қимақ қағанаты','IX ғ. соңы – XI ғ. басы',[['Аймағы','Ертіс бойы және Солтүстік-Шығыс Қазақстан'],['Астанасы','Имақия'],['Құрамы','Жеті тайпалық бірлестік, оның ішінде қыпшақтар'],['Билеушісі','Қаған'],['Жалғасы','XI ғ. қыпшақтар күшейіп, Дешті Қыпшаққа жол ашты']]],
+ ['Түркі дәуіріндегі этногенез','VI–XI ғғ.',[['Негізі','Түркі тілдес тайпалардың бірігуі және өзара ықпалы'],['Тайпалар','Түрік, түргеш, қарлұқ, оғыз, қимақ, қыпшақ'],['Маңызы','Қазақстандағы түркі халықтарының қалыптасуына ықпал етті']]]
+];
+function histEarlyMedievalNode(){
+  const card=(tab,title,fields)=>({tab,title,img:'',img2:'',fields:fields.map(([k,v])=>({k,v})),children:[]});
+  return {...card('Ерте орта ғасырлар','VI–XI ғғ. · Түркі мемлекеттері',[
+    ['Кезеңі','VI–XI ғасырлар'],['Басталуы','552 ж. Түрік қағанаты құрылды'],['Бөлімдері','Тоғыз тақырып: мемлекеттер және түркі этногенезі']]),
+    children:HIST_EARLY_MEDIEVAL.map(([tab,title,fields])=>card(tab,title,fields))};
+}
+function histEnsureEarlyMedieval(schemes){
+  const i=HIST.findIndex(h=>h[2]==='Қазақстан тарихы: кезеңдер, хронология және мәдениеттер');
+  const built=schemes.find(s=>s.id===histId(i));
+  const stage=built?.kids?.find(k=>k.tab==='Орта ғасырлар');
+  if(!stage||!Array.isArray(stage.children)||stage.children.some(k=>k.tab==='Ерте орта ғасырлар'))return false;
+  stage.children.unshift(histEarlyMedievalNode());
+  return true;
+}
 function histId(i){return 'hist_'+String(i+1).padStart(2,'0')}
 function histHidden(){
   const data=LS.get('ubt_hist_hidden',[]);
@@ -5345,6 +5375,7 @@ function histBuild(i){
         .map(entry=>({tab:entry[2],...card(entry[2],entry[4]),
           children:entry[5].map(part=>({tab:part[0],...card(part[1],part[2])}))}));
       const order=histOrder();stage.children.sort((a,b)=>order.indexOf(HIST.findIndex(x=>x[2]===a.tab))-order.indexOf(HIST.findIndex(x=>x[2]===b.tab)));
+      if(stage.tab==='Орта ғасырлар')stage.children.unshift(histEarlyMedievalNode());
     });
   }
   return {subject:'history',subjectName:'Қазақстан тарихы',histIndex:i,title:(i+1)+'. '+h[2],tabMain:h[0],subs:['Қазақстан тарихы'],theme:h[1],
@@ -5903,8 +5934,44 @@ function bulkInfoHTML(r){
   if(!r.questions.length&&!r.errors.length)h='<div class="sub">Сұрақ табылмады. Үлгі форматты қараңыз.</div>';
   return h;
 }
+let fileTopicTests=[];
+function renderFileTopics(){
+  const el=document.getElementById('f-topic-list');if(!el)return;
+  el.innerHTML=fileTopicTests.length?`<div class="card"><h3>📚 Тақырыпты бөлек тапсыру</h3><p class="sub">Бір JSON файлы · ${fileTopicTests.length} тақырып</p><div class="list" style="margin-top:12px">${fileTopicTests.map((t,i)=>`<div class="item"><div class="info"><h4>${esc(t.topic||t.title||'Тақырып '+(i+1))}</h4><p>${t.questions.length} сұрақ</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="startFileTopic(${i})">▶ Тапсыру</button><button class="btn btn-s btn-sm" onclick="saveFileTopic(${i})">💾 Сақтау</button></div></div>`).join('')}</div></div>`:'';
+}
+function parsedFileTopic(i){
+  const t=fileTopicTests[i];if(!t)return null;
+  const r=parseQuestions(JSON.stringify(t),'topic.json');
+  if(r.errors.length||!r.questions.length){alert('Тақырыптағы сұрақтарды тексеріңіз');return null}
+  return{topic:t.topic||t.title||'Тақырып',questions:r.questions.map((q,j)=>({id:'q_'+Date.now()+'_'+i+'_'+j,text:q.text,options:q.options,correct:q.correct,points:1}))};
+}
+function startFileTopic(i){
+  if(!isTeacherUser())return;
+  const t=parsedFileTopic(i);if(!t)return;
+  st=baseState();st.questions=t.questions.map(q=>({...q,subjectName:t.topic}));st.subjectName=t.topic;
+  st.timerSeconds=Math.max(t.questions.length*90,600);beginTest();
+}
+function saveFileTopic(i){
+  if(!isTeacherUser())return;
+  const t=parsedFileTopic(i);if(!t)return;
+  const subject=document.getElementById('f-question-subject').value||'history';
+  const test={id:'t_'+Date.now()+'_'+i,subject,subjectName:subjName(subject),topic:t.topic,desc:'',isPublic:false,status:'private',authorId:user.id,authorName:user.name,questions:t.questions,adminUploaded:!!user.isAdmin,createdAt:new Date().toISOString()};
+  const all=allTests();all.unshift(test);saveAllTests(all);alert('✅ «'+t.topic+'» сақталды');
+}
 function bulkRefresh(ctx,fname){
   const txt=document.getElementById(ctx+'-bulk-text').value;
+  if(ctx==='f'){
+    fileTopicTests=[];
+    if(txt.trim().startsWith('{')){
+      try{const bundle=JSON.parse(txt);if(Array.isArray(bundle.tests)&&bundle.tests.length&&bundle.tests.every(t=>t&&Array.isArray(t.questions)&&t.questions.length)){
+        fileTopicTests=bundle.tests;
+        const opt=matchSubject(bundle.subject),sel=document.getElementById('f-question-subject');if(opt&&sel)sel.value=opt.value;
+        bulk.f=null;document.getElementById('f-bulk-info').textContent=bundle.tests.length+' тақырып табылды. Төменнен таңдаңыз.';
+        renderFileTopics();return;
+      }}catch(e){}
+    }
+    renderFileTopics();
+  }
   bulk[ctx]=txt.trim()?parseQuestions(txt,fname||''):null;
   document.getElementById(ctx+'-bulk-info').innerHTML=bulkInfoHTML(bulk[ctx]);
   if(ctx==='c'&&bulk.c)autoFillCreate();
@@ -5985,10 +6052,10 @@ function matchSubject(sub){
 }
 function showFileTest(){
   if(!isTeacherUser()){alert('JSON файлын админ немесе бекітілген мұғалім жүктей алады');return}
-  clearBulk('f');
+  if(!fileTopicTests.length)clearBulk('f');
   const sel=document.getElementById('f-question-subject');
   if(!sel.options.length)sel.innerHTML=Array.from(document.querySelectorAll('#c-subject option')).map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('');
-  sel.value='';showScr('s-file');
+  if(!fileTopicTests.length)sel.value='';showScr('s-file');renderFileTopics();
 }
 function startFromFile(){
   if(!isTeacherUser())return;
