@@ -693,6 +693,57 @@ def _handle_req(state, sid, rq):
     d = rq.get("data") if isinstance(rq.get("data"), dict) else {}
     sess = _session(state, rq.get("tok"))
 
+    controls = _jload(state["db"].get("ubt_site_controls", "{}"), dict, {})
+    if typ == "admin_set_site_controls":
+        if not sess or not sess["admin"] or d.get("key") not in ("jsonAll", "maintenance") or type(d.get("value")) is not bool:
+            return {"ok": False, "msg": "Рұқсат жоқ"}
+        with state["lock"]:
+            controls[d["key"]] = d["value"]
+            _put(state, "ubt_site_controls", _jdump(controls))
+            _commit(state)
+        return {"ok": True}
+    if typ == "admin_set_json_permission":
+        if not sess or not sess["admin"] or type(d.get("value")) is not bool:
+            return {"ok": False, "msg": "Рұқсат жоқ"}
+        uid = str(d.get("uid") or "")
+        with state["lock"]:
+            if not any(isinstance(p, dict) and p.get("id") == uid and p.get("accessApproved") is True for p in _profiles(state).values()):
+                return {"ok": False, "msg": "Қолданушы табылмады"}
+            permissions = controls.setdefault("jsonUsers", {})
+            if not isinstance(permissions, dict):
+                permissions = controls["jsonUsers"] = {}
+            if d["value"]:
+                permissions[uid] = True
+            else:
+                permissions.pop(uid, None)
+            _put(state, "ubt_site_controls", _jdump(controls))
+            _commit(state)
+        return {"ok": True}
+    if typ == "export_test_json":
+        if not sess or (controls.get("maintenance") and not sess["admin"]):
+            return {"ok": False, "msg": "Админ өзгеріс енгізіп жатыр" if sess else "Алдымен кіріңіз"}
+        tid = str(d.get("id") or "")
+        with state["lock"]:
+            test = next((t for t in _jload(state["db"].get("ubt_tests", "[]"), list, [])
+                         if isinstance(t, dict) and t.get("id") == tid), None)
+            if not test or not isinstance(test.get("questions"), list) or not test["questions"]:
+                return {"ok": False, "msg": "Тест табылмады"}
+            owner = test.get("authorId") == sess["uid"]
+            permission = bool(sess["admin"] or controls.get("jsonAll") or
+                              (isinstance(controls.get("jsonUsers"), dict) and controls["jsonUsers"].get(sess["uid"])))
+            teacher_owner = owner and _is_teacher(state, sess["uid"])
+            published = (test.get("isPublic") is True and test.get("status") == "approved"
+                         and not test.get("accessCode") and not test.get("classId") and not test.get("assignmentId"))
+            if not (sess["admin"] or teacher_owner or (permission and (owner or published))):
+                return {"ok": False, "msg": "JSON жүктеуге рұқсат жоқ"}
+            payload = {"title": test.get("topic") or "Тест", "topic": test.get("topic") or "Тест",
+                       "subject": test.get("subjectName") or test.get("subject") or "",
+                       "questions": [{"text": q.get("text"), "options": q.get("options"), "correct": q.get("correct")}
+                                     for q in test["questions"] if isinstance(q, dict)]}
+        return {"ok": True, "test": payload}
+    if controls.get("maintenance") and not (sess and sess["admin"]) and typ not in ("login", "resume", "logout", "finish_exam"):
+        return {"ok": False, "msg": "Админ өзгеріс енгізіп жатыр"}
+
     if typ == "book_add":
         if not sess or not sess["admin"]:
             return {"ok": False, "msg": "Кітапты тек админ жүктей алады"}
@@ -1573,6 +1624,10 @@ def _authorize(state, sess, k, v, chat_token=""):
     """Жаңа мәнді қайтарады (түзетілген болуы мүмкін) немесе None (жазуға рұқсат жоқ)."""
     if k == "ubt_chat":
         return _merge_chat(state, sess, v, chat_token)
+    if k == "ubt_site_controls":
+        return None
+    if _jload(state["db"].get("ubt_site_controls", "{}"), dict, {}).get("maintenance") and not (sess and sess["admin"]):
+        return None
     if k == "ubt_admin_letters":
         return None  # тек сервердегі тексерілген сұраныстар арқылы өзгертіледі
     if k.startswith("ubt_exam_done_"):
@@ -1761,7 +1816,13 @@ def _snapshot(tok="", claim=""):
     with state["lock"]:
         chat = _chat_for(db.get("ubt_chat"), sess, claim, state)
     if not sess:
-        return {"ubt_chat": chat}
+        return {"ubt_chat": chat, "ubt_site_controls": _jdump({"maintenance": bool(_jload(db.get("ubt_site_controls", "{}"), dict, {}).get("maintenance"))})}
+    if not sess["admin"]:
+        controls = _jload(db.get("ubt_site_controls", "{}"), dict, {})
+        db["ubt_site_controls"] = _jdump({"maintenance": bool(controls.get("maintenance")),
+                                           "jsonAll": bool(controls.get("jsonAll")),
+                                           "jsonUsers": {sess["uid"]: True} if isinstance(controls.get("jsonUsers"), dict)
+                                           and controls["jsonUsers"].get(sess["uid"]) else {}})
     db["ubt_chat"] = chat
     db["ubt_class_board"] = _jdump(_public_class_board(db))
     assignments = _jload(db.get("ubt_assigned_tests", "[]"), list, [])
@@ -2441,10 +2502,11 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
     <div class="card"><h3 style="margin-bottom:10px">📋 Тест тарихы</h3><div id="uv-hist" class="list"></div></div>
     <div class="card"><h3 style="margin-bottom:10px">❌ Қателері</h3><div id="uv-mist" class="list"></div></div>
     <div class="card"><h3 style="margin-bottom:8px">📚 Сұрақтар базасы</h3><p class="sub" style="margin-bottom:12px">Осы қолданушының базаға қосқан және өзі жасаған тесттеріндегі сұрақтар</p><div id="uv-question-bank" class="list"></div></div>
-    <div class="row"><button class="btn btn-s" onclick="showAdmin()">Артқа</button></div>
+    <div class="row"><button class="btn btn-s" onclick="showRegistered()">Артқа</button></div>
   </div>
 </div>
 
+<div id="maintenance-overlay" style="display:none;position:fixed;inset:0;z-index:999999;background:#f8fafc;color:#1e293b;align-items:center;justify-content:center;padding:24px;text-align:center"><div class="card" style="max-width:430px;width:100%;padding:32px"><div style="font-size:52px">🛠</div><h2>Админ өзгеріс енгізіп жатыр</h2><p class="sub">Сайт сәлден кейін қайта ашылады.</p></div></div>
 <div id="s-home" class="screen">
   <div class="profile-bar">
     <div class="app-profile" style="display:flex;align-items:center;gap:12px;cursor:pointer" onclick="showMyProfile()">
@@ -2495,6 +2557,7 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
       <button class="mode" id="teacher-home-card" onclick="showTeacher()"><span class="ic">🏫</span><h3>Сынып / Мұғалім</h3><p>Сыныппен жұмыс</p></button>
       <button class="mode" id="admin-copied-card" style="display:none" onclick="showCopiedTests()"><span class="ic">📥</span><h3>Жүктелген тесттер</h3><p>Тестті бір адамға жіберу</p></button>
       <button class="mode" onclick="showQuestionBank()" style="grid-column:1/-1"><span class="ic">📚</span><h3>Сұрақтар базасы</h3><p>Пәндер бойынша өз сұрақтарым</p></button>
+      <button class="mode" id="registered-btn" style="display:none;grid-column:1/-1" onclick="showRegistered()"><span class="ic">👥</span><h3>Тіркелгендер</h3><p>Қолданушылар мен рұқсаттар</p></button>
       <button class="mode" id="admin-btn" style="display:none;grid-column:1/-1" onclick="showAdmin()"><span class="ic">🛠</span><h3>Админ</h3><p>Басқару панелі</p></button>
       <button class="mode" id="admin-requests-card" style="display:none;grid-column:1/-1" onclick="showAccessRequests()"><span class="ic">📨</span><h3>Өтініштер <span id="home-requests-count"></span></h3><p>Жаңа аккаунттар және мұғалім өтініштері</p></button>
     </div>
@@ -3115,6 +3178,25 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
   </div>
 </div>
 
+<div id="s-registered" class="screen">
+  <div class="wrap wide">
+    <div class="hdr"><h2>👥 Тіркелгендер</h2><p class="sub">Қолданушылар мен сайт рұқсаттары</p></div>
+    <div class="card">
+      <h3>⚙️ Жалпы рұқсаттар</h3>
+      <label style="display:block;margin:14px 0"><input type="checkbox" id="registered-json-all" onchange="adminSetSiteControl('jsonAll',this.checked)"> Барлық тіркелгендер JSON тест файлдарын жүктей алады</label>
+      <label style="display:block;margin:14px 0"><input type="checkbox" id="registered-maintenance" onchange="adminSetSiteControl('maintenance',this.checked)"> Сайтты уақытша тоқтату (админ ғана кіре алады)</label>
+      <p class="sub">Тоқтатылғанда басқа қолданушыларға «Админ өзгеріс енгізіп жатыр» деп көрсетіледі.</p>
+    </div>
+    <button class="btn btn-p" style="width:100%;margin:12px 0" onclick="showAccessRequests()">📨 Тіркелу өтініштері</button>
+    <div class="card" style="padding:20px">
+      <h3 style="margin-bottom:12px">👥 Тіркелгендер</h3>
+      <div class="fg"><input id="admin-user-q" placeholder="🔍 Атын жазып іздеу..." oninput="renderAdminUsers()"></div>
+      <div id="admin-user-count" class="sub" style="margin-bottom:8px"></div>
+      <div id="admin-users" class="list"></div>
+    </div>
+    <div class="row"><button class="btn btn-s" onclick="showScr('s-home')">Басты бет</button></div>
+  </div>
+</div>
 <div id="s-admin" class="screen">
   <div class="wrap wide">
     <div class="hdr"><h2>🛠 Админ панелі</h2><p class="sub">Толық басқару</p></div>
@@ -3145,12 +3227,6 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
       <div id="admin-class-chat"></div>
     </div>
     <div id="admin-teacher-req" style="display:none"></div>
-    <div class="card" style="padding:20px">
-      <h3 style="margin-bottom:12px">👥 Тіркелгендер</h3>
-      <div class="fg"><input id="admin-user-q" placeholder="🔍 Атын жазып іздеу..." oninput="renderAdminUsers()"></div>
-      <div id="admin-user-count" class="sub" style="margin-bottom:8px"></div>
-      <div id="admin-users" class="list"></div>
-    </div>
     <div class="card" style="padding:20px">
       <h3 style="margin-bottom:12px">🗺 Схемалар</h3>
       <p class="sub" id="admin-sch-info" style="margin-bottom:10px"></p>
@@ -3200,11 +3276,13 @@ function setSyncInd(ok){
 }
 function syncRefresh(){
   try{
+    if(user)refreshProfileBar();
     updateAdminInboxBadge();
-    updateAccessRequestCounts();
+    updateAccessRequestCounts();syncMaintenance();
     const a=document.querySelector('.screen.active');if(!a)return;
     const id=a.id;
     if(id==='s-home')renderHomeExtras();
+    else if(id==='s-registered'&&user&&user.isAdmin){renderAdminUsers();renderSiteControls()}
     else if(id==='s-admin-inbox')renderAdminInbox();
     else if(id==='s-access-requests')renderAccessRequests();
     else if(id==='s-admin'&&user&&user.isAdmin)renderAdminLetterHistory();
@@ -3518,13 +3596,14 @@ function refreshProfileBar(){
   const v=document.getElementById('p-verified');
   if(v){v.style.display=s.verified?'block':'none'}
   document.getElementById('admin-btn').style.display=user.isAdmin?'block':'none';
+  document.getElementById('registered-btn').style.display=user.isAdmin?'block':'none';
   document.getElementById('admin-requests-card').style.display=user.isAdmin?'block':'none';
-  document.getElementById('admin-json-card').style.display=isTeacherUser()?'block':'none';
+  document.getElementById('admin-json-card').style.display=(isTeacherUser()||canDownloadJson())?'block':'none';
   document.getElementById('admin-copied-card').style.display=user.isAdmin?'block':'none';
   document.getElementById('teacher-home-card').style.gridColumn=user.isAdmin?'':'1/-1';
 }
 function enterApp(){
-  refreshProfileBar();
+  refreshProfileBar();syncMaintenance();
   updateAdminInboxBadge();
   showScr('s-home');
 }
@@ -3750,6 +3829,37 @@ function renderAdminUsers(){
       <div class="acts"><button class="btn btn-p btn-sm" onclick="adminViewUser(${jsq(p.id)})">👤 Профильді ашу</button><button class="btn btn-s btn-sm" onclick="adminChooseLetterRecipient(${jsq(p.name)})">📩 Жазу</button></div>
     </div>`}).join(''):'<p class="sub">Ешкім табылмады</p>';
 }
+function siteControls(){return LS.get('ubt_site_controls',{})}
+function canDownloadJson(){
+  if(!user)return false;
+  const c=siteControls();return !!(user.isAdmin||isTeacherUser()||c.jsonAll||(c.jsonUsers&&c.jsonUsers[user.id]));
+}
+function syncMaintenance(){
+  const overlay=document.getElementById('maintenance-overlay');if(!overlay)return;
+  overlay.style.display=siteControls().maintenance&&!(user&&user.isAdmin)?'flex':'none';
+}
+function showRegistered(){
+  if(!user||!user.isAdmin){alert('Қолжетімсіз');return}
+  showScr('s-registered');renderAdminUsers();renderSiteControls();
+  window.__bridge.refresh().then(()=>{if(document.getElementById('s-registered').classList.contains('active')){renderAdminUsers();renderSiteControls()}}).catch(()=>{});
+}
+function renderSiteControls(){
+  if(!user||!user.isAdmin)return;
+  const c=siteControls();document.getElementById('registered-json-all').checked=!!c.jsonAll;
+  document.getElementById('registered-maintenance').checked=!!c.maintenance;
+}
+async function adminSetSiteControl(key,value){
+  if(!user||!user.isAdmin)return;
+  const r=await authCall('admin_set_site_controls',{key,value});
+  if(!r.ok)alert(r.msg||'Сақталмады');
+  await window.__bridge.refresh();renderSiteControls();
+}
+async function adminSetJsonPermission(uid,value){
+  if(!user||!user.isAdmin)return;
+  const r=await authCall('admin_set_json_permission',{uid,value});
+  if(!r.ok)alert(r.msg||'Сақталмады');
+  await window.__bridge.refresh();adminViewUser(uid);
+}
 function showAdmin(){
   if(!user||!user.isAdmin){alert('Қолжетімсіз');return}
   const tests=allTests().filter(t=>!t.assignmentId);
@@ -3779,7 +3889,6 @@ function showAdmin(){
 
   try{renderHist()}catch(e){}
   try{renderAdminSchemes()}catch(e){}
-  renderAdminUsers();
   // password change block
   let passBox=document.getElementById('admin-pass-box');
   if(!passBox){
@@ -3972,7 +4081,7 @@ function adminDelUser(id){return guarded(async()=>{
 })}
 function refreshAdminUser(id){
   const inProfile=document.getElementById('s-user-view').classList.contains('active')&&viewingUserId===id;
-  showAdmin();
+  showRegistered();
   if(inProfile)adminViewUser(id);
 }
 function adminSetTitle(id){
@@ -4007,11 +4116,13 @@ function adminViewUser(id){
   document.getElementById('uv-name').textContent=p.name+(s.verified?' ✓':'');
   document.getElementById('uv-info').textContent=`⭐ ${s.points||0} · ${s.title||'атақ жоқ'} · ${starStr(s.stars||0)}${p.role==='teacher'&&p.teacherSubject?' · Пәні: '+subjName(p.teacherSubject):''}`;
   const teacherOn=p.role==='teacher'&&p.teacherApproved;
+  const jsonEnabled=!!(siteControls().jsonUsers||{})[id];
   document.getElementById('uv-actions').innerHTML=`
     <button class="btn ${teacherOn?'btn-s':'btn-ok'}" onclick="adminSetTeacher(${jsq(id)},${!teacherOn})">${teacherOn?'👨‍🏫 Мұғалім мәртебесін алу':'👨‍🏫 Мұғалім ету'}</button>
     <button class="btn ${s.verified?'btn-ok':'btn-s'}" onclick="adminToggleVerify(${jsq(id)})">${s.verified?'✅ Расталған':'✓ Растау белгісі'}</button>
     <button class="btn btn-w" onclick="adminSetTitle(${jsq(id)})">🏅 Атақ беру</button>
     <button class="btn btn-s" onclick="adminSetStars(${jsq(id)})">⭐ Жұлдыз беру (${String(s.stars||0).replace('.',',')})</button>
+    <button class="btn ${jsonEnabled?'btn-ok':'btn-s'}" onclick="adminSetJsonPermission(${jsq(id)},${!jsonEnabled})">${jsonEnabled?'✅ JSON жүктеуге рұқсат бар':'⬇ JSON жүктеуге рұқсат беру'}</button>
     <button class="btn btn-d uv-danger" onclick="adminDelUser(${jsq(id)})">🗑 Профильді өшіру</button>`;
   document.getElementById('uv-login').value=p.name||'';
   document.getElementById('uv-curpass').value='🔒 хэштелген (көрсетілмейді)';
@@ -4175,7 +4286,7 @@ function showMyTests(){
       <button class="btn btn-s btn-sm" onclick="exportTest('${t.id}')">⬇ TXT</button>
       <button class="btn btn-s btn-sm" onclick="exportWordTest('${t.id}')">⬇ Word</button>
       <button class="btn btn-s btn-sm" onclick="exportPdfTest('${t.id}')">⬇ PDF</button>
-      ${isTeacherUser()?`<button class="btn btn-s btn-sm" onclick="exportJsonTest(${jsq(t.id)})">⬇ JSON</button>`:''}
+      ${canDownloadJson()?`<button class="btn btn-s btn-sm" onclick="exportJsonTest(${jsq(t.id)})">⬇ JSON</button>`:''}
       ${isTeacherUser()&&!user.isAdmin?`<button class="btn btn-ok btn-sm" onclick="showClassSend(${jsq(t.id)})">🏫 Сыныбыма тарату</button>`:''}
       ${t.status!=='pending'&&t.status!=='approved'&&!t.isPublic&&!t.classId?`<button class="btn btn-w btn-sm" onclick="requestPub('${t.id}')">Жариялауға</button>`:''}
       <button class="btn btn-d btn-sm" onclick="delTest('${t.id}')">✕</button>
@@ -4195,7 +4306,7 @@ function showPublicTests(){
   if(!tests.length){list.innerHTML='<div class="empty"><div class="ic">🌐</div><p>Әзірге жария тест жоқ.<br>Өзіңіз құрып, «Интернетке шығару» белгілеңіз.</p></div>'}
   else{list.innerHTML=tests.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic)}</h4>
     <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · Автор: ${esc(t.authorName||'Аноним')}${t.desc?' · '+esc(t.desc):''}</p></div>
-    <div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest('${t.id}')">Тапсыру</button></div></div>`).join('')}
+    <div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest('${t.id}')">Тапсыру</button>${canDownloadJson()&&!t.accessCode?`<button class="btn btn-s btn-sm" onclick="exportJsonTest(${jsq(t.id)})">⬇ JSON</button>`:''}</div></div>`).join('')}
   showScr('s-public');
 }
 
@@ -5956,11 +6067,11 @@ function exportTest(id){
   if(!t.questions.length){alert('Сұрақ жоқ');return}
   downloadText(safeName(t.topic)+'.txt',testToText(t.topic,t.subjectName,t.questions));
 }
-function exportJsonTest(id){
-  const t=allTests().find(x=>x.id===id);
-  if(!t||!user||!isTeacherUser()||!(user.isAdmin||t.authorId===user.id)){alert('Бұл тестке рұқсат жоқ');return}
-  const data={title:t.topic||'Тест',topic:t.topic||'Тест',subject:t.subjectName||t.subject||'',
-    questions:(t.questions||[]).map(q=>({text:q.text,options:q.options,correct:q.correct}))};
+async function exportJsonTest(id){
+  if(!user||!canDownloadJson()){alert('JSON жүктеуге рұқсат жоқ');return}
+  const r=await authCall('export_test_json',{id});
+  if(!r.ok){alert(r.msg||'JSON жүктелмеді');return}
+  const data=r.test;const t={topic:data.topic||'Тест'};
   const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json;charset=utf-8'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=safeName(t.topic)+'.json';
   document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1000);
@@ -8085,7 +8196,7 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
     if(args.dead&&window.__token){try{if(window.__kicked)window.__kicked()}catch(e){}}
     if(renderWaiters.length&&(args.tk||'')===(window.__token||'')){var rw=renderWaiters;renderWaiters=[];rw.forEach(function(f){try{f()}catch(e){}})}
     if(!booted)boot();
-    else{try{setSyncInd(true);if(changed)syncRefresh()}catch(e){}}
+    else{try{setSyncInd(true);if(changed)syncRefresh();if(window.syncMaintenance)syncMaintenance()}catch(e){}}
   });
   window.__bridge={push:push,call:call,refresh:refresh,clearLocal:clearLocal,connected:function(){return connected}};
   post({type:'streamlit:componentReady',apiVersion:1});height();
@@ -8094,6 +8205,7 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
   function syncOnReturn(){if(!connected||document.visibilityState==='hidden'||!window.__token)return;var now=Date.now();if(now-lastFocusSync<30000)return;lastFocusSync=now;send()}
   document.addEventListener('visibilitychange',syncOnReturn);
   window.addEventListener('focus',syncOnReturn);
+  setInterval(function(){if(connected&&document.visibilityState!=='hidden')send()},7000);
   setTimeout(boot,2500);
 })();
 </script>
