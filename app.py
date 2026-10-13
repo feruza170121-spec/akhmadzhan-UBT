@@ -462,7 +462,7 @@ def _handle_req(state, sid, rq):
         options = d.get("options")
         chosen = d.get("chosen")
         correct = d.get("correct")
-        if not question or not isinstance(options, list) or not 2 <= len(options) <= 5 or any(not isinstance(o, str) for o in options) or type(chosen) is not int or type(correct) is not int or not (0 <= chosen < len(options) and 0 <= correct < len(options)):
+        if not question or not isinstance(options, list) or not 2 <= len(options) <= 5 or any(not isinstance(o, str) for o in options) or type(chosen) is not int or type(correct) is not int or not (-1 <= chosen < len(options) and 0 <= correct < len(options)):
             return {"ok": False, "msg": "Сұрақ мәліметі жарамсыз"}
         with state["lock"]:
             key = "ai:" + sess["uid"]
@@ -473,10 +473,10 @@ def _handle_req(state, sid, rq):
             recent.append(now)
             state["fails"][key] = recent
         prompt = ("Қазақ тілінде қысқа әрі нақты түсіндір. Бұл ҰБТ жаттығу сұрағы. "
-                  "Дұрыс жауаптың себебін және оқушы таңдаған жауап неге сәйкес келмейтінін түсіндір. "
+                  "Дұрыс жауаптың себебін түсіндір. Оқушы жауап бермесе, жауап бермегенін ескер; жауап берсе, таңдауының неге дұрыс не қате екенін түсіндір. "
                   "Берілген жауап кілтіне күмән болса, оны ашық айт. 120 сөзден аспасын.\n"
                   + "Сұрақ: " + question + "\nНұсқалар: " + json.dumps(options, ensure_ascii=False)
-                  + "\nОқушы жауабы: " + options[chosen][:300]
+                  + "\nОқушы жауабы: " + (options[chosen][:300] if chosen >= 0 else "Оқушы жауап бермеген")
                   + "\nКілт бойынша дұрыс жауап: " + options[correct][:300])
         payload = {"model": os.environ.get("UBT_AI_MODEL", "gpt-4.1-mini"),
                    "messages": [{"role": "user", "content": prompt}], "max_tokens": 330, "temperature": 0.3}
@@ -487,9 +487,16 @@ def _handle_req(state, sid, rq):
             with urllib.request.urlopen(req, timeout=22) as resp:
                 answer = json.load(resp)["choices"][0]["message"]["content"]
             return {"ok": True, "text": str(answer)[:2500]}
+        except urllib.error.HTTPError as e:
+            code = e.code
+            print("[ubt-ai] HTTP", code)
+            messages = {401: "AI API кілті жарамсыз. Streamlit Secrets тексеріңіз.",
+                        403: "AI API рұқсаты шектелген. Жоба құқықтарын тексеріңіз.",
+                        429: "AI API лимиті немесе балансы таусылған. OpenAI Billing бөлімін тексеріңіз."}
+            return {"ok": False, "msg": messages.get(code, "AI сервері жауап бермеді (HTTP %s)." % code)}
         except Exception as e:
-            print("[ubt-ai]", repr(e)[:180])
-            return {"ok": False, "msg": "AI қызметі қазір қолжетімсіз. Кейін қайталап көріңіз."}
+            print("[ubt-ai]", type(e).__name__)
+            return {"ok": False, "msg": "AI серверіне қосылу мүмкін болмады. Кейін қайталап көріңіз."}
 
     if typ == "admin_assign_test":
         if not (sess and sess["admin"]):
@@ -4931,9 +4938,14 @@ async function ubtExplainReview(index){
   panel.style.display='block';
   st.aiCache=st.aiCache||{};
   if(st.aiCache[q.id]){panel.textContent=st.aiCache[q.id];return}
+  if(panel.dataset.loading==='1')return;
+  panel.dataset.loading='1';
   panel.textContent='AI мұғалім түсіндіріп жатыр…';
   const chosen=Number.isInteger(st.answers[q.id])?st.answers[q.id]:-1;
-  const r=await authCall('ai_explain',{question:q.text,options:q.options,chosen,correct:q.correct});
+  let r;
+  try{r=await authCall('ai_explain',{question:q.text,options:q.options,chosen,correct:q.correct});}
+  catch(e){r={ok:false,msg:'AI серверіне қосылу мүмкін болмады'};}
+  panel.dataset.loading='0';
   const result=r.ok?r.text:(r.msg||'AI түсіндірмесі уақытша қолжетімсіз');
   if(r.ok)st.aiCache[q.id]=result;
   if(document.getElementById('ubt-ai-review-'+index)===panel)panel.textContent=result;
