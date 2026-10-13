@@ -2076,6 +2076,16 @@ html,body{overflow-x:hidden}
 .mind-tools{position:sticky;left:0;width:max-content;z-index:3;background:#fff;border:1px solid #dce8dc;border-radius:12px;padding:6px 9px}.mind-zoom-level{min-width:48px;text-align:center;font-size:13px;font-weight:700;color:var(--mind)}
 @keyframes mindFade{from{opacity:0}to{opacity:1}}@keyframes mindPop{from{opacity:0;transform:translateY(-8px) scale(.96)}to{opacity:1;transform:translateY(0) scale(1)}}@keyframes mindSlide{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
 @media(max-width:640px){.sch-bg.mindmap{padding:20px 10px}.mind-layout{grid-template-columns:1fr;gap:22px}.mind-layout:before{display:none}.mind-branches{grid-template-columns:1fr;gap:10px}.mind-branches:before{display:none}.mind-connector{display:none}.mind-branch .mind-node{margin-left:0;width:100%}.mind-main{max-width:100%}.mind-detail{grid-template-columns:1fr;gap:2px}}
+.mind-layout:before,.mind-branches:before,.mind-connector,.mind-child:before,.mind-branch.branch-open>.mind-children.open:before,.mind-child.branch-open>.mind-children.open:before{display:none!important}
+.mind-layout{gap:30px}.mind-branches{gap:18px}.mind-branch{border:2px solid var(--node-border,#d4e6d5);border-radius:20px;background:var(--node-bg,#f6fbf6);padding:12px;box-shadow:0 7px 22px #263a3510}
+.mind-branch .mind-node{border:2px solid var(--node-border,#d4e6d5);border-left:6px solid var(--branch);background:#fff;box-shadow:0 4px 14px #263a3510}
+.mind-children,.mind-children.open,.mind-branch.branch-open>.mind-children.open,.mind-child.branch-open>.mind-children.open{border:0;margin:0;padding:0;gap:14px}
+.mind-branch.branch-open,.mind-child.branch-open{gap:18px;min-width:640px}
+.mind-child,.mind-child.branch-open{border:2px solid var(--node-border,#d4e6d5);background:var(--node-bg,#f6fbf6);border-radius:17px;padding:11px;box-shadow:0 4px 16px #263a3510}
+.mind-child.branch-open>.mind-branch-row{border:0;background:transparent;padding:0}
+.mind-child .mind-node{border:0;border-left:5px solid var(--branch);background:#fff;border-radius:11px;padding:9px 10px;box-shadow:none}
+.mind-child.branch-open>.mind-branch-row>.mind-node{background:#fff;border-left:5px solid var(--branch);padding:9px 10px}
+@media(max-width:640px){.mind-branch.branch-open,.mind-child.branch-open{grid-template-columns:1fr;min-width:0;gap:12px}.mind-layout{gap:18px}.mind-branch{padding:9px}.mind-child{padding:8px}}
 
 .sch-ed .card{padding:14px}
 .sch-fr{display:flex;gap:8px;margin-bottom:6px}
@@ -2810,7 +2820,14 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
     <div class="fg"><select id="sch-f-subj" onchange="renderSchemes()"></select></div>
     <div class="row" id="sch-bulk-actions" style="display:none;margin-bottom:12px"><button class="btn btn-d btn-sm" onclick="schDeleteMine()">🗑 Менің барлық схемаларымды толық өшіру</button></div>
     <div id="sch-list" class="list"></div>
-    <div class="row" style="margin-top:20px"><button class="btn btn-p" onclick="schNew()">➕ Схема құру</button><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+    <div class="row" style="margin-top:20px"><button class="btn btn-p" onclick="schNew()">➕ Схема құру</button><button class="btn btn-s" id="sch-code-toggle" style="display:none" onclick="schCodeToggle()">🧩 Кодпен схема қосу · админ</button><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+    <div class="card" id="sch-code-panel" style="display:none;margin-top:16px">
+      <h3>🧩 JSON кодынан схема · тек админ</h3>
+      <p class="sub">JSON кодын қойыңыз: схема төменде бірден пайда болады. Дайын болғанда сақтаңыз.</p>
+      <div class="fg"><label>Схема JSON коды</label><textarea id="sch-code-input" spellcheck="false" style="min-height:230px;font-family:monospace" oninput="schCodePreview()" placeholder='{"title":"Түркі дәуірі","subject":"history","root":{"title":"Түркі дәуірі"},"kids":[{"tab":"Түрік қағанаты","title":"552–603 жж.","fields":[{"k":"Негізін қалаған","v":"Бумын қаған"}]}]}'></textarea></div>
+      <div class="row"><button class="btn btn-s btn-sm" onclick="schCodeExample()">Үлгі кодты қою</button><label class="switch"><input id="sch-code-public" type="checkbox"> Жариялау</label><button class="btn btn-p btn-sm" onclick="schCodeSave()">💾 Схеманы сақтау</button></div>
+      <p class="sub" id="sch-code-error" role="status"></p><div id="sch-code-preview"></div>
+    </div>
   </div>
 </div>
 
@@ -4800,12 +4817,13 @@ function schRender(t){
     return `<div class="mind-controls">${source||index>=0?`<button type="button" class="btn btn-p btn-sm" ${fields.length<2?'disabled title="Тест үшін кемінде екі түрлі мәлімет керек"':''} onclick="schTermQuiz(${jsq(source)},${index},${jsq(path)})">📝 Осы тақырыптан тест</button>`:''}${editable?`<button type="button" class="btn btn-s btn-sm" onclick="schAddNode(${jsq(source)},${jsq(path)})">＋ Ішкі тақырып</button><button type="button" class="btn btn-s btn-sm" onclick="schRenameNode(${jsq(source)},${jsq(path)})">✎ Атауын өзгерту</button><button class="btn btn-s btn-sm mind-add-info" type="button" onclick="schInfoForm(this)">＋ Мәлімет</button><form class="mind-info-form" style="display:none" onsubmit="return schSaveInfo(event,${jsq(source)},${jsq(path)})"><input name="label" maxlength="30" placeholder="Термин немесе атау"><input name="value" maxlength="120" placeholder="Мәлімет"><button class="btn btn-p btn-sm" type="submit">Сақтау</button></form><span class="mind-photo-actions"><label class="btn btn-s btn-sm">📷 Фото қосу<input type="file" accept="image/jpeg,image/png,image/webp" style="display:none" onchange="schInlinePhoto(this,${jsq(source)},${jsq(path)})"></label><button type="button" class="btn btn-d btn-sm" ${schImgOk(node.img)?'':'disabled title="Фото қосылғанда өшіруге болады"'} onclick="schRemovePhoto(${jsq(source)},${jsq(path)})">🗑 Фотоны өшіру</button></span>`:''}</div>`;
   };
   const details=node=>`${(Array.isArray(node.fields)?node.fields:[]).filter(f=>f&&(f.k||f.v)).map(f=>`<div class="mind-detail"><b>${esc(f.k||'')}</b><span>${esc(f.v||'')}</span></div>`).join('')}${['img','img2'].filter(key=>schImgOk(node[key])).map(key=>`<img class="mind-img" src="${node[key]}" alt="${esc(node.tab||node.title||'Тақырып суреті')}" onclick="schPhotoView(this.src)" title="Үлкейтіп қарау">`).join('')}`;
-  const nodeHtml=(node,path,depth)=>{
+  const nodeHtml=(node,path,depth,index)=>{
     const name=esc(node.tab||node.title||'Тақырып'),children=depth>=6?[]:(Array.isArray(node.children)?node.children:[]);
     const title=node.title&&node.title!==node.tab?`<span class="mind-subtitle">${esc(node.title)}</span>`:'';
-    return `<article class="${depth===0?'mind-branch':'mind-child'}" data-path="${esc(path)}" style="--branch:${['#d8a94e','#7a9fc4','#76ad8a','#c98b83','#a694cf'][depth%5]}">${depth===0?'<div class="mind-connector"></div>':''}<div class="mind-branch-row"><div class="mind-node"><div class="mind-node-head"><button type="button" class="mind-title" aria-expanded="false" onclick="schToggleNode(this)"><strong>${name}</strong>${title}</button>${editable?`<button type="button" class="mind-mini" aria-label="${name} жоғары жылжыту" title="Жоғары" onclick="schMoveNode(${jsq(source)},${jsq(path)},-1)">↑</button><button type="button" class="mind-mini" aria-label="${name} төмен жылжыту" title="Төмен" onclick="schMoveNode(${jsq(source)},${jsq(path)},1)">↓</button><button type="button" class="btn btn-d btn-sm" aria-label="${name} тармағын өшіру" title="Ішіндегі мәліметтерімен бірге өшіру" onclick="schRemoveNode(${jsq(source)},${jsq(path)})">🗑 Өшіру</button>`:''}<span class="mind-toggle" aria-hidden="true">＋</span></div><div class="mind-details">${details(node)}${actions(node,path)}</div></div>${children.length?`<button class="mind-arrow" type="button" aria-label="${name} ішіндегі тақырыптарды ашу" aria-expanded="false" onclick="schToggleChildren(this)">→</button>`:''}</div>${children.length?`<div class="mind-children">${children.map((c,i)=>nodeHtml(c,path+'.children.'+i,depth+1)).join('')}</div>`:''}</article>`;
+    const tone=[['#bb7a24','#fff7e9','#edce9d'],['#407bb0','#eef6ff','#bbd8f3'],['#3f8969','#effaf3','#bde1cb'],['#b66070','#fff2f4','#f1cad1'],['#8063ad','#f7f2ff','#dbcaef'],['#ab713d','#fff5ed','#ebcba8']][(index+depth*2)%6];
+    return `<article class="${depth===0?'mind-branch':'mind-child'}" data-path="${esc(path)}" style="--branch:${tone[0]};--node-bg:${tone[1]};--node-border:${tone[2]}">${depth===0?'<div class="mind-connector"></div>':''}<div class="mind-branch-row"><div class="mind-node"><div class="mind-node-head"><button type="button" class="mind-title" aria-expanded="false" onclick="schToggleNode(this)"><strong>${name}</strong>${title}</button>${editable?`<button type="button" class="mind-mini" aria-label="${name} жоғары жылжыту" title="Жоғары" onclick="schMoveNode(${jsq(source)},${jsq(path)},-1)">↑</button><button type="button" class="mind-mini" aria-label="${name} төмен жылжыту" title="Төмен" onclick="schMoveNode(${jsq(source)},${jsq(path)},1)">↓</button><button type="button" class="btn btn-d btn-sm" aria-label="${name} тармағын өшіру" title="Ішіндегі мәліметтерімен бірге өшіру" onclick="schRemoveNode(${jsq(source)},${jsq(path)})">🗑 Өшіру</button>`:''}<span class="mind-toggle" aria-hidden="true">＋</span></div><div class="mind-details">${details(node)}${actions(node,path)}</div></div>${children.length?`<button class="mind-arrow" type="button" aria-label="${name} ішіндегі тақырыптарды ашу" aria-expanded="false" onclick="schToggleChildren(this)">→</button>`:''}</div>${children.length?`<div class="mind-children">${children.map((c,i)=>nodeHtml(c,path+'.children.'+i,depth+1,i)).join('')}</div>`:''}</article>`;
   };
-  return `<div class="mind-map-shell"><div class="mind-tools"><span class="sub">Карта өлшемі</span><button class="btn btn-s btn-sm" type="button" title="Кішірейту" onclick="schMapZoom(this,-0.1)">−</button><span class="mind-zoom-level">100%</span><button class="btn btn-s btn-sm" type="button" title="Үлкейту" onclick="schMapZoom(this,0.1)">＋</button><button class="btn btn-s btn-sm" type="button" title="Бастапқы өлшем" onclick="schMapZoom(this,0)">↺</button></div><div class="sch-bg mindmap" style="--mind:${colors[2]};--mind-soft:${colors[0]};--mind-line:${colors[1]}"><h2 class="sch-h">${esc(t.title||'Схема')}</h2>${t.tabMain?`<div class="mind-top">${esc(t.tabMain)}</div>`:''}${subs.length?`<div class="mind-tags">${subs.map(x=>`<span>${esc(x)}</span>`).join('')}</div>`:''}<div class="mind-layout"><div class="mind-center"><div class="mind-main-wrap"><button class="mind-node mind-main" type="button" onclick="this.classList.toggle('expanded')"><span class="mind-dot">✦</span><strong>${esc(root.head||root.title||t.title||'Қазақстан тарихы')}</strong><small>${esc(root.title||'Барлық кезеңдер')}</small><div class="mind-details">${details(root)}</div></button>${actions(root,'root')}</div></div>${kids.length?`<div class="mind-branches">${kids.map((k,i)=>nodeHtml(k,'kids.'+i,0)).join('')}</div>`:''}</div></div></div>`;
+  return `<div class="mind-map-shell"><div class="mind-tools"><span class="sub">Карта өлшемі</span><button class="btn btn-s btn-sm" type="button" title="Кішірейту" onclick="schMapZoom(this,-0.1)">−</button><span class="mind-zoom-level">100%</span><button class="btn btn-s btn-sm" type="button" title="Үлкейту" onclick="schMapZoom(this,0.1)">＋</button><button class="btn btn-s btn-sm" type="button" title="Бастапқы өлшем" onclick="schMapZoom(this,0)">↺</button></div><div class="sch-bg mindmap" style="--mind:${colors[2]};--mind-soft:${colors[0]};--mind-line:${colors[1]}"><h2 class="sch-h">${esc(t.title||'Схема')}</h2>${t.tabMain?`<div class="mind-top">${esc(t.tabMain)}</div>`:''}${subs.length?`<div class="mind-tags">${subs.map(x=>`<span>${esc(x)}</span>`).join('')}</div>`:''}<div class="mind-layout"><div class="mind-center"><div class="mind-main-wrap"><button class="mind-node mind-main" type="button" onclick="this.classList.toggle('expanded')"><span class="mind-dot">✦</span><strong>${esc(root.head||root.title||t.title||'Қазақстан тарихы')}</strong><small>${esc(root.title||'Барлық кезеңдер')}</small><div class="mind-details">${details(root)}</div></button>${actions(root,'root')}</div></div>${kids.length?`<div class="mind-branches">${kids.map((k,i)=>nodeHtml(k,'kids.'+i,0,i)).join('')}</div>`:''}</div></div></div>`;
 }
 function schToggleNode(btn){const node=btn.closest('.mind-node');node.classList.toggle('expanded');btn.setAttribute('aria-expanded',String(node.classList.contains('expanded')))}
 function schToggleChildren(btn){const panel=btn.parentElement.nextElementSibling;if(!panel||!panel.classList.contains('mind-children'))return;const opened=panel.classList.toggle('open');btn.closest('.mind-branch,.mind-child').classList.toggle('branch-open',opened);btn.setAttribute('aria-expanded',String(opened));btn.textContent=opened?'←':'→'}
@@ -4837,6 +4855,8 @@ function showSchemes(tab){
   if(tab)schTabCur=tab;
   document.getElementById('sch-f-subj').innerHTML=schSubjOptions('Барлық пәндер');
   document.getElementById('sch-t-pend').style.display=(user&&user.isAdmin)?'':'none';
+  document.getElementById('sch-code-toggle').style.display=(user&&user.isAdmin)?'':'none';
+  if(!(user&&user.isAdmin))document.getElementById('sch-code-panel').style.display='none';
   if(schTabCur==='pend'&&!(user&&user.isAdmin))schTabCur='pub';
   renderSchemes();showScr('s-schemes');
 }
@@ -4915,6 +4935,59 @@ function schNew(){
   schDraft={id:'',subject:'',title:'',tabMain:'',subs:[],theme:'blue',root:schBlankCard(),kids:[{tab:'',...schBlankCard()}],request:false};
   document.getElementById('sch-ed-h').textContent='🗺 Схема құру';
   schRenderForm();showScr('s-schedit');
+}
+function schCodeToggle(){
+  if(!user||!user.isAdmin)return;
+  const panel=document.getElementById('sch-code-panel');
+  panel.style.display=panel.style.display==='none'?'block':'none';
+  if(panel.style.display==='block')document.getElementById('sch-code-input').focus();
+}
+function schCodeExample(){
+  if(!user||!user.isAdmin)return;
+  document.getElementById('sch-code-input').value=JSON.stringify({title:'Түркі дәуірі',subject:'history',theme:'green',root:{title:'Түркі дәуірі'},kids:[{tab:'Ерте орта ғасырлар',title:'VI–XI ғасырлар',children:[{tab:'Түрік қағанаты',title:'552–603 жж.',fields:[{k:'Негізін қалаған',v:'Бумын қаған'},{k:'Бөлінуі',v:'603 жылы'}]},{tab:'Батыс Түрік қағанаты',title:'603–704 жж.',fields:[{k:'Астанасы',v:'Суяб'}]}]}]},null,2);
+  schCodePreview();
+}
+function schCodeData(){
+  const raw=document.getElementById('sch-code-input').value.trim();
+  if(!raw)throw Error('Алдымен JSON кодын қойыңыз');
+  if(raw.length>300000)throw Error('Код тым үлкен');
+  let data;
+  try{data=JSON.parse(raw)}catch(e){throw Error('JSON қате: жақшаларды, үтірлерді және тырнақшаларды тексеріңіз')}
+  if(!data||Array.isArray(data)||typeof data!=='object')throw Error('Схема JSON нысаны болуы керек');
+  const subject=String(data.subject||'history');
+  const opt=Array.from(document.querySelector('#c-subject').options).find(o=>o.value===subject);
+  if(!opt)throw Error('Пән табылмады: subject мәнін пәндер тізімінен таңдаңыз');
+  const fields=x=>Array.isArray(x)?x.map(f=>Array.isArray(f)?{k:f[0],v:f[1]}:f).filter(f=>f&&typeof f==='object').map(f=>({k:String(f.k||''),v:String(f.v||'')})):[];
+  const node=(item,depth)=>{
+    if(!item||typeof item!=='object'||Array.isArray(item))throw Error('Тармақ JSON нысаны болуы керек');
+    if(!String(item.tab||item.title||'').trim())throw Error('Әр тармаққа tab немесе title жазыңыз');
+    const children=Array.isArray(item.children)?item.children:[];
+    return {tab:String(item.tab||item.title),title:String(item.title||item.tab),fields:fields(item.fields),img:item.img||'',img2:item.img2||'',children:depth>=6?[]:children.slice(0,20).map(c=>node(c,depth+1))};
+  };
+  const items=Array.isArray(data.kids)?data.kids:Array.isArray(data.children)?data.children:[];
+  if(!String(data.title||'').trim())throw Error('Схема атауын title өрісіне жазыңыз');
+  if(!items.length)throw Error('Кемінде бір тармақты kids тізіміне жазыңыз');
+  const root=data.root&&typeof data.root==='object'&&!Array.isArray(data.root)?data.root:{};
+  const draft={title:data.title,subject,tabMain:data.tabMain||'',subs:Array.isArray(data.subs)?data.subs:[],theme:data.theme||'blue',root:{title:root.title||data.title,head:root.head||'',fields:fields(root.fields),img:root.img||'',img2:root.img2||''},kids:items.slice(0,SCH_MAX_KIDS).map(c=>node(c,0))};
+  const clean=schClean(draft);
+  if(JSON.stringify(clean).length>600000)throw Error('Схема тым үлкен');
+  return {...clean,subjectName:opt.textContent};
+}
+function schCodePreview(){
+  if(!user||!user.isAdmin)return;
+  const error=document.getElementById('sch-code-error'),preview=document.getElementById('sch-code-preview');
+  try{const schema=schCodeData();preview.innerHTML=schRender(schema);error.textContent='✅ Схема дайын · '+schema.kids.length+' негізгі тармақ';error.style.color='#28764a'}
+  catch(e){preview.replaceChildren();error.textContent=e.message;error.style.color='#b95735'}
+}
+function schCodeSave(){
+  if(!user||!user.isAdmin)return;
+  let schema;
+  try{schema=schCodeData()}catch(e){schCodePreview();return}
+  const all=allSchemes();
+  if(all.filter(t=>t.authorId===user.id).length>=30){alert('Бір адам ең көбі 30 схема құра алады');return}
+  const pub=document.getElementById('sch-code-public').checked;
+  all.unshift({...schema,id:'sc_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7),authorId:user.id,authorName:user.name,createdAt:new Date().toISOString(),isPublic:pub,status:pub?'approved':'private'});
+  saveSchemes(all);document.getElementById('sch-code-panel').style.display='none';schTabCur='mine';renderSchemes();alert('✅ Схема сақталды');
 }
 function schEdit(id){
   const t=allSchemes().find(x=>x.id===id);if(!t||!user||t.authorId!==user.id)return;
