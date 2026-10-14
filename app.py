@@ -24,7 +24,7 @@ import streamlit.components.v1 as components
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.environ.get("UBT_DATA_FILE") or os.path.join(_HERE, "ubt_data.json")
-FRONT_DIR = os.path.join(_HERE, "ubt_frontend")
+FRONT_DIR = os.path.join(_HERE, "ubt_frontend_zheke")
 _NO_SYNC = ("ubt_current", "ubt_dark")
 
 
@@ -437,6 +437,8 @@ def _session(state, tok):
     s = state["sessions"].get(tok)
     if not s:
         return None
+    if not s["admin"]:
+        return None
     if s["exp"] < time.time():
         state["sessions"].pop(tok, None)
         return None
@@ -727,6 +729,12 @@ def _handle_req(state, sid, rq):
     typ = rq.get("type")
     d = rq.get("data") if isinstance(rq.get("data"), dict) else {}
     sess = _session(state, rq.get("tok"))
+    if typ not in ("login", "resume", "logout", "start_exam", "start_public_mix",
+                   "finish_exam", "cancel_exam", "book_add", "book_open", "book_delete",
+                   "export_test_json"):
+        return {"ok": False, "msg": "Жеке сайтта бұл әрекет жоқ"}
+    if typ == "login" and str(d.get("name") or "").strip().lower() not in _ADMIN_NAMES:
+        return {"ok": False, "msg": "Жеке сайтқа тек иесі кіреді"}
 
     controls = _jload(state["db"].get("ubt_site_controls", "{}"), dict, {})
     if typ == "admin_set_site_controls":
@@ -987,14 +995,14 @@ def _handle_req(state, sid, rq):
             elif admin_ph:
                 r = _check_pw(pw, admin_ph)
             else:
-                return {"ok": False, "msg": "Админ паролі әлі орнатылмаған. Streamlit Secrets ішіне ADMIN_PASSWORD қосыңыз."}
+                return {"ok": False, "msg": "Жеке сайттың паролі орнатылмаған. Streamlit Secrets ішіне ADMIN_PASSWORD қосыңыз."}
             with state["lock"]:
                 if not r:
                     _fail(state, lk, sk)
                     return {"ok": False, "msg": _MSG_BAD}
                 state["fails"].pop(lk, None)
-                tok = _new_session(state, "admin", "Админ", True)
-            return {"ok": True, "token": tok, "user": {"name": "Админ", "id": "admin", "isAdmin": True}}
+                tok = _new_session(state, "admin", "Мен", True)
+            return {"ok": True, "token": tok, "user": {"name": "Мен", "id": "admin", "isAdmin": True}}
         if not isinstance(prof, dict):
             _check_pw(pw, {"salt": "00", "it": _PBKDF_ITER, "hash": ""})  
             with state["lock"]:
@@ -1080,7 +1088,7 @@ def _handle_req(state, sid, rq):
                 return {"ok": False, "msg": "expired"}
             tok = rq.get("tok")
             if sess["admin"]:
-                return {"ok": True, "token": tok, "user": {"name": "Админ", "id": "admin", "isAdmin": True}}
+                return {"ok": True, "token": tok, "user": {"name": "Мен", "id": "admin", "isAdmin": True}}
             for p in _profiles(state).values():
                 if isinstance(p, dict) and p.get("id") == sess["uid"]:
                     return {"ok": True, "token": tok, "user": _pub_user(p)}
@@ -1721,6 +1729,10 @@ def _authorize(state, sess, k, v, chat_token=""):
                 return None
             if not isinstance(deck.get("title"), str) or not (1 <= len(deck["title"]) <= 100):
                 return None
+            if deck.get("subject", "other") not in ("history", "reading", "mathlit", "math", "physics",
+                "chemistry", "biology", "geography", "informatics", "english", "kazakh",
+                "worldhistory", "law", "other"):
+                return None
             cards = deck.get("cards")
             if not isinstance(cards, list) or not (1 <= len(cards) <= 500):
                 return None
@@ -1738,7 +1750,10 @@ def _authorize(state, sess, k, v, chat_token=""):
 
 def _key_ok(k):
     return (isinstance(k, str) and k.startswith("ubt_") and len(k) < 200
-            and k not in _NO_SYNC and k not in _SERVER_ONLY and not k.startswith("ubt_cd_"))
+            and k not in _NO_SYNC and k not in _SERVER_ONLY and not k.startswith("ubt_cd_")
+            and k not in ("ubt_profiles", "ubt_chat", "ubt_classes", "ubt_class_reqs",
+                          "ubt_class_chat", "ubt_assigned_tests", "ubt_admin_letters",
+                          "ubt_site_controls") and not k.startswith(("ubt_att_", "ubt_tres_")))
 
 
 def _apply_ops(res):
@@ -1858,88 +1873,23 @@ def _award_finished_seasons(state):
 
 
 def _snapshot(tok="", claim=""):
-    """Браузерге жіберілетін дерек: хэштер жоқ, бөтен чаттар жоқ, кірмеген адамға — ештеңе жоқ."""
     state = _store()
     with state["lock"]:
-        sess = _session(state, tok)
-        if not sess:
-            maintenance = bool(_jload(state["db"].get("ubt_site_controls", "{}"), dict, {}).get("maintenance"))
-            return {"ubt_chat": "[]", "ubt_site_controls": _jdump({"maintenance": maintenance})}
-        _award_finished_seasons(state)
+        if not _session(state, tok):
+            return {}
         db = dict(state["db"])
-        profs = _profiles(state)
-        teacher = bool(sess and not sess["admin"] and _is_teacher(state, sess["uid"]))
-    for k in _SERVER_ONLY:
-        db.pop(k, None)
-    with state["lock"]:
-        chat = _chat_for(db.get("ubt_chat"), sess, claim, state)
-    if not sess["admin"]:
-        controls = _jload(db.get("ubt_site_controls", "{}"), dict, {})
-        db["ubt_site_controls"] = _jdump({"maintenance": bool(controls.get("maintenance")),
-                                           "jsonAll": bool(controls.get("jsonAll")),
-                                           "jsonUsers": {sess["uid"]: True} if isinstance(controls.get("jsonUsers"), dict)
-                                           and controls["jsonUsers"].get(sess["uid"]) else {}})
-    db["ubt_chat"] = chat
-    db["ubt_class_board"] = _jdump(_public_class_board(db))
-    assignments = _jload(db.get("ubt_assigned_tests", "[]"), list, [])
-    db["ubt_assigned_tests"] = _jdump(assignments if sess["admin"] else
-        [{k: v for k, v in a.items() if k != "pendingToken"} for a in assignments
-         if isinstance(a, dict) and a.get("uid") == sess["uid"]])
-    letters = _jload(db.get("ubt_admin_letters", "[]"), list, [])
-    db["ubt_admin_letters"] = _jdump(letters if sess["admin"] else [
-        m for m in letters if isinstance(m, dict) and m.get("toUid") == sess["uid"]])
-    if "ubt_profiles" in db:
-        db["ubt_profiles"] = _jdump({k: _pub_user(p) for k, p in profs.items() if isinstance(p, dict) and
-                                      (sess["admin"] or p.get("accessApproved") is True)})
-    if not sess["admin"] and "ubt_schemes" in db:
-        sch = _jload(db.get("ubt_schemes"), list, [])
-        db["ubt_schemes"] = _jdump([t for t in sch if isinstance(t, dict) and (
-            t.get("authorId") == sess["uid"] or (t.get("status") == "approved" and t.get("isPublic")))])
-    if not sess["admin"]:
-        classes = _jload(db.get("ubt_classes", "[]"), list, [])
-        mine = [c for c in classes if isinstance(c, dict) and
-                (c.get("teacherId") == sess["uid"] or sess["uid"] in c.get("students", []))]
-        managed = {c.get("id") for c in mine if teacher and c.get("teacherId") == sess["uid"]}
-        joined = {c.get("id") for c in mine}
-        if managed:
-            own = [a for a in assignments if isinstance(a, dict) and a.get("uid") == sess["uid"]]
-            scores = [{k: a.get(k) for k in ("id", "classId", "uid", "login", "title", "limit", "used", "results")}
-                      for a in assignments if isinstance(a, dict) and a.get("classId") in managed and a.get("uid") != sess["uid"]]
-            db["ubt_assigned_tests"] = _jdump([{k: v for k, v in a.items() if k != "pendingToken"} for a in own] + scores)
-        db["ubt_classes"] = _jdump([c if c.get("id") in managed else
-            {**c, "code": "", "students": [sess["uid"]] if sess["uid"] in c.get("students", []) else []} for c in mine])
-        reqs = _jload(db.get("ubt_class_reqs", "[]"), list, [])
-        db["ubt_class_reqs"] = _jdump([r for r in reqs if isinstance(r, dict) and r.get("teacherId") == sess["uid"]])
-        cc = _jload(db.get("ubt_class_chat", "{}"), dict, {})
-        threads = {r.get("id") for r in reqs if isinstance(r, dict) and r.get("teacherId") == sess["uid"]}
-        threads.update(c.get("reqId") or "cls_" + str(c.get("id")) for c in mine if c.get("id") in managed)
-        db["ubt_class_chat"] = _jdump({k: v for k, v in cc.items() if k in threads})
-        tests = _jload(db.get("ubt_tests", "[]"), list, [])
-        assigned_ids = {a.get("testId") for a in assignments if isinstance(a, dict) and a.get("uid") == sess["uid"] and a.get("used", 0) < a.get("limit", 0)}
-        visible = [t for t in tests if isinstance(t, dict) and
-            (t.get("authorId") == sess["uid"] or
-             t.get("id") in assigned_ids or
-             (t.get("classId") in joined if t.get("classId") else (t.get("isPublic") or t.get("status") == "approved")))]
-        db["ubt_tests"] = _jdump([t if t.get("authorId") == sess["uid"] else
-            {**{k: v for k, v in t.items() if k != "accessCode"}, "requiresCode": bool(t.get("accessCode")),
-             "questions": [{k: v for k, v in q.items() if k != "correct"} for q in t.get("questions", []) if isinstance(q, dict)]}
-            for t in visible])
-        for k in list(db.keys()):
-            if k.startswith(_PRIVATE_PREFIXES) and not any(k == p + sess["uid"] for p in _PRIVATE_PREFIXES):
-                db.pop(k, None)
-                continue
-            if k.startswith(("ubt_att_", "ubt_tres_")):
-                tid = k[len("ubt_att_"):] if k.startswith("ubt_att_") else k[len("ubt_tres_"):]
-                relevant = next((t for t in tests if isinstance(t, dict) and t.get("id") == tid), None)
-                if not relevant or relevant.get("classId") not in joined:
-                    db.pop(k, None)
-                elif relevant.get("classId") not in managed:
-                    data = _jload(db[k], list if k.startswith("ubt_tres_") else dict, [] if k.startswith("ubt_tres_") else {})
-                    db[k] = _jdump([r for r in data if isinstance(r, dict) and r.get("uid") == sess["uid"]] if isinstance(data, list) else {sess["uid"]: data.get(sess["uid"], 0)})
+    hidden = ("ubt_profiles", "ubt_chat", "ubt_classes", "ubt_class_board",
+              "ubt_class_reqs", "ubt_class_chat", "ubt_assigned_tests",
+              "ubt_admin_letters", "ubt_site_controls", "ubt_user_stats")
+    for k in list(db):
+        if k in _SERVER_ONLY or k in hidden or k.startswith(("ubt_att_", "ubt_tres_")) or (
+            k.startswith(_PRIVATE_PREFIXES) and not any(k == p + "admin" for p in _PRIVATE_PREFIXES)
+        ):
+            db.pop(k, None)
     return db
 
 
-st.set_page_config(page_title="ҰБТ+", page_icon="📘", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Менің тесттерім", page_icon="📘", layout="wide", initial_sidebar_state="collapsed")
 st.markdown("""<style>
 #MainMenu,footer,header{visibility:hidden}
 </style>
@@ -1962,6 +1912,9 @@ html_code = r"""
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ҰБТ+</title>
+<style>
+#s-home [onclick*="showPublicTests"],#s-home [onclick*="showAssignedTests"],#s-home [onclick*="showRanking"],#s-home [onclick*="showTeacher"],#s-home [onclick*="showCopiedTests"],#s-home [onclick*="showRegistered"],#s-home [onclick*="showAdmin()"],#s-home [onclick*="showAccessRequests"],#s-home #admin-inbox-card,#s-home .profile-bar .app-profile>div:last-child,#p-title,#p-stars,#p-verified,#s-login #login-box .fg:first-child,#admin-pass-wrap,#register-box,#teacher-reg-box,#forgot-box,#contact-box,#c-request-field,#c-teacher-opts,#s-addq .fg:has(#aq-request),#prof-title,#prof-stars,#prof-rank,#prof-verified,#s-profile .hdr>div:nth-of-type(3),#sch-t-pub,#sch-t-pend,#s-schedit .fg:has([data-p="request"]){display:none!important}
+</style>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script defer src="https://cdn.jsdelivr.net/npm/mammoth@1.9.1/mammoth.browser.min.js"></script>
 <style>
@@ -2473,14 +2426,12 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
 
 <div id="s-login" class="screen active">
   <div class="wrap">
-    <div class="hdr"><div class="logo">Ұ+</div><h1>ҰБТ+</h1><p class="sub">ҰБТ-ға дайындық платформасы</p></div>
+    <div class="hdr"><div class="logo">Ұ+</div><h1>Менің тесттерім</h1><p class="sub">Жеке сайтқа кіру</p></div>
     <div class="card" id="login-box">
-      <div class="fg"><label>Логин (атыңыз)</label><input id="login-name" placeholder="Атыңыз" oninput="checkAdminName()"></div>
+      <div class="fg"><label>Логин</label><input id="login-name" value="admin" readonly></div>
       <div class="fg"><label>Пароль</label><input id="login-pass" type="password" placeholder="Пароль"></div>
       <div class="fg" id="admin-pass-wrap" style="display:none"><label class="sub">Админ ретінде кіру</label></div>
       <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doLogin()">Кіру</button>
-      <button class="btn btn-s" style="width:100%;margin-bottom:10px" onclick="showRegister()">Тіркелу</button>
-      <button class="btn btn-s btn-sm" style="width:100%" onclick="showTeacherReg()">👨‍🏫 Мұғалім болуға өтініш жіберу</button>
     </div>
     <div class="card" id="register-box" style="display:none">
       <h3 style="margin-bottom:12px">Тіркелу</h3>
@@ -2599,32 +2550,31 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
     </div>
     <div id="home-extras"></div>
     <div class="grid2" style="margin-bottom:20px">
-      <div class="mode" onclick="showPublicTests()"><div class="ic">🌐</div><h3>Жария тесттер</h3><p>Админ мақұлдаған</p></div>
-      <div class="mode" onclick="showAssignedTests()"><div class="ic">📨</div><h3>Маған жіберілген тесттер</h3><p>Жеке тапсырмалар мен лимит</p></div>
       <div class="mode" onclick="showMyTests()"><div class="ic">📚</div><h3>Менің тесттерім</h3><p>Өз тесттеріңіз</p></div>
       <div class="mode" onclick="showCreate()"><div class="ic">➕</div><h3>Тест құру</h3><p>Атауы + сұрақтар</p></div>
       <div class="mode" onclick="showAddQ()"><div class="ic">🖼</div><h3>Сұрақ қосу</h3><p>Сурет · кесте · барлық пән</p></div>
       <div class="mode" onclick="showSchemes()"><div class="ic">🗺</div><h3>Схема құру</h3><p>Кезеңдер · карточка · фото</p></div>
       <div class="mode" onclick="showLessons()"><div class="ic">🎬</div><h3>Анимациялық сабақтар</h3><p>Анимация + код</p></div>
       <div class="mode" onclick="showLibrary()"><div class="ic">📖</div><h3>Кітапхана</h3><p>Әр пәннің кітаптары бөлек</p></div>
-      <div class="mode" onclick="showRanking()" style="grid-column:1/-1"><div class="ic">🏆</div><h3>Рейтинг</h3><p>Ортақ көшбасшылар</p></div>
     </div>
     <div class="grid2 home-tools">
       <button class="mode" onclick="showFormulas()"><span class="ic">📐</span><h3>Формула</h3><p>Формулаларды қарау</p></button>
       <button class="mode" onclick="showMistakes()"><span class="ic">❌</span><h3>Қателер</h3><p>Қате жауаптар</p></button>
       <button class="mode" onclick="showHistory()"><span class="ic">📋</span><h3>Тарих</h3><p>Тест нәтижелері</p></button>
-      <button class="mode" id="admin-json-card" style="display:none" onclick="showFileTest()"><span class="ic">📂</span><h3>JSON / файл тесті</h3><p>Админ мен мұғалімге: файлдан тест құру</p></button>
+      <button class="mode" id="admin-json-card" style="display:none" onclick="showFileTest()"><span class="ic">📂</span><h3>JSON / файл тесті</h3><p>Файлдан өз тестіңізді құрыңыз</p></button>
       <button class="mode" onclick="showMyProfile()"><span class="ic">📈</span><h3>График</h3><p>Үлгерім көрсеткіші</p></button>
       <button class="mode" onclick="showFlash()"><span class="ic">🃏</span><h3>Флеш-карталар</h3><p>Қайталауға арналған</p></button>
       <button class="mode" onclick="showGloss()"><span class="ic">📖</span><h3>Глоссарий</h3><p>Терминдер мен ұғымдар</p></button>
       <button class="mode" onclick="showBookmarks()"><span class="ic">🔖</span><h3>Таңдаулылар</h3><p>Сақталған сұрақтар</p></button>
       <button class="mode" onclick="showPlanner()"><span class="ic">🗓</span><h3>Жоспар</h3><p>Дайындық жоспары</p></button>
-      <button class="mode" id="teacher-home-card" onclick="showTeacher()"><span class="ic">🏫</span><h3>Сынып / Мұғалім</h3><p>Сыныппен жұмыс</p></button>
-      <button class="mode" id="admin-copied-card" style="display:none" onclick="showCopiedTests()"><span class="ic">📥</span><h3>Жүктелген тесттер</h3><p>Тестті бір адамға жіберу</p></button>
-      <button class="mode" id="registered-btn" style="display:none" onclick="showRegistered()"><span class="ic">👥</span><h3>Тіркелгендер</h3><p>Қолданушылар мен рұқсаттар</p></button>
+      <button class="mode" id="teacher-home-card" style="display:none" onclick="showTeacher()"></button>
+      <button class="mode" id="admin-copied-card" style="display:none" onclick="showCopiedTests()"></button>
+      <button class="mode" id="registered-btn" style="display:none" onclick="showRegistered()"></button>
       <button class="mode" onclick="showQuestionBank()" style="grid-column:1/-1"><span class="ic">📚</span><h3>Сұрақтар базасы</h3><p>Пәндер бойынша өз сұрақтарым</p></button>
-      <button class="mode" id="admin-btn" style="display:none;grid-column:1/-1" onclick="showAdmin()"><span class="ic">🛠</span><h3>Админ</h3><p>Басқару панелі</p></button>
-      <button class="mode" id="admin-requests-card" style="display:none;grid-column:1/-1" onclick="showAccessRequests()"><span class="ic">📨</span><h3>Өтініштер <span id="home-requests-count"></span></h3><p>Жаңа аккаунттар және мұғалім өтініштері</p></button>
+      <button class="mode" id="admin-btn" style="display:none" onclick="showAdmin()"></button>
+      <button class="mode" id="admin-requests-card" style="display:none" onclick="showAccessRequests()"><span id="home-requests-count"></span></button>
+      <button class="mode" style="grid-column:1/-1" onclick="exportAll()"><span class="ic">💾</span><h3>Тесттер мен жинақтардың көшірмесі</h3><p>JSON файлға сақтау</p></button>
+      <label class="mode" style="grid-column:1/-1;cursor:pointer"><span class="ic">📥</span><h3>Көшірмеден қалпына келтіру</h3><p>JSON файлын қосу; бар тесттер сақталады</p><input type="file" accept=".json,application/json" style="display:none" onchange="importAll(this)"></label>
     </div>
   </div>
 </div>
@@ -2868,20 +2818,20 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
   <div class="wrap">
     <div class="hdr"><h2>🗺 Схемалар</h2><p class="sub">Тақырып бойынша суретті схема құрыңыз: бөлімдер, карточкалар, фото, мәліметтер</p></div>
     <div class="row" style="margin-bottom:12px">
-      <button class="btn btn-s btn-sm" id="sch-t-pub" onclick="schTab('pub')">🌐 Жария</button>
+      <button class="btn btn-s btn-sm" id="sch-t-pub" style="display:none" onclick="schTab('pub')"></button>
       <button class="btn btn-s btn-sm" id="sch-t-mine" onclick="schTab('mine')">📁 Менікі</button>
       <button class="btn btn-s btn-sm" id="sch-t-history" onclick="schTab('history')">🇰🇿 Қазақстан тарихы</button>
-      <button class="btn btn-s btn-sm" id="sch-t-pend" style="display:none" onclick="schTab('pend')">⏳ Күтіп тұрған</button>
+      <button class="btn btn-s btn-sm" id="sch-t-pend" style="display:none" onclick="schTab('pend')"></button>
     </div>
     <div class="fg"><select id="sch-f-subj" onchange="renderSchemes()"></select></div>
     <div class="row" id="sch-bulk-actions" style="display:none;margin-bottom:12px"><button class="btn btn-d btn-sm" onclick="schDeleteMine()">🗑 Менің барлық схемаларымды толық өшіру</button></div>
     <div id="sch-list" class="list"></div>
-    <div class="row" style="margin-top:20px"><button class="btn btn-p" onclick="schNew()">➕ Схема құру</button><button class="btn btn-s" id="sch-code-toggle" style="display:none" onclick="schCodeToggle()">🧩 Кодпен схема қосу · админ</button><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
+    <div class="row" style="margin-top:20px"><button class="btn btn-p" onclick="schNew()">➕ Схема құру</button><button class="btn btn-s" id="sch-code-toggle" style="display:none" onclick="schCodeToggle()">🧩 Кодпен схема қосу</button><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
     <div class="card" id="sch-code-panel" style="display:none;margin-top:16px">
-      <h3>🧩 JSON кодынан схема · тек админ</h3>
+      <h3>🧩 JSON кодынан схема</h3>
       <p class="sub">JSON кодын қойыңыз: схема төменде бірден пайда болады. Дайын болғанда сақтаңыз.</p>
       <div class="fg"><label>Схема JSON коды</label><textarea id="sch-code-input" spellcheck="false" style="min-height:230px;font-family:monospace" oninput="schCodePreview()" placeholder='{"title":"Түркі дәуірі","subject":"history","root":{"title":"Түркі дәуірі"},"kids":[{"tab":"Түрік қағанаты","title":"552–603 жж.","fields":[{"k":"Негізін қалаған","v":"Бумын қаған"}]}]}'></textarea></div>
-      <div class="row"><button class="btn btn-s btn-sm" onclick="schCodeExample()">Үлгі кодты қою</button><label class="switch"><input id="sch-code-public" type="checkbox"> Жариялау</label><button class="btn btn-p btn-sm" onclick="schCodeSave()">💾 Схеманы сақтау</button></div>
+      <div class="row"><button class="btn btn-s btn-sm" onclick="schCodeExample()">Үлгі кодты қою</button><label class="switch" style="display:none"><input id="sch-code-public" type="checkbox"></label><button class="btn btn-p btn-sm" onclick="schCodeSave()">💾 Схеманы сақтау</button></div>
       <p class="sub" id="sch-code-error" role="status"></p><div id="sch-code-preview"></div>
     </div>
   </div>
@@ -2986,7 +2936,7 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
 
 <div id="s-file" class="screen">
   <div class="wrap">
-    <div class="hdr"><h2>📂 JSON / файлдан тест</h2><p class="sub">JSON файлын жүктеңіз. Мұғалім оны сақтап, өз сыныбына лимитпен тарата алады.</p></div>
+    <div class="hdr"><h2>📂 JSON / файлдан тест</h2><p class="sub">JSON файлын жүктеп, өз тестіңіз ретінде сақтаңыз.</p></div>
     <div class="card"><div class="fg" style="margin-bottom:0"><label>Пән (міндетті емес)</label><select id="f-question-subject"></select></div></div>
     <div id="f-bulk-host"></div>
     <div id="f-topic-list"></div>
@@ -3134,11 +3084,14 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
     <div class="card" style="margin-bottom:14px">
       <h3>➕ JSON кодынан флешкарталар</h3>
       <p class="sub" style="margin:6px 0 12px">Сұрақ пен жауапты JSON түрінде қойыңыз. Тест JSON-ындағы questions, options және correct өрістері де жарайды.</p>
+      <div class="fg"><label>Қай пәнге сақтаймыз?</label><select id="fl-subject" onchange="flashRenderSaved()"></select></div>
       <div class="fg"><label>JSON коды</label><textarea id="fl-json" spellcheck="false" style="min-height:170px;font-family:monospace" oninput="flashJSONPreview()" placeholder='{"title":"Тарих","cards":[{"question":"Түрік қағанаты қай жылы құрылды?","answer":"552 жыл"}]}'></textarea></div>
+      <div class="row" style="justify-content:flex-start"><label class="btn btn-s btn-sm" style="cursor:pointer">📂 JSON файл таңдау<input type="file" accept=".json,application/json" style="display:none" onchange="flashImportFile(this)"></label></div>
       <p id="fl-json-status" class="sub" role="status" style="margin:8px 0"></p>
       <div id="fl-json-preview" style="display:none;margin:10px 0;padding:12px;border:1px solid var(--b);border-radius:12px;white-space:pre-wrap;overflow-wrap:anywhere"></div>
       <div class="row" style="justify-content:flex-start"><button class="btn btn-s btn-sm" onclick="flashJSONExample()">Үлгі JSON</button><button class="btn btn-p btn-sm" id="fl-json-save" onclick="flashJSONSave()" disabled>💾 Жинақ жасап, бастау</button></div>
     </div>
+    <div class="card" style="margin-bottom:14px"><div class="row" style="justify-content:space-between;align-items:center"><h3>💾 Сақталған жинақтар</h3><select id="fl-filter" onchange="flashRenderSaved()" aria-label="Пән бойынша сүзу" style="width:auto;padding:8px;border:1px solid var(--b);border-radius:10px;background:var(--c);color:var(--t)"></select></div><div id="fl-saved" class="list" style="margin-top:12px"></div></div>
     <div class="card">
       <div class="fg"><label>Не жаттаймыз?</label><select id="fl-src" onchange="flashUpdateControls()"></select></div>
       <div class="row" style="justify-content:flex-start">
@@ -3350,9 +3303,9 @@ const LS={get(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch{retur
 function setSyncInd(ok){
   const e=document.getElementById('sync-ind');if(!e)return;
   const sm=window.__store||'';
-  if(ok&&sm==='local'){e.textContent='🟡 Ортақ база қосулы · ⚠ уақытша (сыртқы база жоқ)';e.style.background='#fef3c7';e.style.color='#92400e';return}
-  if(ok&&sm==='error'){e.textContent='🟠 Ортақ база қосулы · сыртқы база қолжетімсіз'+(window.__err?' · '+window.__err:'');e.style.background='#ffedd5';e.style.color='#9a3412';return}
-  e.textContent=ok?'🟢 Ортақ база қосулы'+(sm==='remote'||sm==='pending'?' · 🗄 тұрақты':''):'⚠ Ортақ база жоқ — деректер тек осы құрылғыда';
+  if(ok&&sm==='local'){e.textContent='🟡 Уақытша сақталды · сыртқы база жоқ';e.style.background='#fef3c7';e.style.color='#92400e';return}
+  if(ok&&sm==='error'){e.textContent='🟠 Сақтау серверіне байланыс жоқ'+(window.__err?' · '+window.__err:'');e.style.background='#ffedd5';e.style.color='#9a3412';return}
+  e.textContent=ok?'🟢 Деректер сақталды':'⚠ Сақтау серверіне байланыс жоқ';
   e.style.background=ok?'#dcfce7':'#fee2e2';e.style.color=ok?'#14532d':'#7f1d1d';
 }
 function syncRefresh(){
@@ -3373,13 +3326,19 @@ function syncRefresh(){
     else if(id==='s-pubprof'&&ppId)openPubProfile(ppId);
   }catch(e){}
 }
+function personalBackupKey(k){
+  return ['ubt_tests','ubt_formulas','ubt_schemes','ubt_lessons','ubt_books'].includes(k)||
+    ['ubt_flashcards_','ubt_qbank_','ubt_qbank_hidden_','ubt_mistakes_','ubt_hist_',
+     'ubt_prog_','ubt_bm_','ubt_plan_','ubt_plan_done_','ubt_streak_','ubt_avatar_',
+     'ubt_ubt140_selection_'].some(p=>k===p+'admin');
+}
 function exportAll(){
   if(!user||!user.isAdmin)return;
   const o={};
-  for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(!noSync(k))o[k]=localStorage.getItem(k)}
+  for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(personalBackupKey(k))o[k]=localStorage.getItem(k)}
   const blob=new Blob([JSON.stringify(o)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='ubt_backup_'+new Date().toISOString().slice(0,10)+'.json';
-  document.body.appendChild(a);a.click();a.remove();
+  document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 }
 function importAll(inp){
   if(!user||!user.isAdmin)return;
@@ -3387,13 +3346,26 @@ function importAll(inp){
   const r=new FileReader();
   r.onload=()=>{
     try{
-      const o=JSON.parse(r.result);const ks=Object.keys(o).filter(k=>!noSync(k)&&typeof o[k]==='string');
+      const o=JSON.parse(r.result);const ks=Object.keys(o).filter(k=>personalBackupKey(k)&&typeof o[k]==='string');
       if(!ks.length){alert('Файл бос немесе қате');return}
-      if(!confirm('Резервтік көшірмені қалпына келтіру керек пе? '+ks.length+' жазба қайта жазылады.'))return;
-      ks.forEach(k=>{localStorage.setItem(k,o[k])});
-      syncPush(ks.map(k=>({key:k,value:o[k]})));
-      alert('✅ Қалпына келтірілді');showAdmin();
-    }catch(e){alert('Файл оқылмады')}
+      if(!confirm('Көшірмедегі деректерді қосу керек пе? Қазіргі тесттер мен флешкарталар сақталады.'))return;
+      const updates=[];
+      ks.forEach(k=>{
+        let raw=o[k];
+        if(k==='ubt_tests'||k==='ubt_flashcards_admin'){
+          const old=LS.get(k,[]),incoming=JSON.parse(raw);
+          if(!Array.isArray(old)||!Array.isArray(incoming))throw Error('JSON тізімі қате');
+          const have=new Set(old.map(x=>x.id));
+          raw=JSON.stringify(old.concat(incoming.filter(x=>x&&typeof x.id==='string'&&!have.has(x.id))));
+          if(k==='ubt_flashcards_admin'&&(JSON.parse(raw).length>40||raw.length>550000))throw Error('Флешкарталардың саны тым көп');
+          if(k==='ubt_tests'&&raw.length>7800000)throw Error('Тесттер көлемі тым үлкен');
+        }
+        updates.push({key:k,value:raw});
+      });
+      updates.forEach(({key,value})=>localStorage.setItem(key,value));
+      syncPush(updates);
+      alert('✅ Деректер қосылды. Бұрынғы тесттер сақталды.');goHome();
+    }catch(e){alert(e.message||'Файл оқылмады')}
   };
   r.readAsText(f);inp.value='';
 }
@@ -4274,7 +4246,7 @@ function saveAllTests(a){
   LS.set('ubt_tests',a);
   if(user) a.filter(t=>t.authorId===user.id&&t.subject).forEach(t=>rememberQuestionsInBank(t.subject,t.questions||[],'Тест: '+(t.topic||'')));
 }
-function myTests(){return allTests().filter(t=>t.authorId===user.id&&!t.assignmentId&&!isCopiedTest(t))}
+function myTests(){return allTests().filter(t=>Array.isArray(t.questions)&&t.questions.length&&!t.assignmentId)}
 function publicTests(){return allTests().filter(t=>(t.isPublic||t.status==='approved')&&!t.classId&&t.questions.length>0)}
 function showFormulas(){
   renderFormulas();showScr('s-formulas');
@@ -4316,7 +4288,7 @@ function createFromFile(){
   const subject=subjEl.value;
   const subjectName=subjEl.options[subjEl.selectedIndex]?.text||'';
   const topic=document.getElementById('c-topic').value.trim();
-  const requestPub=document.getElementById('c-request')?.checked||false;
+  const requestPub=false;
   if(!subject){alert('Пәнді таңдаңыз!');return}
   if(!topic){alert('Тест атауын жазыңыз!');return}
   if(!draftQs.length){alert('Кемінде 1 сұрақ қосыңыз!');return}
@@ -4340,16 +4312,11 @@ function createFromFile(){
 }
 
 function showMyTests(){
-  const list=document.getElementById('my-list');const tests=myTests();
+  const list=document.getElementById('my-list');const tests=myTests().slice().sort((a,b)=>String(a.subjectName||a.subject||'').localeCompare(String(b.subjectName||b.subject||''),'kk'));
   if(!tests.length){list.innerHTML='<div class="empty"><div class="ic">📭</div><p>Сізде әзірге тест жоқ.<br>«Тест құру» арқылы жасаңыз.</p></div>'}
   else{list.innerHTML=tests.map(t=>{
-    let badge='<span class="badge badge-priv">🔒 Жеке</span>';
-    if(t.isPublic||t.status==='approved')badge='<span class="badge badge-pub">🌐 Жария</span>';
-    else if(t.status==='pending')badge='<span class="badge" style="background:#fef3c7;color:#92400e">⏳ Күтуде</span>';
-    else if(t.status==='rejected')badge='<span class="badge badge-err">Бас тартылған</span>';
-    if(t.classId)badge='<span class="badge badge-pub">🏫 '+esc(t.className||'Сынып')+'</span>';
     return `<div class="item"><div class="info"><h4>${esc(t.topic)}</h4>
-    <p>${esc(t.subjectName||'')} · ${t.questions.length} сұрақ · ${badge}</p></div>
+    <p>${esc(t.subjectName||subjName(t.subject))} · ${t.questions.length} сұрақ</p></div>
     <div class="acts">
       <button class="btn btn-p btn-sm" onclick="startUserTest('${t.id}')">Бастау</button>
       <button class="btn btn-s btn-sm" onclick="previewTest('${t.id}')">👁</button>
@@ -4359,7 +4326,6 @@ function showMyTests(){
       <button class="btn btn-s btn-sm" onclick="exportPdfTest('${t.id}')">⬇ PDF</button>
       ${canDownloadJson()?`<button class="btn btn-s btn-sm" onclick="exportJsonTest(${jsq(t.id)})">⬇ JSON</button>`:''}
       ${isTeacherUser()&&!user.isAdmin?`<button class="btn btn-ok btn-sm" onclick="showClassSend(${jsq(t.id)})">🏫 Сыныбыма тарату</button>`:''}
-      ${t.status!=='pending'&&t.status!=='approved'&&!t.isPublic&&!t.classId?`<button class="btn btn-w btn-sm" onclick="requestPub('${t.id}')">Жариялауға</button>`:''}
       <button class="btn btn-d btn-sm" onclick="delTest('${t.id}')">✕</button>
     </div></div>`}).join('')}
   showScr('s-mytests');
@@ -4822,7 +4788,7 @@ function aqSave(){
   }else{
     const topic=document.getElementById('aq-topic').value.trim();
     if(!topic){alert('Тест атауын жазыңыз!');return}
-    const requestPub=document.getElementById('aq-request').checked;
+    const requestPub=false;
     const test={id:'t_'+Date.now(),subject,subjectName,topic,desc:document.getElementById('aq-desc').value.trim(),isPublic:false,status:requestPub?'pending':'private',authorId:user.id,authorName:user.name,questions:aqQs.slice(),createdAt:new Date().toISOString()};
     if((user.isAdmin||isTeacherUser())&&requestPub){test.isPublic=true;test.status='approved';if(user.isAdmin)test.adminApproved=true}
     all.unshift(test);saveAllTests(all);
@@ -4915,7 +4881,7 @@ function schSaveInfo(event,id,path){event.preventDefault();const form=event.curr
 function schInfoForm(btn){const form=btn.nextElementSibling;form.style.display='flex';btn.style.display='none';form.elements.label.focus()}
 function schInlinePhoto(inp,id,path){const file=inp.files&&inp.files[0];inp.value='';if(!file||!/^image\/(jpeg|png|webp)$/.test(file.type))return;const t=schEditable(id),node=t&&schNodeAt(t,path);if(!node)return;const reader=new FileReader();reader.onload=()=>{const img=new Image();img.onload=()=>{let side=520,q=.72,out='';for(let i=0;i<7;i++){const scale=Math.min(1,side/Math.max(img.width,img.height)),canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(img.width*scale));canvas.height=Math.max(1,Math.round(img.height*scale));const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(img,0,0,canvas.width,canvas.height);out=canvas.toDataURL('image/jpeg',q);if(out.length*.75<=SCH_IMG_BYTES)break;side=Math.round(side*.82);q=Math.max(.42,q-.06)}if(out.length*.75>SCH_IMG_BYTES*1.5){alert('Сурет тым үлкен');return}const all=allSchemes(),stored=all.find(x=>x.id===id),target=stored&&schNodeAt(stored,path);if(!target||!user||stored.authorId!==user.id)return;target.img=out;schNodeChanged(all,stored);schRevealPath(path)};img.onerror=()=>alert('Сурет оқылмады');img.src=reader.result};reader.readAsDataURL(file)}
 function schTermQuiz(id,histIndex,path){const t=id?allSchemes().find(x=>x.id===id):(Number.isInteger(histIndex)&&histIndex>=0&&histIndex<HIST.length?histBuild(histIndex):null);if(!t||!user||id&&!(schIsPub(t)||t.authorId===user.id||user.isAdmin)){alert('Алдымен жүйеге кіріңіз');return}const node=schNodeAt(t,path);if(!node)return;const raw=(node.fields||[]).filter(f=>f&&String(f.k||'').trim()&&String(f.v||'').trim()).map(f=>({k:String(f.k).trim(),v:String(f.v).trim()}));const seen=new Set(),labels=new Set(),pairs=raw.filter(f=>{const val=f.v.toLowerCase(),key=f.k.toLowerCase();if(seen.has(val)||labels.has(key))return false;seen.add(val);labels.add(key);return true});if(pairs.length<2){alert('Осы тақырыпта тестке арналған кемінде екі бөлек термин мен мәлімет болуы керек');return}const title=node.tab||node.title||t.title;st=baseState();st.subjectName=(t.subjectName||'Схема')+' · '+title;st.questions=pairs.slice(0,10).map((f,i)=>{const wrong=shuffled(pairs.filter(x=>x.v!==f.v)).slice(0,3).map(x=>x.v);return{id:'schq_'+i+'_'+Date.now(),text:'«'+title+'» тақырыбы: '+f.k+' қандай?',options:shuffled([f.v,...wrong]),correct:0,points:1,subjectName:st.subjectName}});st.questions.forEach((q,i)=>{q.correct=q.options.indexOf(pairs[i].v)});st.timerSeconds=Math.max(st.questions.length*90,600);beginTest()}
-let schTabCur='pub',schDraft=null;
+let schTabCur='mine',schDraft=null;
 function showSchemes(tab){
   if(tab)schTabCur=tab;
   document.getElementById('sch-f-subj').innerHTML=schSubjOptions('Барлық пәндер');
@@ -4950,18 +4916,11 @@ function renderSchemes(){
   const el=document.getElementById('sch-list');
   if(!a.length){el.innerHTML='<div class="empty"><div class="ic">🗺</div><p>Әзірге схема жоқ</p></div>';return}
   el.innerHTML=a.map(t=>{
-    let badge='<span class="badge badge-priv">🔒 Жеке</span>';
-    if(schIsPub(t))badge='<span class="badge badge-pub">🌐 Жария</span>';
-    else if(t.status==='pending')badge='<span class="badge" style="background:#fef3c7;color:#92400e">⏳ Күтуде</span>';
-    else if(t.status==='rejected')badge='<span class="badge badge-err">Бас тартылған</span>';
     const mine=user&&t.authorId===user.id,adm=user&&user.isAdmin;
-    return `<div class="item"><div class="info"><h4>${esc(t.title||'Атаусыз')}</h4><p>${esc(t.subjectName||'')} · ${esc(t.authorName||'')} · ${badge}</p></div><div class="acts">
+    return `<div class="item"><div class="info"><h4>${esc(t.title||'Атаусыз')}</h4><p>${esc(t.subjectName||'')}</p></div><div class="acts">
       <button class="btn btn-p btn-sm" onclick="schOpen(${jsq(t.id)})">👁 Қарау</button>
       ${mine?`<button class="btn btn-s btn-sm" onclick="schEdit(${jsq(t.id)})">✎</button>`:''}
-      ${mine&&!adm&&t.status!=='pending'&&!schIsPub(t)?`<button class="btn btn-w btn-sm" onclick="schRequest(${jsq(t.id)})">Жариялауға</button>`:''}
-      ${adm&&t.status!=='approved'?`<button class="btn btn-ok btn-sm" onclick="schApprove(${jsq(t.id)})">✓</button>`:''}
-      ${adm&&t.status!=='rejected'?`<button class="btn btn-d btn-sm" onclick="schReject(${jsq(t.id)})">✕ Бас тарту</button>`:''}
-      ${(mine||adm)?`<button class="btn btn-d btn-sm" onclick="schDel(${jsq(t.id)})">🗑</button>`:''}
+      ${mine?`<button class="btn btn-d btn-sm" onclick="schDel(${jsq(t.id)})">🗑</button>`:''}
     </div></div>`}).join('');
 }
 function schOpen(id){
@@ -5175,12 +5134,12 @@ function schSave(){
   const wasPub=schIsPub(t);
   Object.assign(t,c,{subjectName:opt?opt.textContent:''});
   if(user.isAdmin){
-    if(d.request||wasPub){t.isPublic=true;t.status='approved'}
+    t.isPublic=false;t.status='private';
   }else if(wasPub){t.isPublic=false;t.status='pending'}
   else if(d.request){t.status='pending';t.isPublic=false}
   else if(t.status!=='pending')t.status='private';
   saveSchemes(all);
-  alert(user.isAdmin&&t.isPublic?'✅ Схема жарияланды':(t.status==='pending'?'✅ Схема сақталды. Админ мақұлдаған соң жарияланады.':'✅ Схема сақталды (тек өзіңізге көрінеді)'));
+  alert('✅ Схема сақталды');
   schTabCur='mine';showSchemes();
 }
 const HIST=[
@@ -6216,7 +6175,7 @@ function saveFromFile(){
   if(!topic){alert('Тақырыпты жазыңыз');return}
   const test={id:'t_'+Date.now(),subject,subjectName:subjName(subject),topic,desc:'',isPublic:false,status:'private',authorId:user.id,authorName:user.name,questions:r.qs,adminUploaded:!!user.isAdmin,createdAt:new Date().toISOString()};
   const all=allTests();all.unshift(test);saveAllTests(all);
-  clearBulk('f');alert('✅ Тест сақталды: '+r.qs.length+' сұрақ');user.isAdmin?showCopiedTests():showMyTests();
+  clearBulk('f');alert('✅ Тест сақталды: '+r.qs.length+' сұрақ');showMyTests();
 }
 function testToText(topic,subjectName,qs){
   let o='Тақырып: '+topic+'\n'+(subjectName?'Пән: '+subjectName+'\n':'')+'\n';
@@ -7272,6 +7231,33 @@ let fl={deck:[],total:0,known:0,flip:false};
 function qCard(q){return{f:q.text,b:q.options[q.correct]}}
 function flashOwnKey(){return 'ubt_flashcards_'+user.id}
 function flashOwnDecks(){return user?LS.get(flashOwnKey(),[]):[]}
+function flashSubjectOptions(){
+  const s=document.getElementById('fl-subject'),f=document.getElementById('fl-filter');
+  const options=Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value);
+  const value=s.value||'history',filter=f.value;
+  s.innerHTML=options.map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('');
+  s.value=options.some(o=>o.value===value)?value:options[0]?.value||'';
+  f.innerHTML='<option value="">Барлық пәндер</option>'+options.map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('');
+  f.value=filter;
+}
+function flashRenderSaved(){
+  const el=document.getElementById('fl-saved'),subject=document.getElementById('fl-filter').value;
+  const decks=flashOwnDecks().filter(d=>!subject||(d.subject||'other')===subject);
+  const grouped={};decks.forEach(d=>(grouped[d.subject||'other']??=[]).push(d));
+  el.innerHTML=Object.entries(grouped).map(([key,items])=>`<div style="margin-bottom:16px"><div class="row" style="justify-content:space-between"><h4>${esc(subjName(key))} · ${items.length} жинақ</h4><button class="btn btn-s btn-sm" onclick="flashExportSubject(${jsq(key)})">⬇ Пәннің JSON файлы</button></div>${items.map(d=>`<div class="item"><div class="info"><h4>${esc(d.title)}</h4><p>${d.cards.length} карточка</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="showFlash(${jsq('flash:'+d.id)})">▶ Ашу</button><button class="btn btn-d btn-sm" onclick="flashDeleteDeck(${jsq(d.id)})">Өшіру</button></div></div>`).join('')}</div>`).join('')||'<p class="sub">Бұл пәнде сақталған жинақ жоқ.</p>';
+}
+function flashExportSubject(subject){
+  const decks=flashOwnDecks().filter(d=>(d.subject||'other')===subject);
+  if(!decks.length)return;
+  const data={subject,tests:decks.map(d=>({title:d.title,subject,cards:d.cards.map(c=>({question:c.f,answer:c.b}))}))};
+  const link=document.createElement('a'),url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
+  link.href=url;link.download='fleshkartalar_'+subject+'.json';document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+function flashImportFile(input){
+  const file=input.files?.[0];if(!file)return;
+  if(file.size>250000){alert('JSON файлы тым үлкен (250 КБ дейін)');input.value='';return}
+  const reader=new FileReader();reader.onload=()=>{document.getElementById('fl-json').value=String(reader.result||'');flashJSONPreview()};reader.readAsText(file);input.value='';
+}
 function flashCards(k){
   if(k.indexOf('flash:')===0){const deck=flashOwnDecks().find(d=>d.id===k.slice(6));return deck?deck.cards.map(c=>({f:c.f,b:c.b})):[]}
   if(k==='gloss')return GLOSS.map(g=>({f:g.t,b:g.d}));
@@ -7288,6 +7274,7 @@ function flashUpdateControls(){
 }
 function showFlash(selected){
   if(!user){showScr('s-login');return}
+  flashSubjectOptions();flashRenderSaved();
   const s=[['gloss','📖 Глоссарий (даталар, терминдер)'],['formulas','📐 Формулалар'],['mist','❌ Қателерім'],['bm','🔖 Таңдаулылар']];
   flashOwnDecks().forEach(deck=>s.push(['flash:'+deck.id,'🃏 '+deck.title+' · '+deck.cards.length+' карточка']));
   Object.keys(BANK).forEach(k=>s.push(['bank:'+k,'⚡ '+BANK[k].name]));
@@ -7347,7 +7334,10 @@ function flashJSONDecks(){
       if(!seen.has(key)){seen.add(key);cards.push({f:front,b:back})}
     });
     if(!cards.length)throw Error((idx+1)+'-жинақта карточка жоқ');
-    result.push({title:title(group,title(source,'Менің флешкарталарым')),cards});
+    const requested=String(group.subject||source.subject||document.getElementById('fl-subject').value||'').trim();
+    const valid=Array.from(document.querySelectorAll('#fl-subject option')).some(o=>o.value===requested);
+    if(!valid)throw Error((idx+1)+'-жинақтың пәнін таңдаңыз');
+    result.push({title:title(group,title(source,'Менің флешкарталарым')),subject:requested,cards});
   });
   return result;
 }
@@ -7380,6 +7370,11 @@ function flashDeleteSelected(){
   const deck=flashOwnDecks().find(d=>d.id===key.slice(6));
   if(!deck||!confirm('«'+deck.title+'» жинағын өшіру керек пе?'))return;
   LS.set(flashOwnKey(),flashOwnDecks().filter(d=>d.id!==deck.id));showFlash();
+}
+function flashDeleteDeck(id){
+  const deck=flashOwnDecks().find(d=>d.id===id);
+  if(!deck||!confirm('«'+deck.title+'» жинағын өшіру керек пе?'))return;
+  LS.set(flashOwnKey(),flashOwnDecks().filter(d=>d.id!==id));showFlash();
 }
 function startFlash(shuffle){
   const cards=flashCards(document.getElementById('fl-src').value);
@@ -8311,9 +8306,7 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
     });
   }
   function clearLocal(){
-    send();
-    try{var ks=[];for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(!noSync(k))ks.push(k)}ks.forEach(function(k){localStorage.removeItem(k)})}catch(e){}
-    unacked=[];pend={};first=true;
+    unacked=[];pend={};first=true;send();
   }
   function push(items){
     items.forEach(function(it){
@@ -8429,7 +8422,7 @@ def _write_frontend(digest):
 
 
 _write_frontend(hashlib.sha256(html_code.encode("utf-8")).hexdigest())
-_ubt_comp = components.declare_component("ubt_plus", path=FRONT_DIR)
+_ubt_comp = components.declare_component("ubt_plus_zheke", path=FRONT_DIR)
 
 _apply_ops(st.session_state.get("ubt_comp"))
 _cur = st.session_state.get("ubt_comp")
