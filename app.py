@@ -52,7 +52,7 @@ _MAX_BOOK_BYTES = 5 * 1024 * 1024
 
 _PBKDF_ITER = 100_000
 _MIN_PASS = 10
-_SERVER_ONLY = ("ubt_admin_pass", "ubt_admin_ph")
+_SERVER_ONLY = ("ubt_admin_pass", "ubt_admin_ph", "ubt_owner_name")
 _ADMIN_NAMES = ("админ", "admin")
 _USER_TTL = 14 * 86400
 _ADMIN_TTL = 12 * 3600
@@ -731,7 +731,7 @@ def _handle_req(state, sid, rq):
     sess = _session(state, rq.get("tok"))
     if typ not in ("login", "resume", "logout", "start_exam", "start_public_mix",
                    "finish_exam", "cancel_exam", "book_add", "book_open", "book_delete",
-                   "export_test_json"):
+                   "export_test_json", "change_display_name"):
         return {"ok": False, "msg": "Жеке сайтта бұл әрекет жоқ"}
     if typ == "login" and str(d.get("name") or "").strip().lower() not in _ADMIN_NAMES:
         return {"ok": False, "msg": "Жеке сайтқа тек иесі кіреді"}
@@ -1001,8 +1001,9 @@ def _handle_req(state, sid, rq):
                     _fail(state, lk, sk)
                     return {"ok": False, "msg": _MSG_BAD}
                 state["fails"].pop(lk, None)
-                tok = _new_session(state, "admin", "Мен", True)
-            return {"ok": True, "token": tok, "user": {"name": "Мен", "id": "admin", "isAdmin": True}}
+                owner_name = _jload(state["db"].get("ubt_owner_name", '"Мен"'), str, "Мен")
+                tok = _new_session(state, "admin", owner_name, True)
+            return {"ok": True, "token": tok, "user": {"name": owner_name, "id": "admin", "isAdmin": True}}
         if not isinstance(prof, dict):
             _check_pw(pw, {"salt": "00", "it": _PBKDF_ITER, "hash": ""})  
             with state["lock"]:
@@ -1088,7 +1089,8 @@ def _handle_req(state, sid, rq):
                 return {"ok": False, "msg": "expired"}
             tok = rq.get("tok")
             if sess["admin"]:
-                return {"ok": True, "token": tok, "user": {"name": "Мен", "id": "admin", "isAdmin": True}}
+                owner_name = _jload(state["db"].get("ubt_owner_name", '"Мен"'), str, "Мен")
+                return {"ok": True, "token": tok, "user": {"name": owner_name, "id": "admin", "isAdmin": True}}
             for p in _profiles(state).values():
                 if isinstance(p, dict) and p.get("id") == sess["uid"]:
                     return {"ok": True, "token": tok, "user": _pub_user(p)}
@@ -1099,6 +1101,32 @@ def _handle_req(state, sid, rq):
         with state["lock"]:
             state["sessions"].pop(rq.get("tok"), None)
         return {"ok": True}
+
+    if typ == "change_display_name":
+        if not sess or not sess["admin"]:
+            return {"ok": False, "msg": "Бұл әрекет тек сайт иесіне қолжетімді"}
+        name = _clean_name(d.get("name"))
+        pw = str(d.get("pass") or "")[:200]
+        if not name:
+            return {"ok": False, "msg": "Атыңыз 2–40 таңба болуы керек"}
+        lock_key = "owner-rename:" + sid
+        with state["lock"]:
+            if _locked(state, lock_key):
+                return {"ok": False, "msg": _MSG_LOCK}
+            admin_ph = _jload(state["db"].get("ubt_admin_ph", ""), dict, None)
+        sec = _secret("ADMIN_PASSWORD")
+        good = hmac.compare_digest(pw.encode("utf-8"), sec.encode("utf-8")) if sec else bool(admin_ph and _check_pw(pw, admin_ph))
+        with state["lock"]:
+            if not good:
+                _fail(state, lock_key)
+                return {"ok": False, "msg": "Пароль қате"}
+            state["fails"].pop(lock_key, None)
+            _put(state, "ubt_owner_name", _jdump(name))
+            for active in state["sessions"].values():
+                if active.get("admin"):
+                    active["name"] = name
+            _commit(state)
+        return {"ok": True, "user": {"name": name, "id": "admin", "isAdmin": True}}
 
     if typ == "chat_claim":
         if sess and not sess["admin"] and _is_student(state, sess["uid"]):
@@ -2612,6 +2640,12 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
       <div class="row" style="margin-top:14px"><label class="btn btn-s btn-sm" style="cursor:pointer">📷 Фото қою / ауыстыру<input type="file" accept="image/*" style="display:none" onchange="uploadAvatar(this)"></label><button class="btn btn-s btn-sm" id="av-del" style="display:none" onclick="removeAvatar()">🗑 Өшіру</button></div>
     </div>
     <div class="card" id="prof-extra"></div>
+    <div class="card" id="owner-name-card" style="display:none">
+      <h3 style="margin-bottom:12px">✏️ Атымды өзгерту</h3>
+      <div class="fg"><label>Жаңа ат</label><input id="owner-new-name" maxlength="40" autocomplete="nickname" placeholder="Жаңа атыңыз"></div>
+      <div class="fg"><label>Қазіргі пароль</label><input id="owner-name-pass" type="password" autocomplete="current-password" placeholder="Пароліңізді енгізіңіз"></div>
+      <button class="btn btn-p btn-sm" id="owner-name-save" onclick="changeOwnerName()">Сақтау</button>
+    </div>
     <div class="card"><h3 style="margin-bottom:10px">📈 Менің графигім</h3><div id="prof-chart"></div></div>
     <div class="card"><h3 style="margin-bottom:10px">📊 Тақырыптар бойынша орташа нәтиже</h3><div id="prof-topics"></div></div>
     <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
@@ -3738,6 +3772,8 @@ function adminChooseLetterRecipient(login){
 }
 function showMyProfile(){
   const s=user.isAdmin?{points:0,title:'👑 Админ',stars:5,verified:true}:getUserStats(user.id);
+  const nameCard=document.getElementById('owner-name-card');
+  if(nameCard){nameCard.style.display=user.isAdmin?'':'none';document.getElementById('owner-new-name').value=user.isAdmin?user.name:'';document.getElementById('owner-name-pass').value=''}
   setAv(document.getElementById('prof-avatar'),user.id,user.name);const dv=document.getElementById('av-del');if(dv)dv.style.display=getAvatar(user.id)?'':'none';
   document.getElementById('prof-name').textContent=user.name+(s.verified?' ✓':'');
   document.getElementById('prof-title').textContent=s.title||'Атақ жоқ';
@@ -3749,6 +3785,24 @@ function showMyProfile(){
   document.getElementById('prof-rank').textContent=rank?('Рейтинг: #'+rank):'Рейтинг: —';
   renderProgress('prof-chart','prof-topics',getProg(user.id));
   showScr('s-profile');
+}
+async function changeOwnerName(){
+  if(!user||!user.isAdmin)return;
+  const name=document.getElementById('owner-new-name').value.trim();
+  const passField=document.getElementById('owner-name-pass');
+  const button=document.getElementById('owner-name-save');
+  if(name.length<2||name.length>40){alert('Атыңыз 2–40 таңба болуы керек');return}
+  if(!passField.value){alert('Қазіргі пароліңізді енгізіңіз');return}
+  button.disabled=true;
+  try{
+    const result=await authCall('change_display_name',{name,pass:passField.value});
+    passField.value='';
+    if(!result.ok){alert(result.msg||'Ат өзгертілмеді');return}
+    user=result.user;
+    LS.set('ubt_current',Object.assign({},user,{token:window.__token}));
+    refreshProfileBar();showMyProfile();
+    alert('Атыңыз сақталды');
+  }finally{button.disabled=false;passField.value=''}
 }
 function getRankPosition(id){
   const board=getLeaderboard();
