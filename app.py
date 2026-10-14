@@ -111,7 +111,7 @@ def _sb_call(conf, method, path, body=None, prefer=None, timeout=30):
 
 
 def _sb_load_all(conf):
-    out, off, step = {}, 0, 25
+    out, off, step = {}, 0, 200
     while True:
         rows = _sb_call(conf, "GET", "%s?select=key,value&order=key.asc&limit=%d&offset=%d" % (_TABLE, step, off))
         for r in rows or []:
@@ -201,6 +201,7 @@ def _store():
         data = {}
     state = {"db": data, "sb": _sb_conf(), "ok": False, "err": "", "dirty": set(), "deleted": set(),
              "lock": threading.RLock(), "flush_lock": threading.Lock(), "retry_t": 0.0,
+             "flushing": False, "flush_again": False, "syncing": False,
              "sessions": {}, "chat_claims": {}, "fails": {}, "reg": {}, "exams": {}, "rev": 1}
     _remote_sync(state)
     _migrate_start(state)
@@ -242,12 +243,17 @@ def _remote_sync(state):
         return
     with state["lock"]:
         db = state["db"]
+        updated = False
         for k, v in remote.items():
             if k not in state["dirty"] and k not in state["deleted"]:
-                db[k] = v
+                if db.get(k) != v:
+                    db[k] = v
+                    updated = True
         for k in list(db.keys()):
             if k not in remote:
                 state["dirty"].add(k)
+        if updated:
+            state["rev"] += 1
         state["ok"] = True
         state["err"] = ""
     _flush_async(state)
@@ -287,7 +293,25 @@ def _flush(state):
 
 
 def _flush_async(state):
-    threading.Thread(target=_flush, args=(state,), daemon=True).start()
+    if not state.get("sb"):
+        return
+    with state["lock"]:
+        if state["flushing"]:
+            state["flush_again"] = True
+            return
+        state["flushing"] = True
+    def run():
+        while True:
+            try:
+                _flush(state)
+            except Exception as exc:
+                state["err"] = repr(exc)[:200]
+            with state["lock"]:
+                if not state["flush_again"]:
+                    state["flushing"] = False
+                    return
+                state["flush_again"] = False
+    threading.Thread(target=run, daemon=True).start()
 
 
 def _ensure_remote(state):
@@ -295,8 +319,19 @@ def _ensure_remote(state):
     if not state.get("sb"):
         return
     if not state["ok"]:
-        if time.time() - state["retry_t"] > 20:
-            _remote_sync(state)
+        with state["lock"]:
+            retry = not state["syncing"] and time.time() - state["retry_t"] > 20
+            if retry:
+                state["syncing"] = True
+                state["retry_t"] = time.time()
+        if retry:
+            def reconnect():
+                try:
+                    _remote_sync(state)
+                finally:
+                    with state["lock"]:
+                        state["syncing"] = False
+            threading.Thread(target=reconnect, daemon=True).start()
     elif state["dirty"] or state["deleted"]:
         _flush_async(state)
 
@@ -1740,6 +1775,7 @@ def _apply_ops(res):
                     changed = True
             last = n
         if changed:
+            state["rev"] += 1
             try:
                 _db_save(db)
             except Exception:
@@ -1825,17 +1861,18 @@ def _snapshot(tok="", claim=""):
     """Браузерге жіберілетін дерек: хэштер жоқ, бөтен чаттар жоқ, кірмеген адамға — ештеңе жоқ."""
     state = _store()
     with state["lock"]:
+        sess = _session(state, tok)
+        if not sess:
+            maintenance = bool(_jload(state["db"].get("ubt_site_controls", "{}"), dict, {}).get("maintenance"))
+            return {"ubt_chat": "[]", "ubt_site_controls": _jdump({"maintenance": maintenance})}
         _award_finished_seasons(state)
         db = dict(state["db"])
-        sess = _session(state, tok)
-        profs = _profiles(state) if sess else {}
+        profs = _profiles(state)
         teacher = bool(sess and not sess["admin"] and _is_teacher(state, sess["uid"]))
     for k in _SERVER_ONLY:
         db.pop(k, None)
     with state["lock"]:
         chat = _chat_for(db.get("ubt_chat"), sess, claim, state)
-    if not sess:
-        return {"ubt_chat": chat, "ubt_site_controls": _jdump({"maintenance": bool(_jload(db.get("ubt_site_controls", "{}"), dict, {}).get("maintenance"))})}
     if not sess["admin"]:
         controls = _jload(db.get("ubt_site_controls", "{}"), dict, {})
         db["ubt_site_controls"] = _jdump({"maintenance": bool(controls.get("maintenance")),
@@ -1926,7 +1963,7 @@ html_code = r"""
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ҰБТ+</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/mammoth@1.9.1/mammoth.browser.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/mammoth@1.9.1/mammoth.browser.min.js"></script>
 <style>
 :root{--p:#2563eb;--pd:#1d4ed8;--ok:#16a34a;--err:#dc2626;--warn:#f59e0b;--bg:#f1f5f9;--c:#fff;--t:#0f172a;--m:#64748b;--b:#e2e8f0}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -8332,7 +8369,6 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
   try{
     window.parent.addEventListener('resize',height);
     window.parent.document.addEventListener('scroll',track,true);
-    window.parent.addEventListener('scroll',track,true);
   }catch(e){}
   window.addEventListener('resize',height);
   try{new ResizeObserver(height).observe(document.body)}catch(e){}
@@ -8343,13 +8379,15 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
     window.__store=args.store||'';window.__err=args.err||'';
     unacked=unacked.filter(function(o){return o.n>ack});
     Object.keys(pend).forEach(function(k){if(pend[k]<=ack)delete pend[k]});
-    Object.keys(db).forEach(function(k){
-      if(noSync(k)||pend[k]!==undefined)return;
-      try{if(localStorage.getItem(k)!==db[k]){localStorage.setItem(k,db[k]);changed++}}catch(e){}
-    });
-    if(window.__token && args.tk===window.__token){
-      try{var stale=[];for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(!noSync(k)&&!(k in db)&&pend[k]===undefined)stale.push(k)}
-      stale.forEach(function(k){localStorage.removeItem(k);changed++})}catch(e){}
+    if(!args.dbUnchanged){
+      Object.keys(db).forEach(function(k){
+        if(noSync(k)||pend[k]!==undefined)return;
+        try{if(localStorage.getItem(k)!==db[k]){localStorage.setItem(k,db[k]);changed++}}catch(e){}
+      });
+      if(window.__token && args.tk===window.__token){
+        try{var stale=[];for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(!noSync(k)&&!(k in db)&&pend[k]===undefined)stale.push(k)}
+        stale.forEach(function(k){localStorage.removeItem(k);changed++})}catch(e){}
+      }
     }
     var ar=(args.authres||{})[sid]||{};
     Object.keys(ar).forEach(function(id){if(waiters[id]){var w=waiters[id];delete waiters[id];w(ar[id])}});
@@ -8367,7 +8405,7 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
   document.addEventListener('visibilitychange',syncOnReturn);
   window.addEventListener('focus',syncOnReturn);
   setInterval(function(){if(connected&&document.visibilityState!=='hidden')send()},30000);
-  setTimeout(boot,2500);
+  setTimeout(boot,100);
 })();
 </script>
 </body>
@@ -8376,7 +8414,8 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
 
 
 
-def _write_frontend():
+@st.cache_resource
+def _write_frontend(digest):
     os.makedirs(FRONT_DIR, exist_ok=True)
     path = os.path.join(FRONT_DIR, "index.html")
     try:
@@ -8389,7 +8428,7 @@ def _write_frontend():
             f.write(html_code)
 
 
-_write_frontend()
+_write_frontend(hashlib.sha256(html_code.encode("utf-8")).hexdigest())
 _ubt_comp = components.declare_component("ubt_plus", path=FRONT_DIR)
 
 _apply_ops(st.session_state.get("ubt_comp"))
@@ -8399,7 +8438,15 @@ _tok = str(_cur.get("token") or "")
 _st = _store()
 with _st["lock"]:
     _tk = _tok if _session(_st, _tok) else ""
-_res = _ubt_comp(db=_snapshot(_tok, str(_cur.get("chat") or "")), ack=dict(st.session_state.get("_ubt_ack", {})),
+_claim = str(_cur.get("chat") or "")
+_sid = str(_cur.get("sid") or "")
+with _st["lock"]:
+    _rev = _st["rev"]
+_sent = (_sid, _tok, _claim, _tk, _rev)
+_unchanged = st.session_state.get("_ubt_sent") == _sent
+_db = {} if _unchanged else _snapshot(_tok, _claim)
+st.session_state["_ubt_sent"] = _sent
+_res = _ubt_comp(db=_db, dbUnchanged=_unchanged, heartbeat=_cur.get("poll"), ack=dict(st.session_state.get("_ubt_ack", {})),
                  authres=dict(st.session_state.get("_ubt_authres", {})), tk=_tk, dead=bool(_tok and not _tk),
                  store=_store_mode(_st), err=str(_st.get("err") or "")[:160], key="ubt_comp", default=None)
 if _apply_ops(_res):
