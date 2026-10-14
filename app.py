@@ -58,7 +58,7 @@ _USER_TTL = 14 * 86400
 _ADMIN_TTL = 12 * 3600
 _USER_PREFIXES = ("ubt_mistakes_", "ubt_hist_", "ubt_prog_", "ubt_bm_", "ubt_plan_done_",
                   "ubt_plan_", "ubt_qotd_", "ubt_streak_", "ubt_avatar_", "ubt_viol_",
-                  "ubt_qbank_", "ubt_qbank_hidden_", "ubt_ubt140_selection_")
+                  "ubt_qbank_", "ubt_qbank_hidden_", "ubt_ubt140_selection_", "ubt_flashcards_")
 _PRIVATE_PREFIXES = _USER_PREFIXES + ("ubt_exam_done_",)
 _SINGLE_DEVICE = True   
 _MAX_FAILS = 5
@@ -1675,6 +1675,25 @@ def _authorize(state, sess, k, v, chat_token=""):
             return None
         res = _jdump([t for t in lst if isinstance(t, dict) and isinstance(t.get("id"), str)])
         return res if len(res) < 6_000_000 else None
+    if k.startswith("ubt_flashcards_"):
+        if k != "ubt_flashcards_" + sess["uid"] or len(v) > 600_000:
+            return None
+        decks = _jload(v, list, None)
+        if decks is None or len(decks) > 40:
+            return None
+        for deck in decks:
+            if not isinstance(deck, dict) or not isinstance(deck.get("id"), str) or len(deck["id"]) > 60:
+                return None
+            if not isinstance(deck.get("title"), str) or not (1 <= len(deck["title"]) <= 100):
+                return None
+            cards = deck.get("cards")
+            if not isinstance(cards, list) or not (1 <= len(cards) <= 500):
+                return None
+            if any(not isinstance(card, dict) or not isinstance(card.get("f"), str) or
+                   not isinstance(card.get("b"), str) or not card["f"].strip() or not card["b"].strip() or
+                   len(card["f"]) > 600 or len(card["b"]) > 1200 for card in cards):
+                return None
+        return _jdump(decks)
     if k != "ubt_qotd_day" and any(k.startswith(p) for p in _USER_PREFIXES):
         if sess["admin"] or any(k == p + sess["uid"] for p in _USER_PREFIXES):
             return v
@@ -3075,11 +3094,20 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
 <div id="s-flash" class="screen">
   <div class="wrap">
     <div class="hdr"><h2>🃏 Флеш-карталар</h2><p class="sub">Карточканы басыңыз — артқы жағында жауабы шығады</p></div>
+    <div class="card" style="margin-bottom:14px">
+      <h3>➕ JSON кодынан флешкарталар</h3>
+      <p class="sub" style="margin:6px 0 12px">Сұрақ пен жауапты JSON түрінде қойыңыз. Тест JSON-ындағы questions, options және correct өрістері де жарайды.</p>
+      <div class="fg"><label>JSON коды</label><textarea id="fl-json" spellcheck="false" style="min-height:170px;font-family:monospace" oninput="flashJSONPreview()" placeholder='{"title":"Тарих","cards":[{"question":"Түрік қағанаты қай жылы құрылды?","answer":"552 жыл"}]}'></textarea></div>
+      <p id="fl-json-status" class="sub" role="status" style="margin:8px 0"></p>
+      <div id="fl-json-preview" style="display:none;margin:10px 0;padding:12px;border:1px solid var(--b);border-radius:12px;white-space:pre-wrap;overflow-wrap:anywhere"></div>
+      <div class="row" style="justify-content:flex-start"><button class="btn btn-s btn-sm" onclick="flashJSONExample()">Үлгі JSON</button><button class="btn btn-p btn-sm" id="fl-json-save" onclick="flashJSONSave()" disabled>💾 Жинақ жасап, бастау</button></div>
+    </div>
     <div class="card">
-      <div class="fg"><label>Не жаттаймыз?</label><select id="fl-src"></select></div>
+      <div class="fg"><label>Не жаттаймыз?</label><select id="fl-src" onchange="flashUpdateControls()"></select></div>
       <div class="row" style="justify-content:flex-start">
         <button class="btn btn-p btn-sm" onclick="startFlash(false)">▶ Бастау</button>
         <button class="btn btn-s btn-sm" onclick="startFlash(true)">🔀 Араластырып бастау</button>
+        <button class="btn btn-d btn-sm" id="fl-delete" style="display:none" onclick="flashDeleteSelected()">🗑 Жинақты өшіру</button>
       </div>
     </div>
     <div id="fl-area"></div>
@@ -7205,7 +7233,10 @@ function todayPlanHTML(){
 }
 let fl={deck:[],total:0,known:0,flip:false};
 function qCard(q){return{f:q.text,b:q.options[q.correct]}}
+function flashOwnKey(){return 'ubt_flashcards_'+user.id}
+function flashOwnDecks(){return user?LS.get(flashOwnKey(),[]):[]}
 function flashCards(k){
+  if(k.indexOf('flash:')===0){const deck=flashOwnDecks().find(d=>d.id===k.slice(6));return deck?deck.cards.map(c=>({f:c.f,b:c.b})):[]}
   if(k==='gloss')return GLOSS.map(g=>({f:g.t,b:g.d}));
   if(k==='formulas')return LS.get('ubt_formulas',[]).map(f=>({f:f.title,b:f.body}));
   if(k==='mist')return LS.get('ubt_mistakes_'+user.id,[]).map(qCard);
@@ -7214,13 +7245,104 @@ function flashCards(k){
   if(k.indexOf('test:')===0){const t=allTests().find(x=>x.id===k.slice(5));return t?t.questions.map(qCard):[]}
   return [];
 }
-function showFlash(){
+function flashUpdateControls(){
+  const sel=document.getElementById('fl-src'),del=document.getElementById('fl-delete');
+  if(del)del.style.display=sel&&sel.value.indexOf('flash:')===0?'':'none';
+}
+function showFlash(selected){
+  if(!user){showScr('s-login');return}
   const s=[['gloss','📖 Глоссарий (даталар, терминдер)'],['formulas','📐 Формулалар'],['mist','❌ Қателерім'],['bm','🔖 Таңдаулылар']];
+  flashOwnDecks().forEach(deck=>s.push(['flash:'+deck.id,'🃏 '+deck.title+' · '+deck.cards.length+' карточка']));
   Object.keys(BANK).forEach(k=>s.push(['bank:'+k,'⚡ '+BANK[k].name]));
   const seen={};
   myTests().concat(publicTests()).forEach(t=>{if(seen[t.id]||!t.questions.length)return;seen[t.id]=1;s.push(['test:'+t.id,'📚 '+t.topic])});
   document.getElementById('fl-src').innerHTML=s.map(a=>`<option value="${esc(a[0])}">${esc(a[1])}</option>`).join('');
+  if(selected&&s.some(x=>x[0]===selected))document.getElementById('fl-src').value=selected;
+  flashUpdateControls();
   fl={deck:[],total:0,known:0,flip:false};renderFlash();showScr('s-flash');
+}
+function flashJSONExample(){
+  document.getElementById('fl-json').value=JSON.stringify({title:'Ерте орта ғасырлар',cards:[
+    {question:'Түрік қағанаты қай жылы құрылды?',answer:'552 жылы'},
+    {question:'Түрік қағанатының негізін қалаған кім?',answer:'Бумын қаған'},
+    {question:'Қарлұқ қағанатының астанасы қай қала?',answer:'Суяб'}
+  ]},null,2);
+  flashJSONPreview();
+}
+function flashJSONDecks(){
+  const raw=document.getElementById('fl-json').value.trim();
+  if(!raw)throw Error('JSON кодын енгізіңіз');
+  if(raw.length>250000)throw Error('JSON коды тым үлкен (250 мың таңбаға дейін)');
+  let source;
+  try{source=JSON.parse(raw)}catch(e){throw Error('JSON қатесі: тырнақша, үтір және жақшаларды тексеріңіз')}
+  const title=(obj,fallback)=>String(obj.title||obj.topic||fallback||'Менің флешкарталарым').trim().slice(0,100);
+  let groups;
+  if(Array.isArray(source))groups=source.length&&source.every(x=>x&&typeof x==='object'&&Array.isArray(x.questions||x.cards))?source:[{title:'Менің флешкарталарым',cards:source}];
+  else if(source&&typeof source==='object'&&Array.isArray(source.tests))groups=source.tests;
+  else if(source&&typeof source==='object'&&Array.isArray(source.cards||source.questions))groups=[source];
+  else throw Error('cards, questions немесе tests тізімі бар JSON қойыңыз');
+  if(!groups.length||groups.length>40)throw Error('Бір енгізуде 1–40 жинақ болуы керек');
+  const result=[];
+  groups.forEach((group,idx)=>{
+    if(!group||typeof group!=='object')throw Error((idx+1)+'-жинақтың форматы дұрыс емес');
+    const rows=Array.isArray(group.cards)?group.cards:group.questions;
+    if(!Array.isArray(rows)||!rows.length||rows.length>500)throw Error((idx+1)+'-жинаққа 1–500 сұрақ жазыңыз');
+    const seen=new Set(),cards=[];
+    rows.forEach((q,i)=>{
+      if(!q||typeof q!=='object')throw Error((idx+1)+'-жинақ, '+(i+1)+'-сұрақ қате');
+      const front=String(q.question??q.text??q.front??q.f??q.term??'').trim();
+      let back=q.answer??q.back??q.b??q.definition;
+      if(back===undefined||back===null||back===''){
+        const opts=Array.isArray(q.options)?q.options:(q.options&&typeof q.options==='object'?Object.values(q.options):[]);
+        const correct=q.correct??q.correctAnswer;
+        let ci=Number.isInteger(correct)?correct:-1;
+        if(typeof correct==='string'){
+          const s=correct.trim(),letter=s.toUpperCase();
+          if(/^[A-ZА-Д]$/.test(letter)){const alpha='ABCDEFGHIJKLMNOPQRSTUVWXYZАБВГД';ci=alpha.indexOf(letter)}
+          else if(/^\d+$/.test(s))ci=Number(s);
+          else ci=opts.findIndex(o=>String(o).trim().toLowerCase()===s.toLowerCase());
+        }
+        if(ci>=0&&ci<opts.length)back=opts[ci];
+      }
+      back=String(back??'').trim();
+      if(!front||!back||front.length>600||back.length>1200)throw Error((idx+1)+'-жинақ, '+(i+1)+'-сұрақ: сұрақ пен дұрыс жауапты толтырыңыз');
+      const key=front+'\u0000'+back;
+      if(!seen.has(key)){seen.add(key);cards.push({f:front,b:back})}
+    });
+    if(!cards.length)throw Error((idx+1)+'-жинақта карточка жоқ');
+    result.push({title:title(group,title(source,'Менің флешкарталарым')),cards});
+  });
+  return result;
+}
+function flashJSONPreview(){
+  const status=document.getElementById('fl-json-status'),preview=document.getElementById('fl-json-preview'),button=document.getElementById('fl-json-save');
+  try{
+    const decks=flashJSONDecks(),count=decks.reduce((n,d)=>n+d.cards.length,0),first=decks[0].cards[0];
+    status.textContent='✅ '+decks.length+' жинақ · '+count+' карточка дайын';status.style.color='#28764a';
+    preview.textContent='Алғашқы карточка\nСұрақ: '+first.f+'\nЖауап: '+first.b;preview.style.display='block';button.disabled=false;
+  }catch(e){status.textContent=e.message;status.style.color='#b95735';preview.style.display='none';button.disabled=true}
+}
+function flashJSONSave(){
+  if(!user)return;
+  let decks;
+  try{decks=flashJSONDecks()}catch(e){flashJSONPreview();return}
+  const all=flashOwnDecks(),status=document.getElementById('fl-json-status');
+  if(all.length+decks.length>40){status.textContent='Ең көбі 40 жеке жинақ сақталады';status.style.color='#b95735';return}
+  const id='fl_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+  const created=decks.map((d,i)=>({...d,id:id+'_'+i}));
+  const updated=[...created,...all];
+  if(JSON.stringify(updated).length>550000){status.textContent='Жинақтар көлемі тым үлкен. Бір бөлігін азайтыңыз';status.style.color='#b95735';return}
+  LS.set(flashOwnKey(),updated);
+  showFlash('flash:'+created[0].id);startFlash(false);
+  status.textContent='✅ '+created.length+' жинақ сақталды. Біріншісі жаттауға ашылды.';status.style.color='#28764a';
+}
+function flashDeleteSelected(){
+  if(!user)return;
+  const select=document.getElementById('fl-src'),key=select.value;
+  if(key.indexOf('flash:')!==0)return;
+  const deck=flashOwnDecks().find(d=>d.id===key.slice(6));
+  if(!deck||!confirm('«'+deck.title+'» жинағын өшіру керек пе?'))return;
+  LS.set(flashOwnKey(),flashOwnDecks().filter(d=>d.id!==deck.id));showFlash();
 }
 function startFlash(shuffle){
   const cards=flashCards(document.getElementById('fl-src').value);
@@ -8191,8 +8313,16 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
     var cf=document.getElementById('confetti');if(cf)cf.style.top=off+'px';
   }
   function height(){
+    if(pinned()){
+      var viewport=window.innerHeight+'px';
+      if(root.style.getPropertyValue('--vh')!==viewport)root.style.setProperty('--vh',viewport);
+      var tb=document.getElementById('theme-btn'),si=document.getElementById('sync-ind'),cf=document.getElementById('confetti');
+      if(tb&&tb.style.top){tb.style.top='';tb.style.bottom='12px'}
+      if(si&&si.style.top){si.style.top='';si.style.bottom='10px'}
+      if(cf&&cf.style.top)cf.style.top='';
+      return;
+    }
     track();
-    if(pinned())return;
     var h=Math.ceil(document.body.getBoundingClientRect().height);
     if(h<100)h=800;
     if(h!==lastH){lastH=h;post({type:'streamlit:setFrameHeight',height:h})}
@@ -8206,7 +8336,7 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
   }catch(e){}
   window.addEventListener('resize',height);
   try{new ResizeObserver(height).observe(document.body)}catch(e){}
-  setInterval(height,400);
+  setInterval(height,2500);
   window.addEventListener('message',function(ev){
     var d=ev.data;if(!d||d.type!=='streamlit:render')return;
     var args=d.args||{},db=args.db||{},ack=(args.ack||{})[sid]||0,changed=0;
@@ -8236,7 +8366,7 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
   function syncOnReturn(){if(!connected||document.visibilityState==='hidden'||!window.__token)return;var now=Date.now();if(now-lastFocusSync<30000)return;lastFocusSync=now;send()}
   document.addEventListener('visibilitychange',syncOnReturn);
   window.addEventListener('focus',syncOnReturn);
-  setInterval(function(){if(connected&&document.visibilityState!=='hidden')send()},7000);
+  setInterval(function(){if(connected&&document.visibilityState!=='hidden')send()},30000);
   setTimeout(boot,2500);
 })();
 </script>
