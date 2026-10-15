@@ -3236,6 +3236,14 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
     <div class="card">
       <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:12px"><h3>Пәндер бойынша сұрақтарым</h3><button class="btn btn-s btn-sm" onclick="showMyTests()">📚 Менің тесттерім</button></div>
       <p class="sub" style="margin-bottom:12px">Өзіңіз енгізген сұрақтар пәні бойынша сақталады. 140 форматқа қолмен таңдаңыз немесе өз базаңыздан кездейсоқ алыңыз.</p>
+      <div class="card" style="border:1px solid var(--p);margin-bottom:16px">
+        <h3>📥 10 000 сұрақты бірден базаға қосу</h3>
+        <p class="sub" style="margin-bottom:10px">Бір немесе бірнеше JSON файлды қатар таңдаңыз (әр файлда questions тізімі). Бар сұрақтар өшірілмейді, қайталанғандары қосылмайды. База шегі — 10 000 жеке сұрақ.</p>
+        <div class="fg"><label>Қай пәнге қосылады?</label><select id="bank-import-subject"><option value="math">Математика</option><option value="history">Қазақстан тарихы</option><option value="reading">Оқу сауаттылығы</option><option value="mathlit">Математикалық сауаттылық</option><option value="physics">Физика</option><option value="chemistry">Химия</option><option value="biology">Биология</option><option value="geography">География</option><option value="informatics">Информатика</option><option value="english">Ағылшын тілі</option><option value="kazakh">Қазақ тілі</option><option value="worldhistory">Дүниежүзі тарихы</option><option value="law">Құқық</option><option value="other">Басқа</option></select></div>
+        <div class="fg"><label>JSON файлдар (бірнеше файл таңдауға болады)</label><input type="file" id="bank-import-files" accept=".json,application/json" multiple></div>
+        <button class="btn btn-p" id="bank-import-button" onclick="importBankFiles10000()">📥 Базаға қосу</button>
+        <div id="bank-import-result" style="margin-top:10px" role="status"></div>
+      </div>
       <div class="grid2">
         <div class="fg"><label>Пән бойынша сүзу</label><select id="u-bank-subject" onchange="renderUbtBank()"></select></div>
         <div class="fg"><label>Сұрақты іздеу</label><input id="u-bank-search" placeholder="Сұрақ мәтіні" oninput="renderUbtBank()"></div>
@@ -8146,6 +8154,54 @@ function initUbt140(){
   }
 }
 function showUbt140(){initUbt140();renderUbt140();showScr('s-ubt140')}
+async function importBankFiles10000(){
+  if(!user||!isTeacherUser()){alert('Файлды тек админ немесе бекітілген мұғалім қоса алады');return}
+  const inp=document.getElementById('bank-import-files'),files=Array.from(inp.files||[]);
+  const status=document.getElementById('bank-import-result'),button=document.getElementById('bank-import-button');
+  if(!files.length){alert('Алдымен JSON файлдарын таңдаңыз');return}
+  const subject=document.getElementById('bank-import-subject').value;
+  const key='ubt_qbank_'+user.id,old=LS.get(key,[]);
+  const known=new Set(ubtQuestionBank().map(q=>ubtBankIdentity(q.subject,q.text)));
+  const free=Math.max(0,10000-old.length);
+  if(!free){status.textContent='База шегі толған (10 000). Бұрынғы сұрақтар сақталды.';return}
+  button.disabled=true;status.textContent='Файлдар тексеріліп жатыр...';
+  let scanned=0,invalid=0,duplicates=0,added=0,filesOk=0;
+  const additions=[];
+  try{
+    for(const file of files){
+      if(!/\.json$/i.test(file.name)||file.size>15*1024*1024){invalid++;continue}
+      let data;
+      try{data=JSON.parse((await file.text()).replace(/^\uFEFF/,''))}catch(e){invalid++;continue}
+      const blocks=Array.isArray(data)?[{questions:data,topic:file.name}]:
+        Array.isArray(data.questions)?[data]:Array.isArray(data.tests)?data.tests:[];
+      if(!blocks.length){invalid++;continue}
+      filesOk++;
+      for(const block of blocks){
+        if(!block||!Array.isArray(block.questions))continue;
+        const origin=String(block.topic||block.title||file.name).slice(0,120);
+        for(const q of block.questions){
+          scanned++;
+          if(!q||typeof q.text!=='string'||!q.text.trim()||!Array.isArray(q.options)||q.options.length!==4||q.options.some(x=>typeof x!=='string'||!x.trim())||!Number.isInteger(q.correct)||q.correct<0||q.correct>3){invalid++;continue}
+          const identity=ubtBankIdentity(subject,q.text);
+          if(known.has(identity)){duplicates++;continue}
+          if(added>=free)continue;
+          known.add(identity);
+          additions.push({id:'q_'+Date.now().toString(36)+'_'+(old.length+added).toString(36)+'_'+Math.random().toString(36).slice(2,7),subject,text:q.text.trim(),options:q.options.map(x=>x.trim()),correct:q.correct,origin});
+          added++;
+        }
+      }
+    }
+    if(!added){status.textContent=`Жаңа сұрақ жоқ. Қаралды: ${scanned}; қайталанған: ${duplicates}; жарамсыз: ${invalid}.`;return}
+    const value=JSON.stringify(old.concat(additions));
+    if(value.length>=7800000){status.textContent='База көлемі сервердің 7.8 МБ шегінен асады. Файлдарды азырақ бөліп жүктеңіз.';return}
+    try{localStorage.setItem(key,value)}catch(e){status.textContent='Браузердің сақтау орны жетпеді. Бұрынғы база өзгерген жоқ. Файлдарды бөліп жүктеңіз.';return}
+    if(!noSync(key))syncPush([{key,value}]);
+    const saved=LS.get(key,[]).length;
+    status.textContent=`✅ ${added} сұрақ қосылды. Базада: ${saved}/10 000. Қаралды: ${scanned}; қайталанған: ${duplicates}; жарамсыз: ${invalid}; файл: ${filesOk}.`;
+    renderUbt140();
+  }catch(e){status.textContent='Импорт қатесі: '+String(e.message||e).slice(0,150)}
+  finally{button.disabled=false}
+}
 function showQuestionBank(){initUbt140();renderUbt140();showScr('s-question-bank')}
 function showAddQuestionFromBank(){
   const subject=document.getElementById('u-bank-subject').value;
@@ -8177,11 +8233,12 @@ function renderUbtBank(){
   const query=document.getElementById('u-bank-search').value.trim().toLowerCase();
   const sections=ubtSections(document.getElementById('u-p1').value,document.getElementById('u-p2').value);
   const allowed=new Set(sections.map(s=>s.key)),selected=new Set(ubtSelectedIDs()),manual=ubtMode()==='manual';
-  const visible=bank.filter(q=>(!filter||q.subject===filter)&&(!query||q.text.toLowerCase().includes(query)));
+  const matched=bank.filter(q=>(!filter||q.subject===filter)&&(!query||q.text.toLowerCase().includes(query)));
+  const visible=matched.slice(0,150);
   const groups=[...new Set(visible.map(q=>q.subject))];
   const subjectOrder=Array.from(document.querySelectorAll('#c-subject option')).map(o=>o.value);
   groups.sort((a,b)=>subjectOrder.indexOf(a)-subjectOrder.indexOf(b));
-  el.innerHTML=`<p class="sub" style="margin-bottom:10px">Барлығы: <b>${bank.length}</b> · Көрсетілгені: <b>${visible.length}</b> · Таңдалғаны: <b>${bank.filter(q=>selected.has(q.id)).length}</b></p>`+
+  el.innerHTML=`<p class="sub" style="margin-bottom:10px">Барлығы: <b>${bank.length}</b> · Сүзгіде: <b>${matched.length}</b> · Алғашқы <b>${visible.length}</b> көрсетілді · Таңдалғаны: <b>${bank.filter(q=>selected.has(q.id)).length}</b></p>`+
     (visible.length?groups.map(subject=>{
       const sq=visible.filter(q=>q.subject===subject);
       const folders=[...new Set(sq.map(q=>q.source||'Басқа сұрақтар'))];
