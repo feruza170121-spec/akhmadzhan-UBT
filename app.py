@@ -3231,6 +3231,10 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
     <div class="card">
       <div class="fg"><label>1-бейіндік пән</label><select id="u-p1" onchange="renderUbt140()"></select></div>
       <div class="fg"><label>2-бейіндік пән</label><select id="u-p2" onchange="renderUbt140()"></select></div>
+      <div class="fg"><label for="u-time">⏱ ҰБТ уақыты (минут)</label>
+        <input id="u-time" type="number" min="1" max="300" step="1" value="240" inputmode="numeric" style="max-width:230px" />
+        <p class="sub" style="margin-top:6px">1–300 минут. Қалаған уақытыңызды енгізіңіз (әдепкі: 240 минут).</p>
+      </div>
       <h3>Сұрақтарды таңдау</h3>
       <div class="ubt-modes">
         <label><input type="radio" name="u-mode" value="manual" checked onchange="renderUbt140()"> Өзім таңдаймын</label>
@@ -8493,7 +8497,10 @@ function startUbt140(){
   });
   if(short.length){alert((manual?'Таңдалған сұрақтар':'Өз базаңыздағы сұрақтар')+' жеткіліксіз:\n'+short.join('\n'));return}
   st=baseState();st.questions=qs;st.subjectName='ҰБТ 140 формат';st.is140=true;
-  st.timerSeconds=240*60;beginTest();
+  const timeInput=document.getElementById('u-time');
+  const minutes=Number(timeInput?.value);
+  if(!Number.isInteger(minutes)||minutes<1||minutes>300){alert('Уақытты 1–300 минут аралығында таңдаңыз');timeInput?.focus();return}
+  st.timerSeconds=minutes*60;beginTest();
 }
 (function(){
   const _sc=showCreate;
