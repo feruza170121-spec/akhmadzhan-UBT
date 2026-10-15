@@ -699,15 +699,16 @@ def _finish_exam(state, sess, d):
                 _put(state, done_key, _jdump(done[-1000:]))
             prog_key = "ubt_prog_" + sess["uid"]
             prog = _jload(state["db"].get(prog_key, "[]"), list, [])
-            prog.append({"t": int(time.time() * 1000), "score": score, "max": maximum, "topic": exam["topic"], "viol": 0})
-            _put(state, prog_key, _jdump(prog[-200:]))
+            result_id = "res_" + secrets.token_hex(12)
+            prog.append({"id": result_id, "t": int(time.time() * 1000), "score": score, "max": maximum, "topic": exam["topic"], "viol": 0})
+            _put(state, prog_key, _jdump(prog))
             hist_key = "ubt_hist_" + sess["uid"]
             hist = _jload(state["db"].get(hist_key, "[]"), list, [])
-            hist.insert(0, {"date": datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5))).strftime("%d.%m.%Y %H:%M"),
+            hist.insert(0, {"id": result_id, "date": datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5))).strftime("%d.%m.%Y %H:%M"),
                             "score": score, "max": maximum, "topic": exam["topic"], "answers": answers,
                             "questions": [{"id": "examq" + str(i), "text": q.get("text"), "options": q["options"], "correct": q["correct"]}
                                           for i, q in enumerate(qs)]})
-            _put(state, hist_key, _jdump(hist[:40]))
+            _put(state, hist_key, _jdump(hist))
         _commit(state)
         review = [{**q, "id": "examq" + str(i)} for i, q in enumerate(qs)]
         return {"ok": True, "score": score, "max": maximum, "gained": gained, "owner": exam["owner"],
@@ -2591,6 +2592,8 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
       <button class="mode" onclick="showHistory()"><span class="ic">📋</span><h3>Тарих</h3><p>Тест нәтижелері</p></button>
       <button class="mode" id="admin-json-card" style="display:none" onclick="showFileTest()"><span class="ic">📂</span><h3>JSON / файл тесті</h3><p>Файлдан өз тестіңізді құрыңыз</p></button>
       <button class="mode" onclick="showMyProfile()"><span class="ic">📈</span><h3>График</h3><p>Үлгерім көрсеткіші</p></button>
+      <button class="mode" onclick="showKnowledgeMap()"><span class="ic">🗺️</span><h3>Білім картасы</h3><p>Пәндер мен әлсіз тақырыптар</p></button>
+      <button class="mode" onclick="showScoreForecast()"><span class="ic">🎯</span><h3>ҰБТ балын болжау</h3><p>Нәтижелер бойынша болжам</p></button>
       <button class="mode" onclick="showFlash()"><span class="ic">🃏</span><h3>Флеш-карталар</h3><p>Қайталауға арналған</p></button>
       <button class="mode" onclick="showGloss()"><span class="ic">📖</span><h3>Глоссарий</h3><p>Терминдер мен ұғымдар</p></button>
       <button class="mode" onclick="showBookmarks()"><span class="ic">🔖</span><h3>Таңдаулылар</h3><p>Сақталған сұрақтар</p></button>
@@ -2647,10 +2650,23 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
       <button class="btn btn-p btn-sm" id="owner-name-save" onclick="changeOwnerName()">Сақтау</button>
     </div>
     <div class="card"><h3 style="margin-bottom:10px">📈 Менің графигім</h3><div id="prof-chart"></div></div>
+    <div class="card"><h3>📊 Әр пәннің жеке графигі</h3><div class="fg"><label>Пәнді таңдаңыз</label><select id="prof-subject-filter" onchange="renderSubjectGraph()"></select></div><div id="prof-subject-chart"></div></div>
+    <div class="card"><h3>🗂️ Менің нәтижелерім</h3><p class="sub" style="margin-bottom:12px">Әр нәтижені жеке өшіре аласыз. Өшіруді өзіңіз растамайынша бұрынғы жазбалар сақталады.</p><div id="prof-result-list"></div></div>
     <div class="card"><h3 style="margin-bottom:10px">📊 Тақырыптар бойынша орташа нәтиже</h3><div id="prof-topics"></div></div>
     <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
 </div>
+
+<div id="s-knowledge-map" class="screen"><div class="wrap wide">
+  <div class="hdr"><h2>🗺️ Білім картасы</h2><p class="sub">Өзіңіз тапсырған тесттердегі жауаптарға негізделген тақырыптық талдау</p></div>
+  <div class="card"><div class="fg"><label>Пән немесе тақырыпты іздеу</label><input id="km-search" type="search" placeholder="Мысалы: Алгебра" oninput="renderKnowledgeMap()"></div><div id="km-summary"></div><div id="km-list"></div></div>
+  <div class="row"><button class="btn btn-s" onclick="goHome()">← Басты бет</button></div>
+</div></div>
+<div id="s-score-forecast" class="screen"><div class="wrap">
+  <div class="hdr"><h2>🎯 ҰБТ балын болжау</h2><p class="sub">Бұл ресми балл емес — өткен нәтижелер бойынша жуық бағалау</p></div>
+  <div class="card" id="forecast-result"></div>
+  <div class="row"><button class="btn btn-s" onclick="goHome()">← Басты бет</button></div>
+</div></div>
 
 <div id="s-ranking" class="screen">
   <div class="wrap">
@@ -3793,6 +3809,7 @@ function showMyProfile(){
   const rank=getRankPosition(user.id);
   document.getElementById('prof-rank').textContent=rank?('Рейтинг: #'+rank):'Рейтинг: —';
   renderProgress('prof-chart','prof-topics',getProg(user.id));
+  renderSubjectGraph();renderPersonalResults();
   showScr('s-profile');
 }
 async function changeOwnerName(){
@@ -5848,9 +5865,9 @@ function finishTest(force){
   st.questions.forEach(q=>{if(st.answers[q.id]===q.correct)score++;else wrong.push({...q,userAnswer:st.answers[q.id]})});
   if(!st.verifiedExam){
     if(!st.isMistakes&&wrong.length){let m=LS.get('ubt_mistakes_'+user.id,[]);const ids=new Set(m.map(x=>x.id));wrong.forEach(q=>{if(!ids.has(q.id))m.push(q)});LS.set('ubt_mistakes_'+user.id,m)}
-    let pg=getProg(user.id);pg.push({t:Date.now(),score,max,topic:st.subjectName,viol:lock.viol});if(pg.length>200)pg=pg.slice(-200);LS.set('ubt_prog_'+user.id,pg);
-    let hist=LS.get('ubt_hist_'+user.id,[]);hist.unshift({date:new Date().toLocaleString('kk-KZ'),score,max,topic:st.subjectName,viol:lock.viol,answers:{...st.answers},questions:st.questions.map(q=>({id:q.id,text:q.text,options:q.options,correct:q.correct}))});
-    if(hist.length>40)hist.pop();LS.set('ubt_hist_'+user.id,hist);
+    const resultId="res_"+Date.now()+"_"+Math.random().toString(36).slice(2);let pg=getProg(user.id);pg.push({id:resultId,t:Date.now(),score,max,topic:st.subjectName,viol:lock.viol});LS.set('ubt_prog_'+user.id,pg);
+    let hist=LS.get('ubt_hist_'+user.id,[]);hist.unshift({id:resultId,date:new Date().toLocaleString('kk-KZ'),score,max,topic:st.subjectName,viol:lock.viol,answers:{...st.answers},questions:st.questions.map(q=>({id:q.id,text:q.text,options:q.options,correct:q.correct}))});
+    LS.set('ubt_hist_'+user.id,hist);
   }
   let gained=score*10;
   const pct=max?score/max:0;
@@ -6605,6 +6622,51 @@ function chromeSync(){
 }
 setInterval(chromeSync,1500);
 document.addEventListener('DOMContentLoaded',chromeSync);
+// Жеке пәндік графиктер: ескі нәтижелерді өшірмей көрсетеді.
+function resultSubject(p){
+  const raw=String(p.topic||'Басқа').trim();
+  const names=[['Қазақстан тарихы',/қазақстан тарих|history|тарих/i],['Математикалық сауаттылық',/математикалық сауат|матсау|mathlit/i],['Оқу сауаттылығы',/оқу сауат|reading/i],['Информатика',/информатик|informatics/i],['Математика',/математик|алгебр|геометр/i],['Физика',/физик/i],['Химия',/химия|хими/i],['Биология',/биолог/i],['География',/географ/i],['Ағылшын тілі',/ағылшын|english/i],['Қазақ тілі',/қазақ тілі/i],['Дүниежүзі тарихы',/дүниежүзі|worldhistory/i],['Құқық',/құқық|law/i]];
+  const found=names.find(([_,rx])=>rx.test(raw));
+  return found?found[0]:(raw.split(/\s*[·|—]\s*/)[0]||'Басқа');
+}
+function renderSubjectGraph(){
+  if(!user)return;
+  const filter=document.getElementById('prof-subject-filter');if(!filter)return;
+  const hist=LS.get('ubt_hist_'+user.id,[]);
+  const prog=getProg(user.id);
+  const subjects=[...new Set(prog.map(resultSubject))].sort((a,b)=>a.localeCompare(b,'kk'));
+  const prev=filter.value;
+  filter.innerHTML='<option value="">Барлық пәндер</option>'+subjects.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('');
+  if(subjects.includes(prev))filter.value=prev;
+  const selected=filter.value;
+  const rows=selected?prog.filter(p=>resultSubject(p)===selected):prog;
+  renderProgress('prof-subject-chart',null,rows);
+}
+function renderPersonalResults(){
+  const el=document.getElementById('prof-result-list');if(!el||!user)return;
+  const hist=LS.get('ubt_hist_'+user.id,[]);
+  el.innerHTML=hist.length?hist.map((h,i)=>`<div class="item"><div class="info"><h4>${esc(h.topic||'Тест')}</h4><p>${esc(h.date||'')} · ${esc(h.score)}/${esc(h.max)} (${h.max?Math.round(h.score/h.max*100):0}%)</p></div><button class="btn btn-d btn-sm" onclick="deletePersonalResult(${i})">Өшіру</button></div>`).join(''):'<p class="sub">Сақталған нәтижелер жоқ.</p>';
+}
+function deletePersonalResult(i){
+  if(!user)return;
+  const hk='ubt_hist_'+user.id,pk='ubt_prog_'+user.id;
+  const hist=LS.get(hk,[]),prog=LS.get(pk,[]);
+  if(!Number.isInteger(i)||i<0||i>=hist.length)return;
+  if(!confirm('Осы тест нәтижесін тарих пен графиктен өшіресіз бе? Бұл әрекетті қайтару мүмкін емес.'))return;
+  const target=hist[i];
+  // Алдымен тұрақты ID бойынша, ескі жазбаларда бірдей нәтиженің реттік орны бойынша іздеу.
+  let pos=target.id?prog.findIndex(p=>p.id===target.id):-1;
+  if(pos<0){
+    const same=h=>h.score===target.score&&h.max===target.max&&h.topic===target.topic;
+    const occurrence=hist.slice(0,i+1).filter(same).length;
+    let found=0;
+    for(let j=prog.length-1;j>=0;j--){if(same(prog[j])&&++found===occurrence){pos=j;break}}
+  }
+  if(pos>=0){prog.splice(pos,1);LS.set(pk,prog)}
+  hist.splice(i,1);LS.set(hk,hist);
+  renderProgress('prof-chart','prof-topics',getProg(user.id));
+  renderSubjectGraph();renderPersonalResults();
+}
 function getProg(id){
   let pg=LS.get('ubt_prog_'+id,[]);
   if(!pg.length)pg=LS.get('ubt_hist_'+id,[]).slice().reverse().map(h=>({t:0,score:h.score,max:h.max,topic:h.topic,viol:h.viol||0}));
@@ -8242,6 +8304,57 @@ async function importBankFiles10000(sourceInput,sourceSubject,statusTarget,butto
     renderUbt140();
   }catch(e){status.textContent='Импорт қатесі: '+String(e.message||e).slice(0,150)}
   finally{button.disabled=false}
+}
+// Білім картасы мен болжам: тек нақты сақталған нәтижелер қолданылады.
+function kmHistory(){return user?LS.get('ubt_hist_'+user.id,[]):[]}
+function kmQuestionStats(){
+  const groups=new Map();
+  kmHistory().forEach(h=>{
+    if(!Array.isArray(h.questions)||!h.answers||typeof h.answers!=='object')return;
+    const label=String(h.topic||'Белгісіз пән · Жалпы тақырып').trim();
+    const pieces=label.split(/\s*[·|—]\s*/);
+    const subject=(pieces[0]||'Басқа').trim();
+    const topic=(pieces.slice(1).join(' · ')||'Жалпы тақырып').trim();
+    const key=subject+'\u0001'+topic;
+    let g=groups.get(key);if(!g){g={subject,topic,total:0,correct:0};groups.set(key,g)}
+    h.questions.forEach((q,i)=>{
+      if(!q||!Number.isInteger(q.correct))return;
+      const id=q.id||'examq'+i;
+      const ans=h.answers[id];
+      if(!Number.isInteger(ans))return; // жауап берілмеген сұрақ есептелмейді
+      g.total++;if(ans===q.correct)g.correct++;
+    });
+  });
+  return [...groups.values()];
+}
+function showKnowledgeMap(){showScr('s-knowledge-map');renderKnowledgeMap()}
+function renderKnowledgeMap(){
+  const target=document.getElementById('km-list');if(!target)return;
+  const query=(document.getElementById('km-search')?.value||'').toLocaleLowerCase('kk');
+  const all=kmQuestionStats();const rows=all.filter(g=>(g.subject+' '+g.topic).toLocaleLowerCase('kk').includes(query)).sort((a,b)=>(a.correct/a.total)-(b.correct/b.total));
+  const summary=document.getElementById('km-summary');
+  const attempts=all.reduce((a,g)=>a+g.total,0),correct=all.reduce((a,g)=>a+g.correct,0);
+  summary.innerHTML=`<p class="sub" style="margin-bottom:16px">Жауап берілген: <b>${attempts}</b> · Дұрыс: <b>${correct}</b> · Тақырып: <b>${all.length}</b></p>`;
+  target.innerHTML=rows.length?rows.map(g=>{
+    const pct=Math.round(g.correct/g.total*100),c=pct>=80?'#16a34a':pct>=50?'#f59e0b':'#ef4444';
+    const status=g.total<5?'Дерек аз':pct>=80?'Жақсы':pct>=50?'Қайталау қажет':'Әлсіз тақырып';
+    return `<div class="item" style="display:block;margin-bottom:10px"><div style="display:flex;justify-content:space-between;gap:12px"><div><b>${esc(g.subject)}</b><p class="sub">${esc(g.topic)}</p></div><b style="color:${c}">${pct}%</b></div><div style="height:9px;border-radius:9px;background:var(--b);margin:10px 0;overflow:hidden"><div style="height:100%;width:${pct}%;background:${c}"></div></div><p class="sub">${g.correct}/${g.total} дұрыс · ${status}</p></div>`
+  }).join(''):'<div class="empty">Бұл тақырып бойынша жауап тарихы табылмады. Алдымен тест тапсырыңыз.</div>';
+}
+function showScoreForecast(){showScr('s-score-forecast');renderScoreForecast()}
+function renderScoreForecast(){
+  const el=document.getElementById('forecast-result');if(!el)return;
+  const hist=kmHistory().filter(h=>Number.isFinite(h.score)&&Number.isFinite(h.max)&&h.max>0);
+  // Әдеттегі тесттер ҰБТ-ның пәндік салмақтарын қамтымайды.
+  // Сондықтан тек ҰБТ/140 атауы бар, 120 сұрақтық сынақтар қолданылады.
+  const full=hist.filter(h=>h.max===120&&/140|ұбт|убт|ubt/i.test(String(h.topic||''))).slice(0,8);
+  if(!full.length){el.innerHTML='<h3>Әзірге болжамға дерек жетіспейді</h3><p class="sub">140 балдық толық сынақ тестін тапсырыңыз. Басқа қысқа тесттердің пайызын 140 балға тікелей көбейту дұрыс емес.</p>';return}
+  const percentages=full.map(h=>h.score/h.max);
+  const mean=percentages.reduce((a,b)=>a+b,0)/percentages.length;
+  const spread=Math.sqrt(percentages.reduce((a,b)=>a+(b-mean)**2,0)/percentages.length);
+  // Тек 120 сұрақтық тестте балл салмақтары белгісіз болғандықтан 140 ұпай нақты есептелмейді.
+  const pct=Math.round(mean*100),low=Math.max(0,Math.round((mean-Math.max(.07,spread))*100)),high=Math.min(100,Math.round((mean+Math.max(.07,spread))*100));
+  el.innerHTML=`<h3>Сынақтардағы күтілетін нәтиже</h3><div style="font-size:38px;font-weight:800;color:var(--p);margin:10px 0">${pct}%</div><p>Жуық аралық: <b>${low}%–${high}%</b></p><p class="sub" style="margin-top:12px">Есепке алынған толық тесттер: ${full.length}. Бұл 140 балдық ресми болжам емес: пәндер бойынша 1/2 балл салмағы сақталған нәтиже дерегі қажет.</p>`;
 }
 function showQuestionBank(){initUbt140();renderUbt140();showScr('s-question-bank')}
 function showAddQuestionFromBank(){
