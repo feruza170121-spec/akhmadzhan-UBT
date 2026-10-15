@@ -2651,7 +2651,7 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
     </div>
     <div class="card"><h3 style="margin-bottom:10px">📈 Менің графигім</h3><div id="prof-chart"></div></div>
     <div class="card"><h3>📊 Әр пәннің жеке графигі</h3><div class="fg"><label>Пәнді таңдаңыз</label><select id="prof-subject-filter" onchange="renderSubjectGraph()"></select></div><div id="prof-subject-chart"></div></div>
-    <div class="card"><h3>🗂️ Менің нәтижелерім</h3><p class="sub" style="margin-bottom:12px">Әр нәтижені жеке өшіре аласыз. Өшіруді өзіңіз растамайынша бұрынғы жазбалар сақталады.</p><div id="prof-result-list"></div></div>
+    <div class="card"><h3>🗂️ Менің нәтижелерім</h3><p class="sub" style="margin-bottom:12px">Нәтижелерді белгілеңіз, кейін бірден өшіріңіз. Белгілемеген жазбалар сақталады.</p><div id="prof-result-list"></div></div>
     <div class="card"><h3 style="margin-bottom:10px">📊 Тақырыптар бойынша орташа нәтиже</h3><div id="prof-topics"></div></div>
     <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
@@ -3033,7 +3033,7 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
         <div class="timer" id="timer">00:30:00</div>
         <div class="prog-t" id="viol" style="display:none;background:#fef2f2;color:var(--err)"></div>
       </div>
-      <div class="test-tools"><button class="btn btn-s btn-sm" onclick="openChemTable()">⚗️ Менделеев кестесі</button><button class="btn btn-s btn-sm" onclick="openCalculator()">🧮 Калькулятор</button></div>
+      <div class="test-tools"><button class="btn btn-s btn-sm" onclick="openChemTable()">⚗️ Менделеев кестесі</button><button class="btn btn-s btn-sm" onclick="openTestResultsDialog()">🗂️ Нәтижелер</button><button class="btn btn-s btn-sm" onclick="openCalculator()">🧮 Калькулятор</button></div>
       <div class="qc">
         <div class="qh"><span class="qnum" id="qnum">Сұрақ 1</span><span style="display:flex;gap:6px"><button class="flag" id="bm" onclick="togBm()" title="Таңдаулыға сақтау">☆</button><button class="flag" id="flag" onclick="togFlag()">🚩</button></span></div>
         <div class="qt" id="qtext"></div>
@@ -3048,6 +3048,7 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
   </div>
 </div>
 
+<dialog id="test-results-dialog" class="chem-table-dialog" aria-label="Менің нәтижелерім"><div class="chem-head"><b>🗂️ Менің нәтижелерім</b><button class="btn btn-s btn-sm" onclick="document.getElementById('test-results-dialog').close()">Жабу ✕</button></div><div class="periodic-scroll"><div id="test-result-list"></div></div></dialog>
 <dialog id="chem-table-dialog" class="chem-table-dialog" aria-label="Менделеевтің периодтық кестесі">
   <div class="chem-head"><b>⚗️ Менделеевтің периодтық кестесі</b><button class="btn btn-s btn-sm" onclick="closeChemTable()">Жабу ✕</button></div>
   <div class="periodic-scroll"><div id="periodic-grid" class="periodic-grid"></div></div>
@@ -6642,30 +6643,68 @@ function renderSubjectGraph(){
   const rows=selected?prog.filter(p=>resultSubject(p)===selected):prog;
   renderProgress('prof-subject-chart',null,rows);
 }
-function renderPersonalResults(){
-  const el=document.getElementById('prof-result-list');if(!el||!user)return;
-  const hist=LS.get('ubt_hist_'+user.id,[]);
-  el.innerHTML=hist.length?hist.map((h,i)=>`<div class="item"><div class="info"><h4>${esc(h.topic||'Тест')}</h4><p>${esc(h.date||'')} · ${esc(h.score)}/${esc(h.max)} (${h.max?Math.round(h.score/h.max*100):0}%)</p></div><button class="btn btn-d btn-sm" onclick="deletePersonalResult(${i})">Өшіру</button></div>`).join(''):'<p class="sub">Сақталған нәтижелер жоқ.</p>';
+function openTestResultsDialog(){
+  if(!user)return;
+  renderPersonalResults('test-result-list');
+  document.getElementById('test-results-dialog').showModal();
 }
-function deletePersonalResult(i){
+function renderPersonalResults(containerId='prof-result-list'){
+  const el=document.getElementById(containerId);if(!el||!user)return;
+  const hist=LS.get('ubt_hist_'+user.id,[]);
+  const checked=new Set([...el.querySelectorAll('input[data-result-index]:checked')].map(x=>Number(x.dataset.resultIndex)));
+  if(!hist.length){el.innerHTML='<p class="sub">Сақталған нәтижелер жоқ.</p>';return;}
+  el.innerHTML=`<div class="row" style="justify-content:flex-start;margin-bottom:12px;align-items:center">
+    <label style="display:flex;align-items:center;gap:7px"><input type="checkbox" onchange="toggleAllPersonalResults('${containerId}',this.checked)"> Барлығын таңдау</label>
+    <button class="btn btn-d btn-sm" id="${containerId}-delete" onclick="deleteSelectedPersonalResults('${containerId}')" disabled>Таңдалғандарды өшіру (0)</button>
+    </div>`+hist.map((h,i)=>`<div class="item"><label style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;cursor:pointer"><input type="checkbox" data-result-index="${i}" ${checked.has(i)?'checked':''} onchange="updatePersonalSelection('${containerId}')" style="width:20px;height:20px;flex-shrink:0"><div class="info"><h4>${esc(h.topic||'Тест')}</h4><p>${esc(h.date||'')} · ${esc(h.score)}/${esc(h.max)} (${h.max?Math.round(h.score/h.max*100):0}%)</p></div></label><button class="btn btn-d btn-sm" onclick="deletePersonalResult(${i})">Өшіру</button></div>`).join('');
+  updatePersonalSelection(containerId);
+}
+function updatePersonalSelection(containerId){
+  const el=document.getElementById(containerId);if(!el)return;
+  const boxes=[...el.querySelectorAll('input[data-result-index]')];
+  const count=boxes.filter(x=>x.checked).length;
+  const btn=document.getElementById(containerId+'-delete');
+  if(btn){btn.disabled=!count;btn.textContent='Таңдалғандарды өшіру ('+count+')'}
+  const all=el.querySelector('input[type=checkbox]:not([data-result-index])');
+  if(all){all.checked=boxes.length>0&&count===boxes.length;all.indeterminate=count>0&&count<boxes.length}
+}
+function toggleAllPersonalResults(containerId,checked){
+  const el=document.getElementById(containerId);if(!el)return;
+  el.querySelectorAll('input[data-result-index]').forEach(x=>x.checked=checked);
+  updatePersonalSelection(containerId);
+}
+function deleteSelectedPersonalResults(containerId){
+  const el=document.getElementById(containerId);if(!el||!user)return;
+  const indexes=[...el.querySelectorAll('input[data-result-index]:checked')].map(x=>Number(x.dataset.resultIndex));
+  deletePersonalResultIndexes(indexes);
+}
+function deletePersonalResult(i){deletePersonalResultIndexes([i])}
+function deletePersonalResultIndexes(indexes){
   if(!user)return;
   const hk='ubt_hist_'+user.id,pk='ubt_prog_'+user.id;
   const hist=LS.get(hk,[]),prog=LS.get(pk,[]);
-  if(!Number.isInteger(i)||i<0||i>=hist.length)return;
-  if(!confirm('Осы тест нәтижесін тарих пен графиктен өшіресіз бе? Бұл әрекетті қайтару мүмкін емес.'))return;
-  const target=hist[i];
-  // Алдымен тұрақты ID бойынша, ескі жазбаларда бірдей нәтиженің реттік орны бойынша іздеу.
-  let pos=target.id?prog.findIndex(p=>p.id===target.id):-1;
-  if(pos<0){
-    const same=h=>h.score===target.score&&h.max===target.max&&h.topic===target.topic;
-    const occurrence=hist.slice(0,i+1).filter(same).length;
-    let found=0;
-    for(let j=prog.length-1;j>=0;j--){if(same(prog[j])&&++found===occurrence){pos=j;break}}
+  const valid=[...new Set(indexes)].filter(i=>Number.isInteger(i)&&i>=0&&i<hist.length).sort((a,b)=>b-a);
+  if(!valid.length)return;
+  if(!confirm(valid.length+' нәтижені тарих пен графиктен өшіресіз бе? Бұл әрекетті қайтару мүмкін емес.'))return;
+  // Іріктелген нәтижелердің графиктегі сәйкес жазбаларын бір рет қана алып тастаймыз.
+  const used=new Set(),positions=[];
+  for(const i of valid){
+    const target=hist[i];
+    let pos=target.id?prog.findIndex((p,j)=>!used.has(j)&&p.id===target.id):-1;
+    if(pos<0){
+      const same=h=>h.score===target.score&&h.max===target.max&&h.topic===target.topic;
+      const occurrence=hist.slice(0,i+1).filter(same).length;
+      let found=0;
+      for(let j=prog.length-1;j>=0;j--){if(same(prog[j])&&++found===occurrence){pos=j;break}}
+    }
+    if(pos>=0&&!used.has(pos)){used.add(pos);positions.push(pos)}
   }
-  if(pos>=0){prog.splice(pos,1);LS.set(pk,prog)}
-  hist.splice(i,1);LS.set(hk,hist);
+  positions.sort((a,b)=>b-a).forEach(i=>prog.splice(i,1));
+  valid.forEach(i=>hist.splice(i,1));
+  LS.set(pk,prog);LS.set(hk,hist);
   renderProgress('prof-chart','prof-topics',getProg(user.id));
-  renderSubjectGraph();renderPersonalResults();
+  renderSubjectGraph();
+  renderPersonalResults('prof-result-list');renderPersonalResults('test-result-list');
 }
 function getProg(id){
   let pg=LS.get('ubt_prog_'+id,[]);
