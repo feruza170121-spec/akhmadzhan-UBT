@@ -1921,6 +1921,10 @@ def _snapshot(tok="", claim=""):
 st.set_page_config(page_title="Менің тесттерім", page_icon="📘", layout="wide", initial_sidebar_state="collapsed")
 st.markdown("""<style>
 #MainMenu,footer,header{visibility:hidden}
+.ubt-subject-header{grid-column:1/-1;margin-top:10px;margin-bottom:3px;min-width:0}
+.ubt-subject-header button{width:100%;border:1px solid #465379;border-radius:10px;padding:9px 7px;background:#202b49;color:#eaf0ff;text-align:left;font-size:12px;font-weight:750;cursor:pointer}
+.ubt-subject-header button span{float:right;color:#a5b4fc}
+.ubt-subject-header:first-child{margin-top:0}
 </style>
 <style id="ubt-manage-css">
 [data-testid="manage-app-button"],[data-testid*="manage-app"],[data-testid*="manageApp"],[aria-label*="Manage app" i],[title*="Manage app" i],[class*="_terminalButton_"],[class*="_viewerBadge_"],[class*="viewerBadge"],[class*="_profileContainer_"],.stAppDeployButton,[data-testid="stToolbar"],[data-testid="stDecoration"],[data-testid="stStatusWidget"]{display:none!important}
@@ -4622,7 +4626,14 @@ function beginTest(){
   document.getElementById('ubt-start-cancel').onclick=async()=>{modal.remove();if(st.secureExam){const r=await authCall('cancel_exam',{exam:st.secureExam});if(!r.ok)alert(r.msg||'Тапсыру лимиті сақталды')}st=baseState()};
   document.getElementById('ubt-start-confirm').onclick=()=>{
     st.instantFeedback=!st.secureExam&&document.getElementById('ubt-instant-choice').checked;
-    modal.remove();st.questions=shuf(st.questions.map(q=>st.secureExam?{...q,options:q.options.slice()}:shuffleOpts({...q,options:Array.isArray(q.options)?q.options.slice():[]})));st.currentIndex=0;st.answers={};st.flags={};showScr('s-test');renderNav();renderQ();startTimer();updateProg();lockStart();
+    modal.remove();
+    const prepared=st.questions.map(q=>st.secureExam?{...q,options:q.options.slice()}:shuffleOpts({...q,options:Array.isArray(q.options)?q.options.slice():[]}));
+    if(st.is140){
+      // Shuffle only WITHIN each subject, never across subject boundaries.
+      const order=[...new Set(prepared.map(q=>q.subjectName||'Басқа пән'))];
+      st.questions=order.flatMap(name=>shuf(prepared.filter(q=>(q.subjectName||'Басқа пән')===name)));
+    }else{st.questions=shuf(prepared)}
+    st.currentIndex=0;st.answers={};st.flags={};showScr('s-test');renderNav();renderQ();startTimer();updateProg();lockStart();
   };
 }
 const PERIODIC_ROWS=[
@@ -4682,7 +4693,22 @@ function pressCalculator(key){
   }
   document.getElementById('calc-display').value=c.value;
 }
-function renderNav(){document.getElementById('qnav').innerHTML=st.questions.map((_,i)=>`<button class="qn" onclick="goQ(${i})">${i+1}</button>`).join('');updNav()}
+function renderNav(){
+  const nav=document.getElementById('qnav');
+  if(st.is140){
+    let previous='';
+    nav.innerHTML=st.questions.map((q,i)=>{
+      const name=q.subjectName||'Басқа пән';
+      const heading=name!==previous?`<div class="ubt-subject-header" data-subject-start="${i}"><button type="button" onclick="goQ(${i})">📚 ${esc(name)} <span>→</span></button></div>`:'';
+      previous=name;
+      return heading+`<button class="qn" onclick="goQ(${i})">${i+1}</button>`;
+    }).join('');
+  }else{
+    nav.innerHTML=st.questions.map((_,i)=>`<button class="qn" onclick="goQ(${i})">${i+1}</button>`).join('');
+  }
+  updNav();
+}
+
 function updNav(){document.querySelectorAll('.qn').forEach((b,i)=>{b.classList.remove('cur','ans','flg');if(i===st.currentIndex)b.classList.add('cur');if(st.answers[st.questions[i].id]!==undefined)b.classList.add('ans');if(st.flags[st.questions[i].id])b.classList.add('flg')})}
 let codeColorsLoading=false;
 function ensureCodeColors(){
