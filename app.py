@@ -3385,6 +3385,7 @@ function exportAll(){
 function importAll(inp){
   if(!user||!user.isAdmin)return;
   const f=inp.files&&inp.files[0];if(!f)return;
+  if(ctx==='f'&&inp.files.length>1){bulk.f=null;bulkName.f='';document.getElementById('f-bulk-info').textContent=inp.files.length+' JSON файл таңдалды. Төмендегі «10 000 сұрақты базаға қосу» батырмасын басыңыз.';return}
   const r=new FileReader();
   r.onload=()=>{
     try{
@@ -6173,6 +6174,9 @@ async function bulkFromFile(ctx,inp){
       txt=await f.text();
       if(txt.indexOf('\uFFFD')>=0)alert('Файл UTF-8 кодтауында емес болуы мүмкін.');
     }
+    if(ctx==='f'&&/\.json$/i.test(f.name)&&txt.length>350000){
+      document.getElementById('f-bulk-text').value='';bulkName.f=f.name;bulk.f=parseQuestions(txt,f.name);document.getElementById('f-bulk-info').innerHTML=bulkInfoHTML(bulk.f);return;
+    }
     document.getElementById(ctx+'-bulk-text').value=txt;
     bulkName[ctx]=f.name;
     bulkRefresh(ctx,/\.docx$/i.test(f.name)?f.name.replace(/\.docx$/i,'.txt'):f.name);
@@ -6192,7 +6196,7 @@ function bulkBlock(ctx){
   }[ctx];
   return `<div class="card">
     <h3 style="margin-bottom:6px">📥 ${ctx==='c'?'Сұрақтар файлы (барлық сұрақ бір файлда)':ctx==='f'?'Сұрақтар файлы':'Файлдан сұрақ қосу'}</h3>
-    <p class="sub" style="margin-bottom:10px">Файл таңдаңыз (.docx, .txt, .csv, .json) немесе мәтінді / Excel-ден көшірілген кестені қойыңыз. Бір реттен 500 сұраққа дейін.</p>
+    <p class="sub" style="margin-bottom:10px">Тестті бастау/сақтау: 500 сұраққа дейін. Сұрақтар базасына: бірден 10 000 сұраққа дейін (JSON файлдар).</p>
     <details style="margin-bottom:12px"><summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--p)">Формат үлгісі</summary>
       <pre style="font-size:12px;background:var(--bg);border-radius:20px;padding:10px;margin:8px 0;white-space:pre-wrap">1. Сұрақ мәтіні
 A) нұсқа
@@ -6205,11 +6209,46 @@ D) нұсқа
 Excel/CSV: 6 баған — сұрақ, A, B, C, D, дұрыс жауап (A–D))</pre>
       <button class="btn btn-s btn-sm" onclick="downloadSample()">⬇ Үлгі файл</button>
     </details>
-    <div class="fg"><label>Файлдан жүктеу</label><input type="file" id="${ctx}-bulk-file" accept=".docx,.txt,.csv,.tsv,.json,text/plain,text/csv" onchange="bulkFromFile('${ctx}',this)"></div>
+    <div class="fg"><label>Файлдан жүктеу</label><input type="file" id="${ctx}-bulk-file" ${ctx==='f'?'multiple':''} accept=".docx,.txt,.csv,.tsv,.json,text/plain,text/csv" onchange="bulkFromFile('${ctx}',this)"></div>
     <div class="fg"><label>немесе мәтінді осында қойыңыз</label><textarea id="${ctx}-bulk-text" style="min-height:160px;font-family:monospace;font-size:13px" placeholder="1. Сұрақ...&#10;A) ...&#10;B) ...&#10;C) ...&#10;D) ...&#10;Жауап: B" oninput="bulkRefresh('${ctx}','')"></textarea></div>
     <div id="${ctx}-bulk-info"></div>
-    <div class="row" style="justify-content:flex-start">${btns}</div>
+    <div class="row" style="justify-content:flex-start">${btns}${ctx==='f'?'<button class="btn btn-p" id="f-import-10000" onclick="importFileScreen10000()">📥 10 000 сұрақты базаға қосу</button>':''}</div>
+    ${ctx==='f'?'<div id="f-import-result" class="sub" style="margin-top:10px" aria-live="polite"></div>':''}
   </div>`;
+}
+async function importFileScreen10000(){
+  if(!user||!isTeacherUser()){alert('Тек админ немесе бекітілген мұғалім қоса алады');return}
+  const inp=document.getElementById('f-bulk-file');
+  const status=document.getElementById('f-import-result');
+  const button=document.getElementById('f-import-10000');
+  const subject=document.getElementById('f-question-subject').value;
+  if(!subject){status.textContent='Алдымен пәнді таңдаңыз.';return}
+  if(inp&&inp.files&&inp.files.length){
+    if(Array.from(inp.files).some(f=>!/\.json$/i.test(f.name))){status.textContent='Базаға топтап қосу үшін тек JSON файлдарын таңдаңыз.';return}
+    await importBankFiles10000(inp,subject,status,button);
+    return;
+  }
+  const r=bulk.f;
+  if(!r||!r.questions.length){status.textContent='Алдымен JSON файлды немесе сұрақ мәтінін енгізіңіз.';return}
+  const key='ubt_qbank_'+user.id,old=LS.get(key,[]);
+  const known=new Set(ubtQuestionBank().map(q=>ubtBankIdentity(q.subject,q.text)));
+  const free=Math.max(0,10000-old.length),added=[];
+  let duplicate=0,invalid=0;
+  for(const q of r.questions){
+    if(added.length>=free)break;
+    if(!q||!q.text||!Array.isArray(q.options)||q.options.length!==4||!Number.isInteger(q.correct)||q.correct<0||q.correct>3){invalid++;continue}
+    const identity=ubtBankIdentity(subject,q.text);
+    if(known.has(identity)){duplicate++;continue}
+    known.add(identity);
+    added.push({id:'q_'+Date.now().toString(36)+'_'+(old.length+added.length).toString(36),subject,text:q.text,options:q.options,correct:q.correct,origin:bulkName.f||'Файлдан'});
+  }
+  if(!added.length){status.textContent='Жаңа сұрақ жоқ. Қайталанған: '+duplicate;return}
+  const value=JSON.stringify(old.concat(added));
+  if(value.length>=7800000){status.textContent='Сақтау шегі (7.8 МБ) асты. Сұрақтарды бөліп жүктеңіз.';return}
+  try{localStorage.setItem(key,value)}catch(e){status.textContent='Браузер жады жеткіліксіз. Бұрынғы база сақталды.';return}
+  if(!noSync(key))syncPush([{key,value}]);
+  status.textContent='✅ '+added.length+' сұрақ базаға қосылды. Барлығы: '+(old.length+added.length)+'/10 000; қайталанған: '+duplicate+'; жарамсыз: '+invalid+'.';
+  renderUbt140();
 }
 function takeBulkQs(ctx){
   const r=bulk[ctx];
@@ -6234,6 +6273,7 @@ function showFileTest(){
 function startFromFile(){
   if(!isTeacherUser())return;
   const r=takeBulkQs('f');if(!r)return;
+  if(r.qs.length>500){alert('Бір тестте 500 сұрақтан аспайды. 10 000 сұрақты «Базаға қосу» батырмасымен жүктеңіз.');return}
   const subject=document.getElementById('f-question-subject').value;
   const label=r.meta.topic||(bulkName.f||'').replace(/\.[^.]+$/,'')||'Файлдан тест';
   st=baseState();
@@ -6245,6 +6285,7 @@ function startFromFile(){
 function saveFromFile(){
   if(!isTeacherUser())return;
   const r=takeBulkQs('f');if(!r)return;
+  if(r.qs.length>500){alert('Бір тестте 500 сұрақтан аспайды. 10 000 сұрақты «Базаға қосу» батырмасымен жүктеңіз.');return}
   const subject=document.getElementById('f-question-subject').value||'other';
   let topic=prompt('Тест тақырыбы:',r.meta.topic||(bulkName.f||'').replace(/\.[^.]+$/,'')||'');
   if(topic===null)return;
@@ -8154,12 +8195,12 @@ function initUbt140(){
   }
 }
 function showUbt140(){initUbt140();renderUbt140();showScr('s-ubt140')}
-async function importBankFiles10000(){
+async function importBankFiles10000(sourceInput,sourceSubject,statusTarget,buttonTarget){
   if(!user||!isTeacherUser()){alert('Файлды тек админ немесе бекітілген мұғалім қоса алады');return}
-  const inp=document.getElementById('bank-import-files'),files=Array.from(inp.files||[]);
-  const status=document.getElementById('bank-import-result'),button=document.getElementById('bank-import-button');
+  const inp=sourceInput||document.getElementById('bank-import-files'),files=Array.from(inp.files||[]);
+  const status=statusTarget||document.getElementById('bank-import-result'),button=buttonTarget||document.getElementById('bank-import-button');
   if(!files.length){alert('Алдымен JSON файлдарын таңдаңыз');return}
-  const subject=document.getElementById('bank-import-subject').value;
+  const subject=sourceSubject||document.getElementById('bank-import-subject').value;
   const key='ubt_qbank_'+user.id,old=LS.get(key,[]);
   const known=new Set(ubtQuestionBank().map(q=>ubtBankIdentity(q.subject,q.text)));
   const free=Math.max(0,10000-old.length);
