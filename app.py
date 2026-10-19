@@ -437,8 +437,6 @@ def _session(state, tok):
     s = state["sessions"].get(tok)
     if not s:
         return None
-    if not s["admin"]:
-        return None
     if s["exp"] < time.time():
         state["sessions"].pop(tok, None)
         return None
@@ -730,12 +728,6 @@ def _handle_req(state, sid, rq):
     typ = rq.get("type")
     d = rq.get("data") if isinstance(rq.get("data"), dict) else {}
     sess = _session(state, rq.get("tok"))
-    if typ not in ("login", "resume", "logout", "start_exam", "start_public_mix",
-                   "finish_exam", "cancel_exam", "book_add", "book_open", "book_delete",
-                   "export_test_json", "change_display_name"):
-        return {"ok": False, "msg": "Жеке сайтта бұл әрекет жоқ"}
-    if typ == "login" and str(d.get("name") or "").strip().lower() not in _ADMIN_NAMES:
-        return {"ok": False, "msg": "Жеке сайтқа тек иесі кіреді"}
 
     controls = _jload(state["db"].get("ubt_site_controls", "{}"), dict, {})
     if typ == "admin_set_site_controls":
@@ -1779,10 +1771,9 @@ def _authorize(state, sess, k, v, chat_token=""):
 
 def _key_ok(k):
     return (isinstance(k, str) and k.startswith("ubt_") and len(k) < 200
-            and k not in _NO_SYNC and k not in _SERVER_ONLY and not k.startswith("ubt_cd_")
-            and k not in ("ubt_profiles", "ubt_chat", "ubt_classes", "ubt_class_reqs",
-                          "ubt_class_chat", "ubt_assigned_tests", "ubt_admin_letters",
-                          "ubt_site_controls") and not k.startswith(("ubt_att_", "ubt_tres_")))
+            and k not in _NO_SYNC and k not in _SERVER_ONLY
+            and k not in ("ubt_site_controls", "ubt_books")
+            and not k.startswith(("ubt_cd_", "ubt_exam_done_")))
 
 
 def _apply_ops(res):
@@ -1902,19 +1893,69 @@ def _award_finished_seasons(state):
 
 
 def _snapshot(tok="", claim=""):
+    """Браузерге жіберілетін дерек: хэштер жоқ, бөтен чаттар жоқ, кірмеген адамға — ештеңе жоқ."""
     state = _store()
     with state["lock"]:
-        if not _session(state, tok):
-            return {}
         db = dict(state["db"])
-    hidden = ("ubt_profiles", "ubt_chat", "ubt_classes", "ubt_class_board",
-              "ubt_class_reqs", "ubt_class_chat", "ubt_assigned_tests",
-              "ubt_admin_letters", "ubt_site_controls", "ubt_user_stats")
-    for k in list(db):
-        if k in _SERVER_ONLY or k in hidden or k.startswith(("ubt_att_", "ubt_tres_")) or (
-            k.startswith(_PRIVATE_PREFIXES) and not any(k == p + "admin" for p in _PRIVATE_PREFIXES)
-        ):
-            db.pop(k, None)
+        sess = _session(state, tok)
+        profs = _profiles(state) if sess else {}
+        teacher = bool(sess and not sess["admin"] and _is_teacher(state, sess["uid"]))
+    for k in _SERVER_ONLY:
+        db.pop(k, None)
+    with state["lock"]:
+        chat = _chat_for(db.get("ubt_chat"), sess, claim, state)
+    if not sess:
+        return {"ubt_chat": chat}
+    db["ubt_chat"] = chat
+    assignments = _jload(db.get("ubt_assigned_tests", "[]"), list, [])
+    db["ubt_assigned_tests"] = _jdump(assignments if sess["admin"] else [a for a in assignments if isinstance(a, dict) and a.get("uid") == sess["uid"]])
+    letters = _jload(db.get("ubt_admin_letters", "[]"), list, [])
+    db["ubt_admin_letters"] = _jdump(letters if sess["admin"] else [
+        m for m in letters if isinstance(m, dict) and m.get("toUid") == sess["uid"]])
+    if "ubt_profiles" in db:
+        db["ubt_profiles"] = _jdump({k: _pub_user(p) for k, p in profs.items() if isinstance(p, dict) and
+                                      (sess["admin"] or p.get("accessApproved") is True)})
+    if not sess["admin"] and "ubt_schemes" in db:
+        sch = _jload(db.get("ubt_schemes"), list, [])
+        db["ubt_schemes"] = _jdump([t for t in sch if isinstance(t, dict) and (
+            t.get("authorId") == sess["uid"] or (t.get("status") == "approved" and t.get("isPublic")))])
+    if not sess["admin"]:
+        classes = _jload(db.get("ubt_classes", "[]"), list, [])
+        mine = [c for c in classes if isinstance(c, dict) and
+                (c.get("teacherId") == sess["uid"] or sess["uid"] in c.get("students", []))]
+        managed = {c.get("id") for c in mine if teacher and c.get("teacherId") == sess["uid"]}
+        joined = {c.get("id") for c in mine}
+        if managed:
+            own = [a for a in assignments if isinstance(a, dict) and a.get("uid") == sess["uid"]]
+            scores = [{k: a.get(k) for k in ("id", "classId", "uid", "login", "title", "limit", "used", "results")}
+                      for a in assignments if isinstance(a, dict) and a.get("classId") in managed and a.get("uid") != sess["uid"]]
+            db["ubt_assigned_tests"] = _jdump(own + scores)
+        db["ubt_classes"] = _jdump([c if c.get("id") in managed else
+            {**c, "code": "", "students": [sess["uid"]] if sess["uid"] in c.get("students", []) else []} for c in mine])
+        reqs = _jload(db.get("ubt_class_reqs", "[]"), list, [])
+        db["ubt_class_reqs"] = _jdump([r for r in reqs if isinstance(r, dict) and r.get("teacherId") == sess["uid"]])
+        cc = _jload(db.get("ubt_class_chat", "{}"), dict, {})
+        threads = {r.get("id") for r in reqs if isinstance(r, dict) and r.get("teacherId") == sess["uid"]}
+        threads.update(c.get("reqId") or "cls_" + str(c.get("id")) for c in mine if c.get("id") in managed)
+        db["ubt_class_chat"] = _jdump({k: v for k, v in cc.items() if k in threads})
+        tests = _jload(db.get("ubt_tests", "[]"), list, [])
+        assigned_ids = {a.get("testId") for a in assignments if isinstance(a, dict) and a.get("uid") == sess["uid"] and a.get("used", 0) < a.get("limit", 0)}
+        db["ubt_tests"] = _jdump([t for t in tests if isinstance(t, dict) and
+            (t.get("authorId") == sess["uid"] or
+             t.get("id") in assigned_ids or
+             (t.get("classId") in joined if t.get("classId") else (t.get("isPublic") or t.get("status") == "approved")))])
+        for k in list(db.keys()):
+            if k.startswith(_PRIVATE_PREFIXES) and not any(k == p + sess["uid"] for p in _PRIVATE_PREFIXES):
+                db.pop(k, None)
+                continue
+            if k.startswith(("ubt_att_", "ubt_tres_")):
+                tid = k[len("ubt_att_"):] if k.startswith("ubt_att_") else k[len("ubt_tres_"):]
+                relevant = next((t for t in tests if isinstance(t, dict) and t.get("id") == tid), None)
+                if not relevant or relevant.get("classId") not in joined:
+                    db.pop(k, None)
+                elif relevant.get("classId") not in managed:
+                    data = _jload(db[k], list if k.startswith("ubt_tres_") else dict, [] if k.startswith("ubt_tres_") else {})
+                    db[k] = _jdump([r for r in data if isinstance(r, dict) and r.get("uid") == sess["uid"]] if isinstance(data, list) else {sess["uid"]: data.get(sess["uid"], 0)})
     return db
 
 
@@ -1946,7 +1987,7 @@ html_code = r"""
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ҰБТ+</title>
 <style>
-#s-home [onclick*="showPublicTests"],#s-home [onclick*="showAssignedTests"],#s-home [onclick*="showRanking"],#s-home [onclick*="showTeacher"],#s-home [onclick*="showCopiedTests"],#s-home [onclick*="showRegistered"],#s-home [onclick*="showAdmin()"],#s-home [onclick*="showAccessRequests"],#s-home #admin-inbox-card,#s-home .profile-bar .app-profile>div:last-child,#p-title,#p-stars,#p-verified,#s-login #login-box .fg:first-child,#admin-pass-wrap,#register-box,#teacher-reg-box,#forgot-box,#contact-box,#c-request-field,#c-teacher-opts,#s-addq .fg:has(#aq-request),#prof-title,#prof-stars,#prof-rank,#prof-verified,#s-profile .hdr>div:nth-of-type(3),#sch-t-pub,#sch-t-pend,#s-schedit .fg:has([data-p="request"]){display:none!important}
+/* Админ, тіркелу және мұғалім панельдері қайта қосылды. */
 </style>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script defer src="https://cdn.jsdelivr.net/npm/mammoth@1.9.1/mammoth.browser.min.js"></script>
@@ -2459,12 +2500,14 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
 
 <div id="s-login" class="screen active">
   <div class="wrap">
-    <div class="hdr"><div class="logo">Ұ+</div><h1>Менің тесттерім</h1><p class="sub">Жеке сайтқа кіру</p></div>
+    <div class="hdr"><div class="logo">Ұ+</div><h1>ҰБТ PLUS</h1><p class="sub">Оқушы, мұғалім және админ ретінде кіру</p></div>
     <div class="card" id="login-box">
-      <div class="fg"><label>Логин</label><input id="login-name" value="admin" readonly></div>
+      <div class="fg"><label>Логин</label><input id="login-name" placeholder="Логин" autocomplete="username" oninput="checkAdminName()"></div>
       <div class="fg"><label>Пароль</label><input id="login-pass" type="password" placeholder="Пароль"></div>
       <div class="fg" id="admin-pass-wrap" style="display:none"><label class="sub">Админ ретінде кіру</label></div>
       <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doLogin()">Кіру</button>
+      <button class="btn btn-s" style="width:100%;margin-bottom:8px" onclick="showRegister()">Тіркелу</button>
+      <button class="btn btn-s btn-sm" style="width:100%" onclick="showContactAdmin()">Админге хабарласу</button>
     </div>
     <div class="card" id="register-box" style="display:none">
       <h3 style="margin-bottom:12px">Тіркелу</h3>
@@ -2602,12 +2645,12 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
       <button class="mode" onclick="showGloss()"><span class="ic">📖</span><h3>Глоссарий</h3><p>Терминдер мен ұғымдар</p></button>
       <button class="mode" onclick="showBookmarks()"><span class="ic">🔖</span><h3>Таңдаулылар</h3><p>Сақталған сұрақтар</p></button>
       <button class="mode" onclick="showPlanner()"><span class="ic">🗓</span><h3>Жоспар</h3><p>Дайындық жоспары</p></button>
-      <button class="mode" id="teacher-home-card" style="display:none" onclick="showTeacher()"></button>
-      <button class="mode" id="admin-copied-card" style="display:none" onclick="showCopiedTests()"></button>
-      <button class="mode" id="registered-btn" style="display:none" onclick="showRegistered()"></button>
+      <button class="mode" id="teacher-home-card" style="display:none" onclick="showTeacher()"><span class="ic">🏫</span><h3>Мұғалім панелі</h3><p>Сыныптар мен тапсырмалар</p></button>
+      <button class="mode" id="admin-copied-card" style="display:none" onclick="showCopiedTests()"><span class="ic">📋</span><h3>Көшірілген тесттер</h3><p>Сақталған тесттер</p></button>
+      <button class="mode" id="registered-btn" style="display:none" onclick="showRegistered()"><span class="ic">👥</span><h3>Қолданушылар</h3><p>Оқушылар мен мұғалімдер</p></button>
       <button class="mode" onclick="showQuestionBank()" style="grid-column:1/-1"><span class="ic">📚</span><h3>Сұрақтар базасы</h3><p>Пәндер бойынша өз сұрақтарым</p></button>
-      <button class="mode" id="admin-btn" style="display:none" onclick="showAdmin()"></button>
-      <button class="mode" id="admin-requests-card" style="display:none" onclick="showAccessRequests()"><span id="home-requests-count"></span></button>
+      <button class="mode" id="admin-btn" style="display:none" onclick="showAdmin()"><span class="ic">👑</span><h3>Админ панелі</h3><p>Толық басқару</p></button>
+      <button class="mode" id="admin-requests-card" style="display:none" onclick="showAccessRequests()"><span class="ic">📨</span><h3>Өтініштер <span id="home-requests-count"></span></h3><p>Тіркелу өтініштері</p></button>
       <button class="mode" style="grid-column:1/-1" onclick="exportAll()"><span class="ic">💾</span><h3>Тесттер мен жинақтардың көшірмесі</h3><p>JSON файлға сақтау</p></button>
       <label class="mode" style="grid-column:1/-1;cursor:pointer"><span class="ic">📥</span><h3>Көшірмеден қалпына келтіру</h3><p>JSON файлын қосу; бар тесттер сақталады</p><input type="file" accept=".json,application/json" style="display:none" onchange="importAll(this)"></label>
     </div>
