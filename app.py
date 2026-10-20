@@ -7,6 +7,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import threading
 import time
 import urllib.error
@@ -739,11 +740,14 @@ def _explain_review(state, sess, d):
     history = _jload(state["db"].get("ubt_hist_" + uid, "[]"), list, [])
     if not any(isinstance(h, dict) and any(isinstance(x, dict) and x.get("text") == q["text"] and x.get("options") == opts and x.get("correct") == correct for x in (h.get("questions") or []) if isinstance(h.get("questions"), list)) for h in history):
         return {"ok": False, "msg": "Аяқталған тест тарихы сақталған соң қайта басыңыз"}
-    api_key = _secret("GEMINI_API_KEY")
-    model = _secret("GEMINI_MODEL") or "gemini-2.5-flash-lite"
+    api_key = (_secret("GEMINI_API_KEY") or _secret("GOOGLE_API_KEY") or "").strip()
+    model = (_secret("GEMINI_MODEL") or "gemini-2.5-flash-lite").strip().removeprefix("models/")
     if not api_key or not model:
         return {"ok": False, "msg": "AI қосылмаған. Сервердің Secrets бөліміне GEMINI_API_KEY қосыңыз."}
-    payload = {"text": q["text"], "options": opts, "correct": correct, "studentAnswer": d.get("answer")}
+    answer = d.get("answer")
+    if answer is not None and (type(answer) is not int or not 0 <= answer < len(opts)):
+        return {"ok": False, "msg": "Оқушы жауабы жарамсыз"}
+    payload = {"text": q["text"], "options": opts, "correct": correct, "studentAnswer": answer}
     cache_key = hashlib.sha256((uid + model + _jdump(payload)).encode()).hexdigest()
     with state["lock"]:
         cache = state.setdefault("ai_review_cache", {})
@@ -772,8 +776,37 @@ def _explain_review(state, sess, d):
                 cache.pop(next(iter(cache)))
             cache[cache_key] = text[:12000]
         return {"ok": True, "text": text[:12000]}
+    except urllib.error.HTTPError as error:
+        code = error.code
+        status = ""
+        try:
+            details = json.loads(error.read(65536)).get("error", {})
+            status = str(details.get("status", ""))
+            message = str(details.get("message", "")).lower()
+        except Exception:
+            message = ""
+        if code == 429:
+            msg = "Gemini тегін лимиті біткен немесе жоба квотасы 0 (429). AI Studio → Usage / Rate limits бөлімін тексеріңіз. Кейін қайталаңыз."
+        elif code == 404:
+            msg = "Gemini моделі қолжетімсіз (404). Secrets: GEMINI_MODEL мәнін AI Studio-да қолжетімді тегін модель атауына ауыстырыңыз."
+        elif code in (401, 403) or "api key" in message or "api_key" in message:
+            msg = "Gemini кілті жарамсыз немесе рұқсат берілмеген (" + str(code) + "). GEMINI_API_KEY және кілттің API шектеулерін тексеріңіз."
+        elif "location" in message or "region" in message or "country" in message:
+            msg = "Gemini сайт сервері орналасқан аймақта қолжетімсіз (" + str(code) + "). Хостинг аймағын тексеріңіз."
+        elif code in (500, 502, 503, 504):
+            msg = "Gemini уақытша қолжетімсіз (" + str(code) + "). Кейін қайта басыңыз."
+        elif code == 400:
+            msg = "Gemini сұрауды қабылдамады (400). GEMINI_MODEL мәнін және жоба баптауларын тексеріңіз."
+        else:
+            msg = "Gemini API қатесі: " + str(code) + ". " + status[:60]
+        return {"ok": False, "msg": msg}
+    except (TimeoutError, socket.timeout):
+        return {"ok": False, "msg": "Gemini жауап беру уақыты аяқталды. Қайта басыңыз."}
+    except urllib.error.URLError:
+        return {"ok": False, "msg": "Сервер Gemini-ға қосыла алмады. Хостингтің интернетке шығуын тексеріңіз."}
     except Exception:
-        return {"ok": False, "msg": "AI қызметіне қосылмады. Сервердегі API кілтін, модельді және лимитті тексеріңіз."}
+        return {"ok": False, "msg": "Gemini жауабын өңдеу мүмкін болмады. Қайта басыңыз."}
+
 
 
 def _handle_req(state, sid, rq):
