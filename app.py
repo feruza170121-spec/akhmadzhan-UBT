@@ -725,6 +725,57 @@ def _cancel_exam(state, sess, d):
         return {"ok": True}
 
 
+def _gemini_review_request(api_key, model, body, state):
+    headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+    identity = hashlib.sha256((api_key + "|" + model).encode()).hexdigest()
+    with state["lock"]:
+        remembered = state.setdefault("ai_model_routes", {}).get(identity)
+    selected = remembered[0] if remembered and time.time() - remembered[1] < 3600 else model
+
+    def generate(name):
+        url = "https://generativelanguage.googleapis.com/v1beta/models/" + urllib.parse.quote(name, safe="") + ":generateContent"
+        request = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return json.load(response)
+
+    try:
+        return generate(selected)
+    except urllib.error.HTTPError as error:
+        if error.code != 404:
+            raise
+        error.close()
+    available = set()
+    token = ""
+    for _ in range(10):
+        query = {"pageSize": 1000}
+        if token:
+            query["pageToken"] = token
+        request = urllib.request.Request("https://generativelanguage.googleapis.com/v1beta/models?" + urllib.parse.urlencode(query), headers=headers)
+        with urllib.request.urlopen(request, timeout=10) as response:
+            page = json.load(response)
+        available.update(str(m.get("name", "")).removeprefix("models/") for m in page.get("models", []) if "generateContent" in m.get("supportedGenerationMethods", []))
+        token = page.get("nextPageToken")
+        if not token:
+            break
+    # Only fall back to text models with a documented free tier.
+    candidates = [name for name in ("gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash") if name in available and name != selected]
+    for name in candidates:
+        try:
+            result = generate(name)
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                error.close()
+                continue
+            raise
+        with state["lock"]:
+            routes = state.setdefault("ai_model_routes", {})
+            if len(routes) >= 100:
+                routes.pop(next(iter(routes)))
+            routes[identity] = (name, time.time())
+        return result
+    raise urllib.error.HTTPError("https://generativelanguage.googleapis.com", 404, "No supported free-tier text model", {}, None)
+
+
 def _explain_review(state, sess, d):
     if not sess:
         return {"ok": False, "msg": "Алдымен кіріңіз"}
@@ -763,11 +814,8 @@ def _explain_review(state, sess, d):
     body = {"systemInstruction": {"parts": [{"text": instructions}]},
             "contents": [{"role": "user", "parts": [{"text": _jdump(payload)}]}],
             "generationConfig": {"maxOutputTokens": 1200}}
-    url = "https://generativelanguage.googleapis.com/v1beta/models/" + urllib.parse.quote(model, safe="") + ":generateContent"
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"x-goog-api-key": api_key, "Content-Type": "application/json"}, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=25) as response:
-            result = json.load(response)
+        result = _gemini_review_request(api_key, model, body, state)
         text = "\n".join(part.get("text", "") for candidate in result.get("candidates", [])[:1] for part in candidate.get("content", {}).get("parts", []) if not part.get("thought")).strip()
         if not text:
             return {"ok": False, "msg": "AI жауап бермеді. Қайталап көріңіз."}
@@ -788,7 +836,7 @@ def _explain_review(state, sess, d):
         if code == 429:
             msg = "Gemini тегін лимиті біткен немесе жоба квотасы 0 (429). AI Studio → Usage / Rate limits бөлімін тексеріңіз. Кейін қайталаңыз."
         elif code == 404:
-            msg = "Gemini моделі қолжетімсіз (404). Secrets: GEMINI_MODEL мәнін AI Studio-да қолжетімді тегін модель атауына ауыстырыңыз."
+            msg = "Кілтіңізге қолжетімді тегін мәтін моделі табылмады (404). AI Studio-дағы жоба мен API кілтін тексеріңіз."
         elif code in (401, 403) or "api key" in message or "api_key" in message:
             msg = "Gemini кілті жарамсыз немесе рұқсат берілмеген (" + str(code) + "). GEMINI_API_KEY және кілттің API шектеулерін тексеріңіз."
         elif "location" in message or "region" in message or "country" in message:
