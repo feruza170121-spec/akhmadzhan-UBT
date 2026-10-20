@@ -4597,13 +4597,13 @@ function toggleBankSubjectQuestion(id,on){
   document.getElementById('bs-selected').textContent=String(ubtQuestionBank().filter(q=>q.subject===document.getElementById('bs-subject').value&&picked.has(q.id)).length);
   document.querySelectorAll('.bs-folder').forEach(f=>{const n=f.querySelectorAll('.bs-pick:checked').length;const total=f.querySelectorAll('.bs-pick').length;const badge=f.querySelector('.bs-folder-count');if(badge)badge.textContent=total+' сұрақ · '+n+' белгіленген';});
 }
-function selectBankSubjectFile(folder){
+function selectBankSubjectFile(folder,on=true){
   if(!user)return;
   const subject=document.getElementById('bs-subject').value;
   const key=user.id+'|'+subject;
   const picked=bankSubjectSelection.get(key)||new Set();
   // Select the entire file even when a search hides some questions.
-  ubtQuestionBank().filter(q=>q.subject===subject&&(String(q.source||'Жеке сұрақтар').trim()||'Жеке сұрақтар')===folder).forEach(q=>picked.add(q.id));
+  ubtQuestionBank().filter(q=>q.subject===subject&&(String(q.source||'Жеке сұрақтар').trim()||'Жеке сұрақтар')===folder).forEach(q=>{if(on)picked.add(q.id);else picked.delete(q.id)});
   bankSubjectSelection.set(key,picked);
   const mode=document.querySelector('input[name="bs-mode"][value="manual"]');
   if(mode)mode.checked=true;
@@ -4636,7 +4636,7 @@ function renderBankSubjectList(){
     const items=questions.map(q=>`<label class="ubt-bank-row"><input type="checkbox" class="bs-pick" value="${esc(q.id)}" ${manual?'':'disabled'} ${picked.has(q.id)?'checked':''} onchange="toggleBankSubjectQuestion(this.value,this.checked)"><span class="info"><strong>${esc(q.text)}</strong></span></label>`).join('');
     const parts=folder.split('/').map(x=>x.trim()).filter(Boolean);
     const label=parts.pop()||folder;
-    return {parents:parts,html:`<details class="bs-folder" ${groups.size===1?'open':''}><summary><button type="button" class="btn btn-p btn-sm" title="Файлдағы барлық сұрақты таңдау" aria-label="Файлдағы барлық сұрақты таңдау" onclick="event.preventDefault();event.stopPropagation();selectBankSubjectFile(${jsq(folder)})">+</button>📄 <strong>${esc(label)}</strong><span class="bs-folder-count">${questions.length} сұрақ · ${selected} белгіленген</span></summary><div class="bs-folder-items">${items}</div></details>`};
+    return {parents:parts,html:`<details class="bs-folder" ${groups.size===1?'open':''}><summary><button type="button" class="btn btn-p btn-sm" title="Файлдағы барлық сұрақты таңдау" aria-label="Файлдағы барлық сұрақты таңдау" onclick="event.preventDefault();event.stopPropagation();selectBankSubjectFile(${jsq(folder)},true)">+</button><button type="button" class="btn btn-s btn-sm" title="Файлдың барлық сұрағын таңдаудан алу" aria-label="Файлдың барлық сұрағын таңдаудан алу" onclick="event.preventDefault();event.stopPropagation();selectBankSubjectFile(${jsq(folder)},false)">−</button>📄 <strong>${esc(label)}</strong><span class="bs-folder-count">${questions.length} сұрақ · ${selected} белгіленген</span></summary><div class="bs-folder-items">${items}</div></details>`};
   });
   const folderTree=new Map();
   folderHtml.forEach(f=>{const key=f.parents.join('/');if(!folderTree.has(key))folderTree.set(key,[]);folderTree.get(key).push(f.html)});
