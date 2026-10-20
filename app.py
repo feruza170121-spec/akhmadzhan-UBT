@@ -2293,8 +2293,10 @@ body.in-test #theme-btn{display:none}
 .bs-folder{border:1px solid var(--b);border-radius:18px;background:var(--c);margin:10px 0;overflow:hidden}
 .bs-folder summary{cursor:pointer;list-style:none;padding:16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .bs-folder summary::-webkit-details-marker{display:none}
-.bs-folder summary:after{content:'▾';margin-left:auto;color:var(--m)}
-.bs-folder[open] summary:after{content:'▴'}
+.bs-folder > summary:before{content:'+';display:inline-flex;align-items:center;justify-content:center;flex:0 0 32px;width:32px;height:32px;border:1px solid var(--b);border-radius:10px;background:var(--p);color:#fff;font-size:24px;font-weight:700;line-height:1}
+.bs-folder[open] > summary:before{content:'−'}
+.bs-folder > summary:focus-visible{outline:2px solid var(--p);outline-offset:-3px}
+.bs-folder > summary > strong{flex:1;min-width:0;overflow-wrap:anywhere}
 .bs-folder-count{font-size:12px;color:var(--m);margin-left:4px}
 .bs-folder-items{padding:8px 12px 12px;border-top:1px solid var(--b)}
 .bs-folder-items .ubt-bank-row:last-child{margin-bottom:0}
