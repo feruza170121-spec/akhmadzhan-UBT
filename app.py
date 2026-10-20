@@ -735,8 +735,15 @@ def _gemini_review_request(api_key, model, body, state):
     def generate(name):
         url = "https://generativelanguage.googleapis.com/v1beta/models/" + urllib.parse.quote(name, safe="") + ":generateContent"
         request = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
-        with urllib.request.urlopen(request, timeout=20) as response:
-            return json.load(response)
+        for attempt in range(2):
+            try:
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    return json.load(response)
+            except urllib.error.HTTPError as error:
+                if error.code not in (502, 503, 504) or attempt == 1:
+                    raise
+                error.close()
+                time.sleep(1)
 
     try:
         return generate(selected)
