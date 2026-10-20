@@ -2293,9 +2293,8 @@ body.in-test #theme-btn{display:none}
 .bs-folder{border:1px solid var(--b);border-radius:18px;background:var(--c);margin:10px 0;overflow:hidden}
 .bs-folder summary{cursor:pointer;list-style:none;padding:16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .bs-folder summary::-webkit-details-marker{display:none}
-.bs-folder > summary:before{content:'+';display:inline-flex;align-items:center;justify-content:center;flex:0 0 32px;width:32px;height:32px;border:1px solid var(--b);border-radius:10px;background:var(--p);color:#fff;font-size:24px;font-weight:700;line-height:1}
-.bs-folder[open] > summary:before{content:'−'}
-.bs-folder > summary:focus-visible{outline:2px solid var(--p);outline-offset:-3px}
+.bs-folder > summary:after{content:'▾';margin-left:auto;color:var(--m)}
+.bs-folder[open] > summary:after{content:'▴'}
 .bs-folder > summary > strong{flex:1;min-width:0;overflow-wrap:anywhere}
 .bs-folder-count{font-size:12px;color:var(--m);margin-left:4px}
 .bs-folder-items{padding:8px 12px 12px;border-top:1px solid var(--b)}
@@ -4598,6 +4597,18 @@ function toggleBankSubjectQuestion(id,on){
   document.getElementById('bs-selected').textContent=String(ubtQuestionBank().filter(q=>q.subject===document.getElementById('bs-subject').value&&picked.has(q.id)).length);
   document.querySelectorAll('.bs-folder').forEach(f=>{const n=f.querySelectorAll('.bs-pick:checked').length;const total=f.querySelectorAll('.bs-pick').length;const badge=f.querySelector('.bs-folder-count');if(badge)badge.textContent=total+' сұрақ · '+n+' белгіленген';});
 }
+function selectBankSubjectFile(folder){
+  if(!user)return;
+  const subject=document.getElementById('bs-subject').value;
+  const key=user.id+'|'+subject;
+  const picked=bankSubjectSelection.get(key)||new Set();
+  // Select the entire file even when a search hides some questions.
+  ubtQuestionBank().filter(q=>q.subject===subject&&(String(q.source||'Жеке сұрақтар').trim()||'Жеке сұрақтар')===folder).forEach(q=>picked.add(q.id));
+  bankSubjectSelection.set(key,picked);
+  const mode=document.querySelector('input[name="bs-mode"][value="manual"]');
+  if(mode)mode.checked=true;
+  renderBankSubjectList();
+}
 function renderBankSubjectList(){
   const sel=document.getElementById('bs-subject'),key=sel.value,bank=ubtQuestionBank();
   const allPool=bank.filter(q=>q.subject===key),manual=bankSubjectMode()==='manual';
@@ -4625,7 +4636,7 @@ function renderBankSubjectList(){
     const items=questions.map(q=>`<label class="ubt-bank-row"><input type="checkbox" class="bs-pick" value="${esc(q.id)}" ${manual?'':'disabled'} ${picked.has(q.id)?'checked':''} onchange="toggleBankSubjectQuestion(this.value,this.checked)"><span class="info"><strong>${esc(q.text)}</strong></span></label>`).join('');
     const parts=folder.split('/').map(x=>x.trim()).filter(Boolean);
     const label=parts.pop()||folder;
-    return {parents:parts,html:`<details class="bs-folder" ${groups.size===1?'open':''}><summary>📄 <strong>${esc(label)}</strong><span class="bs-folder-count">${questions.length} сұрақ · ${selected} белгіленген</span></summary><div class="bs-folder-items">${items}</div></details>`};
+    return {parents:parts,html:`<details class="bs-folder" ${groups.size===1?'open':''}><summary><button type="button" class="btn btn-p btn-sm" title="Файлдағы барлық сұрақты таңдау" aria-label="Файлдағы барлық сұрақты таңдау" onclick="event.preventDefault();event.stopPropagation();selectBankSubjectFile(${jsq(folder)})">+</button>📄 <strong>${esc(label)}</strong><span class="bs-folder-count">${questions.length} сұрақ · ${selected} белгіленген</span></summary><div class="bs-folder-items">${items}</div></details>`};
   });
   const folderTree=new Map();
   folderHtml.forEach(f=>{const key=f.parents.join('/');if(!folderTree.has(key))folderTree.set(key,[]);folderTree.get(key).push(f.html)});
