@@ -3215,7 +3215,7 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
         <label><input type="radio" name="bs-mode" value="random" onchange="renderBankSubjectList()"> 🎲 Базадан кездейсоқ</label>
       </div>
       <div class="fg" id="bs-count-wrap" style="display:none"><label>Кездейсоқ алынатын сұрақ саны</label><input id="bs-count" type="number" min="1" max="500" value="20"></div>
-      <div class="grid2"><div class="fg"><label>🔎 Сұрақ іздеу</label><input id="bs-search" placeholder="Сұрақ немесе папка атауы" oninput="renderBankSubjectList()"></div>
+      <div class="grid2"><div class="fg"><label>🔎 Сұрақ іздеу</label><input id="bs-search" placeholder="Сұрақ немесе папка атауы" oninput="scheduleBankSearch('subject')"></div>
       <div class="fg"><label>⏱ Тест уақыты (минут)</label><input id="bs-timer" type="number" min="1" max="300" placeholder="Бос болса — автоматты"></div></div>
       <div class="fg"><label>📁 Тек осы файлдан сұрақ алу</label><select id="bs-source" onchange="renderBankSubjectList()"><option value="">Барлық файлдар</option></select></div>
       <div class="row" style="justify-content:flex-start;margin:12px 0 16px;position:sticky;top:8px;z-index:25;padding:10px;background:var(--c);border:1px solid var(--b);border-radius:18px;box-shadow:0 5px 20px #00000012"><button class="btn btn-p" id="bs-start" onclick="startBankSubject(bankSubjectMode()==='random')">▶ Тестті бастау</button><button class="btn btn-s" onclick="showQuestionBank()">📚 Сұрақтар базасы</button></div>
@@ -3473,7 +3473,7 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
       </div>
       <div class="grid2">
         <div class="fg"><label>Пән бойынша сүзу</label><select id="u-bank-subject" onchange="renderUbtBank()"></select></div>
-        <div class="fg"><label>Сұрақты іздеу</label><input id="u-bank-search" placeholder="Сұрақ мәтіні" oninput="renderUbtBank()"></div>
+        <div class="fg"><label>Сұрақты іздеу</label><input id="u-bank-search" placeholder="Сұрақ мәтіні" oninput="scheduleBankSearch('bank')"></div>
       </div>
       <div class="row" style="justify-content:flex-start;margin-bottom:16px"><button class="btn btn-ok" onclick="showAddQuestionFromBank()">➕ Сұрақ қосу</button><button class="btn btn-s" onclick="showPublicTests()">🌐 Жария тесттен жүктеу</button></div>
       <p class="sub" style="margin-bottom:8px">📁 Пән → тест файлы → ішіндегі сұрақтар. Файлды ашып, қажетті сұрақтарды белгілеңіз.</p><div id="u-bank-list"></div>
@@ -4723,6 +4723,36 @@ async function startUserTest(id,accessCode){
   st=baseState();st.questions=r.questions.map(q=>({...q,subjectName:r.topic}));st.subjectName=r.topic;st.testId=id;
   st.secureExam=r.exam;st.timerSeconds=r.timer;beginTest();
 }
+const bankSearchTimers=new Map();
+function scheduleBankSearch(kind){
+  clearTimeout(bankSearchTimers.get(kind));
+  bankSearchTimers.set(kind,setTimeout(()=>{bankSearchTimers.delete(kind);if(kind==='subject')renderBankSubjectList();else renderUbtBank()},180));
+}
+let bsFolderData=[],bsVisiblePool=[];
+function loadBankSubjectFolder(details){
+  if(!details.open||details.dataset.loaded)return;
+  details.dataset.loaded='1';
+  appendBankSubjectFolder(details);
+}
+function appendBankSubjectFolder(details){
+  const questions=bsFolderData[Number(details.dataset.folderIndex)]||[];
+  const host=details.querySelector(':scope > .bs-folder-items');
+  const from=Number(details.dataset.shown||0),end=Math.min(from+100,questions.length);
+  const picked=bankSubjectSelection.get(user.id+'|'+document.getElementById('bs-subject').value)||new Set();
+  const manual=bankSubjectMode()==='manual';
+  const more=host.querySelector('.bs-load-more');if(more)more.remove();
+  host.insertAdjacentHTML('beforeend',questions.slice(from,end).map(q=>`<label class="ubt-bank-row"><input type="checkbox" class="bs-pick" value="${esc(q.id)}" ${manual?'':'disabled'} ${picked.has(q.id)?'checked':''} onchange="toggleBankSubjectQuestion(this.value,this.checked)"><span class="info"><strong>${esc(q.text)}</strong></span></label>`).join(''));
+  details.dataset.shown=String(end);
+  if(end<questions.length)host.insertAdjacentHTML('beforeend',`<button type="button" class="btn btn-s bs-load-more" onclick="appendBankSubjectFolder(this.closest('details'))">Тағы көрсету (${questions.length-end})</button>`);
+}
+function updateBankSubjectCounts(){
+  const picked=bankSubjectSelection.get(user.id+'|'+document.getElementById('bs-subject').value)||new Set();
+  document.getElementById('bs-selected').textContent=String(bsVisiblePool.filter(q=>picked.has(q.id)).length);
+  document.querySelectorAll('#bs-list details[data-folder-index]').forEach(f=>{
+    const questions=bsFolderData[Number(f.dataset.folderIndex)]||[];
+    f.querySelector('.bs-folder-count').textContent=questions.length+' сұрақ · '+questions.filter(q=>picked.has(q.id)).length+' белгіленген';
+  });
+}
 const bankSubjectSelection=new Map();
 function bankSubjectMode(){return (document.querySelector('input[name="bs-mode"]:checked')||{}).value||'manual'}
 function startQuickSubject(subject){
@@ -4750,8 +4780,7 @@ function toggleBankSubjectQuestion(id,on){
   const picked=bankSubjectSelection.get(key)||new Set();
   if(on)picked.add(id);else picked.delete(id);
   bankSubjectSelection.set(key,picked);
-  document.getElementById('bs-selected').textContent=String(ubtQuestionBank().filter(q=>q.subject===document.getElementById('bs-subject').value&&picked.has(q.id)).length);
-  document.querySelectorAll('.bs-folder').forEach(f=>{const n=f.querySelectorAll('.bs-pick:checked').length;const total=f.querySelectorAll('.bs-pick').length;const badge=f.querySelector('.bs-folder-count');if(badge)badge.textContent=total+' сұрақ · '+n+' белгіленген';});
+  updateBankSubjectCounts();
 }
 function selectBankSubjectFile(folder,on=true){
   if(!user)return;
@@ -4775,9 +4804,10 @@ function renderBankSubjectList(){
   if(srcEl.innerHTML!==nextOpts){srcEl.innerHTML=nextOpts;if(sources.includes(oldSrc))srcEl.value=oldSrc;}
   const src=srcEl.value,query=(document.getElementById('bs-search').value||'').trim().toLowerCase();
   const pool=allPool.filter(q=>(!src||(q.source||'Жеке сұрақтар')===src)&&(!query||q.text.toLowerCase().includes(query)||String(q.source||'').toLowerCase().includes(query)));
+  const subjectCounts=new Map();bank.forEach(q=>subjectCounts.set(q.subject,(subjectCounts.get(q.subject)||0)+1));
   const icons={history:'🏛',reading:'📖',mathlit:'🔢',math:'📐',physics:'⚡',chemistry:'🧪',biology:'🧬',geography:'🌍',informatics:'💻',english:'🇬🇧',kazakh:'📝',worldhistory:'🌐',law:'⚖️',other:'📚'};
   document.getElementById('bs-subject-grid').innerHTML=Array.from(sel.options).filter(o=>o.value).map(o=>{
-    const n=bank.filter(q=>q.subject===o.value).length;
+    const n=subjectCounts.get(o.value)||0;
     return `<button type="button" class="subject-choice${key===o.value?' selected':''}" aria-pressed="${key===o.value}" onclick="selectBankSubject(${jsq(o.value)})"><span class="subject-mark">${icons[o.value]||'📚'}</span><span><strong>${esc(o.textContent)}</strong><small>${n} сұрақ</small></span></button>`;
   }).join('');
   document.getElementById('bs-heading').textContent='2. '+subjName(key)+' · сұрақтарды таңдаңыз';
@@ -4787,12 +4817,14 @@ function renderBankSubjectList(){
   const visibleCount=pool.filter(q=>picked.has(q.id)).length;
   const groups=new Map();
   pool.forEach(q=>{const folder=String(q.source||'Жеке сұрақтар').trim()||'Жеке сұрақтар';if(!groups.has(folder))groups.set(folder,[]);groups.get(folder).push(q)});
+  bsFolderData=[];bsVisiblePool=pool;
   const folderHtml=Array.from(groups.entries()).map(([folder,questions],idx)=>{
     const selected=questions.filter(q=>picked.has(q.id)).length;
-    const items=questions.map(q=>`<label class="ubt-bank-row"><input type="checkbox" class="bs-pick" value="${esc(q.id)}" ${manual?'':'disabled'} ${picked.has(q.id)?'checked':''} onchange="toggleBankSubjectQuestion(this.value,this.checked)"><span class="info"><strong>${esc(q.text)}</strong></span></label>`).join('');
+    bsFolderData[idx]=questions;
+    const items="";
     const parts=folder.split('/').map(x=>x.trim()).filter(Boolean);
     const label=parts.pop()||folder;
-    return {parents:parts,html:`<details class="bs-folder" ${groups.size===1?'open':''}><summary><button type="button" class="btn btn-p btn-sm" title="Файлдағы барлық сұрақты таңдау" aria-label="Файлдағы барлық сұрақты таңдау" onclick="event.preventDefault();event.stopPropagation();selectBankSubjectFile(${jsq(folder)},true)">+</button><button type="button" class="btn btn-s btn-sm" title="Файлдың барлық сұрағын таңдаудан алу" aria-label="Файлдың барлық сұрағын таңдаудан алу" onclick="event.preventDefault();event.stopPropagation();selectBankSubjectFile(${jsq(folder)},false)">−</button>📄 <strong>${esc(label)}</strong><span class="bs-folder-count">${questions.length} сұрақ · ${selected} белгіленген</span></summary><div class="bs-folder-items">${items}</div></details>`};
+    return {parents:parts,html:`<details class="bs-folder" data-folder-index="${idx}" ontoggle="loadBankSubjectFolder(this)" ${groups.size===1?'open':''}><summary><button type="button" class="btn btn-p btn-sm" title="Файлдағы барлық сұрақты таңдау" aria-label="Файлдағы барлық сұрақты таңдау" onclick="event.preventDefault();event.stopPropagation();selectBankSubjectFile(${jsq(folder)},true)">+</button><button type="button" class="btn btn-s btn-sm" title="Файлдың барлық сұрағын таңдаудан алу" aria-label="Файлдың барлық сұрағын таңдаудан алу" onclick="event.preventDefault();event.stopPropagation();selectBankSubjectFile(${jsq(folder)},false)">−</button>📄 <strong>${esc(label)}</strong><span class="bs-folder-count">${questions.length} сұрақ · ${selected} белгіленген</span></summary><div class="bs-folder-items">${items}</div></details>`};
   });
   const folderTree=new Map();
   folderHtml.forEach(f=>{const key=f.parents.join('/');if(!folderTree.has(key))folderTree.set(key,[]);folderTree.get(key).push(f.html)});
@@ -4803,6 +4835,7 @@ function renderBankSubjectList(){
   }).join('');
   document.getElementById('bs-list').innerHTML=`<p class="sub" style="margin-bottom:10px">Базада: <b>${pool.length}</b> сұрақ · Белгіленгені: <b id="bs-selected">${visibleCount}</b>${manual?'':' · Тест үшін сұрақтар автоматты таңдалады'}</p>`+
     (pool.length?nestedFolders:'<p class="sub">Бұл пәннен сұрақ жоқ. Сұрақтар базасына қосыңыз.</p>');
+  document.querySelectorAll('#bs-list details[data-folder-index][open]').forEach(loadBankSubjectFolder);
 }
 function startBankSubject(random){
   const key=document.getElementById('bs-subject').value,pool=ubtQuestionBank().filter(q=>q.subject===key);
@@ -8707,7 +8740,8 @@ function toggleUbtQuestion(id,on){
   const sections=ubtSections(document.getElementById('u-p1').value,document.getElementById('u-p2').value);
   const section=sections.find(s=>s.key===q.subject);
   if(!section){renderUbt140();return}
-  const selected=new Set(ubtSelectedIDs().filter(k=>bank.some(x=>x.id===k)));
+  const availableIDs=new Set(bank.map(q=>q.id));
+  const selected=new Set(ubtSelectedIDs().filter(k=>availableIDs.has(k)));
   if(on&&bank.filter(x=>x.subject===q.subject&&selected.has(x.id)).length>=section.n){alert('Бұл пәннен '+section.n+' сұрақ таңдалып қойған');renderUbt140();return}
   if(on)selected.add(id);else selected.delete(id);
   LS.set('ubt_ubt140_selection_'+user.id,Array.from(selected));renderUbt140();
@@ -8821,7 +8855,7 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
   header.classList.add('app-header');header.insertBefore(slot,header.firstChild);
   document.body.insertBefore(header,document.getElementById('s-login'));
   header.style.display='none';
-  var current=null,home={};
+  var current=null,home={},lastHeaderScreen=null;
   document.querySelectorAll('.screen').forEach(function(scr){
     if(['s-login','s-home','s-test','s-res'].indexOf(scr.id)>=0)return;
     var btn=null;
@@ -8842,6 +8876,7 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
   });
   function syncHeader(){
     var screen=document.querySelector('.screen.active'),id=screen&&screen.id;
+    if(id===lastHeaderScreen)return;lastHeaderScreen=id;
     if(current&&current.parentNode===slot){var old=home[current.dataset.screen];if(old)old.insertBefore(current,old.firstChild)}
     current=null;
     var visible=!!(id&&id!=='s-login'&&id!=='s-test');
