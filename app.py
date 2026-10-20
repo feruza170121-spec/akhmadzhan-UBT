@@ -2618,6 +2618,23 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
 
 .ubt-cert-btn{background:linear-gradient(110deg,#047857,#0d9488);color:#fff}
 
+
+/* Shared network background, visible for every account and on entry. */
+body,body.dark{background:var(--bg);isolation:isolate}
+body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;background-color:#dce9fb;background-image:linear-gradient(135deg,rgba(242,247,255,.76),rgba(235,239,255,.60)),url("https://img.magnific.com/free-vector/network-connection-background-gradient_23-2148879893.jpg?semt=ais_incoming&w=740&q=80");background-position:center;background-size:cover;background-repeat:no-repeat}
+body.dark::before{background-color:#0c1429;background-image:linear-gradient(135deg,rgba(8,15,35,.56),rgba(14,12,40,.66)),url("https://img.magnific.com/free-vector/network-connection-background-gradient_23-2148879893.jpg?semt=ais_incoming&w=740&q=80")}
+#s-login > .wrap{max-width:520px;min-height:100vh;display:flex;flex-direction:column;justify-content:center;padding:54px 22px 70px}
+#s-login .ubt-welcome{margin-bottom:30px;text-align:center}
+.ubt-brand-label{font-size:10px;font-weight:700;letter-spacing:.24em;color:var(--m);margin-bottom:12px}
+#s-login .ubt-brand-title{font-size:clamp(44px,9vw,72px);font-weight:800;line-height:1.08;letter-spacing:-.055em;margin:0;color:#142651;text-shadow:0 2px 20px #ffffff60}
+#s-login .ubt-brand-title span{color:#6551df}
+body.dark #s-login .ubt-brand-title{color:#f5f8ff;text-shadow:0 4px 24px #050b2470}
+body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
+.ubt-brand-line{width:72px;height:4px;border-radius:4px;background:linear-gradient(90deg,#38bdf8,#8b5cf6);margin:18px auto}
+#s-login .card{border-radius:26px;padding:26px;box-shadow:0 16px 48px #18294b20}
+#s-login .ubt-welcome .sub{font-size:13px}
+@media(max-width:480px){#s-login > .wrap{padding:36px 16px 50px}#s-login .card{padding:20px}.ubt-brand-label{letter-spacing:.15em}}
+
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
@@ -2661,7 +2678,7 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
 
 <div id="s-login" class="screen active">
   <div class="wrap">
-    <div class="hdr"><div class="logo">Ұ+</div><h1>ҰБТ PLUS</h1><p class="sub">Оқушы, мұғалім және админ ретінде кіру</p></div>
+    <div class="hdr ubt-welcome"><div class="ubt-brand-label">БІЛІМГЕ БІР ҚАДАМ ЖАҚЫН</div><h1 class="ubt-brand-title">ҰБТ <span>PLUS</span></h1><div class="ubt-brand-line" aria-hidden="true"></div><p class="sub">Оқушы, мұғалім және админ ретінде кіру</p></div>
     <div class="card" id="login-box">
       <div class="fg"><label>Логин</label><input id="login-name" placeholder="Логин" autocomplete="username" oninput="checkAdminName()"></div>
       <div class="fg"><label>Пароль</label><input id="login-pass" type="password" placeholder="Пароль"></div>
