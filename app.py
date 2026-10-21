@@ -1964,6 +1964,15 @@ def _apply_ops(res):
                 if nv is None:
                     print("[ubt-sec] write rejected:", k[:60])
                 elif db.get(k) != nv:
+                    if res.get("mobile") is True and k.startswith(("ubt_hist_", "ubt_prog_")):
+                        old_items = _jload(db.get(k, "[]"), list, [])
+                        new_items = _jload(nv, list, [])
+                        by_id = {item["id"]: item for item in old_items
+                                 if isinstance(item, dict) and isinstance(item.get("id"), str)}
+                        for item in new_items:
+                            if isinstance(item, dict) and isinstance(item.get("id"), str):
+                                by_id.setdefault(item["id"], item)
+                        nv = _jdump(list(by_id.values()))
                     db[k] = nv
                     state["dirty"].add(k)
                     state["deleted"].discard(k)
@@ -8915,7 +8924,7 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
   var sid=Math.random().toString(36).slice(2,10),n=0,pend={},unacked=[],pollN=0,booted=false,connected=false,first=true,flushT=null,lastH=0,reqN=0,reqs=[],waiters={},renderWaiters=[];
   function noSync(k){return k==='ubt_current'||k==='ubt_dark'||k.indexOf('ubt_cd_')===0||k.indexOf('ubt_')!==0}
   function post(m){m.isStreamlitMessage=true;try{window.parent.postMessage(m,'*')}catch(e){}}
-  function send(){post({type:'streamlit:setComponentValue',dataType:'json',value:{sid:sid,ops:unacked,reqs:reqs,token:window.__token||'',chat:(window.getChatClaim?window.getChatClaim():''),poll:++pollN}})}
+  function send(){if(window.__mobileTransport)return;post({type:'streamlit:setComponentValue',dataType:'json',value:{sid:sid,ops:unacked,reqs:reqs,token:window.__token||'',chat:(window.getChatClaim?window.getChatClaim():''),poll:++pollN}})}
   function call(type,data){
     return new Promise(function(resolve){
       var id=++reqN,done=false;
@@ -8944,7 +8953,7 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
     flushT=setTimeout(function(){flushT=null;send()},250);
   }
   function boot(){
-    if(booted)return;booted=true;
+    if(booted||window.__mobileTransport)return;booted=true;
     var s=document.createElement('script');s.textContent=document.getElementById('app-src').textContent;document.body.appendChild(s);
     try{var _o=window.showScr,_last=null;if(typeof _o==='function'){window.showScr=function(id){var r=_o.apply(this,arguments);if(id!==_last){_last=id;setTimeout(function(){height();toTop()},30)}return r}}}catch(e){}
     height();
@@ -8995,7 +9004,13 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
   setInterval(height,2500);
   window.addEventListener('message',function(ev){
     var d=ev.data;if(!d||d.type!=='streamlit:render')return;
-    var args=d.args||{},db=args.db||{},ack=(args.ack||{})[sid]||0,changed=0;
+    var args=d.args||{};
+    if(window.__mobileTransport){
+      var transport=window.__mobileTransport;
+      if(args.mobileSid===transport.sid)window.top.postMessage({type:'ubt:mobileResponse',channel:transport.channel,args:args},'https://appassets.androidplatform.net');
+      return;
+    }
+    var db=args.db||{},ack=(args.ack||{})[sid]||0,changed=0;
     window.__store=args.store||'';window.__err=args.err||'';
     unacked=unacked.filter(function(o){return o.n>ack});
     Object.keys(pend).forEach(function(k){if(pend[k]<=ack)delete pend[k]});
@@ -9017,6 +9032,16 @@ try{if(user&&document.getElementById('s-home').classList.contains('active'))rend
     if(renderWaiters.length&&(args.tk||'')===(window.__token||'')){var rw=renderWaiters;renderWaiters=[];rw.forEach(function(f){try{f()}catch(e){}})}
     if(!booted)boot();
     else{try{setSyncInd(true);if(changed)syncRefresh();if(window.syncMaintenance)syncMaintenance()}catch(e){}}
+  });
+  // Native app's trusted bundled origin only; relay does not bypass _session/_authorize.
+  window.addEventListener('message',function(ev){
+    var d=ev.data;
+    if(ev.source!==window.top||ev.origin!=='https://appassets.androidplatform.net'||!d||d.type!=='ubt:mobileRequest')return;
+    var value=d.value;
+    if(typeof d.channel!=='string'||d.channel.length!==24||!value||typeof value.sid!=='string'||value.sid.length>40||!Array.isArray(value.ops)||!Array.isArray(value.reqs))return;
+    window.__mobileTransport={sid:value.sid,channel:d.channel};
+    value.mobile=true;
+    post({type:'streamlit:setComponentValue',dataType:'json',value:value});
   });
   window.__bridge={push:push,call:call,refresh:refresh,clearLocal:clearLocal,connected:function(){return connected}};
   post({type:'streamlit:componentReady',apiVersion:1});height();
@@ -9066,7 +9091,7 @@ _sent = (_sid, _tok, _claim, _tk, _rev)
 _unchanged = st.session_state.get("_ubt_sent") == _sent
 _db = {} if _unchanged else _snapshot(_tok, _claim)
 st.session_state["_ubt_sent"] = _sent
-_res = _ubt_comp(db=_db, dbUnchanged=_unchanged, heartbeat=_cur.get("poll"), ack=dict(st.session_state.get("_ubt_ack", {})),
+_res = _ubt_comp(mobileSid=_sid, db=_db, dbUnchanged=_unchanged, heartbeat=_cur.get("poll"), ack=dict(st.session_state.get("_ubt_ack", {})),
                  authres=dict(st.session_state.get("_ubt_authres", {})), tk=_tk, dead=bool(_tok and not _tk),
                  store=_store_mode(_st), err=str(_st.get("err") or "")[:160], key="ubt_comp", default=None)
 if _apply_ops(_res):
