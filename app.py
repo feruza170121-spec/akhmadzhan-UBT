@@ -2749,6 +2749,15 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
  .test-subject-caption strong{font-size:14px}.test-subject-caption small{font-size:10px}
 }
 </style>
+<style>
+/* Question numbers above the test, flowing from left to right. */
+#s-test #sidebar{display:none!important}
+#s-test .tlay{display:block}
+#s-test .tmain{width:100%;max-width:1100px;margin:0 auto;box-sizing:border-box}
+#s-test #qnav{display:flex!important;flex-direction:row!important;flex-wrap:wrap!important;justify-content:flex-start;align-items:center;align-content:flex-start;gap:6px!important;padding:10px 0 14px!important;margin:0 0 10px;overflow:visible!important;flex:none;direction:ltr}
+#s-test #qnav .qn{flex:0 0 34px;width:34px!important;height:34px!important;min-height:34px!important;aspect-ratio:auto!important;border-radius:9px;line-height:1}
+@media(max-width:520px){#s-test #qnav{gap:5px!important}#s-test #qnav .qn{flex-basis:30px;width:30px!important;height:30px!important;min-height:30px!important;font-size:11px}}
+</style>
 </head>
 <body>
 
@@ -3333,11 +3342,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
 
 <div id="s-test" class="screen">
   <div class="tlay">
-    <aside class="side" id="sidebar">
-      <div class="side-h"><span id="t-subj">Пән</span><button class="side-tog" onclick="togSide()">☰</button></div>
-      <div class="qnav" id="qnav"></div>
-      <div class="side-f test-subject-footer"><button class="btn btn-d btn-sm" onclick="finishTest()">Аяқтау</button><button class="btn btn-p btn-sm" id="subject-next-side" onclick="changeTestSubject(1)">Келесі пән →</button></div>
-    </aside>
+    <aside id="sidebar" hidden><span id="t-subj">Пән</span></aside>
     <main class="tmain">
       <div class="test-subject-toolbar">
         <button type="button" class="btn btn-s btn-sm" id="subject-prev" onclick="changeTestSubject(-1)">← Алдыңғы пән</button>
@@ -3351,6 +3356,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
         <div class="prog-t" id="viol" style="display:none;background:#fef2f2;color:var(--err)"></div>
       </div>
       <div class="test-tools"><button class="btn btn-s btn-sm" onclick="openChemTable()">⚗️ Менделеев кестесі</button><button class="btn btn-s btn-sm" onclick="openTestResultsDialog()">🗂️ Нәтижелер</button><button class="btn btn-s btn-sm" onclick="openCalculator()">🧮 Калькулятор</button></div>
+      <div class="qnav" id="qnav" role="navigation" aria-label="Сұрақтар"></div>
       <div class="qc">
         <div class="qh"><span class="qnum" id="qnum">Сұрақ 1</span><span style="display:flex;gap:6px"><button class="flag" id="bm" onclick="togBm()" title="Таңдаулыға сақтау">☆</button><button class="flag" id="flag" onclick="togFlag()">🚩</button></span></div>
         <div class="qt" id="qtext"></div>
@@ -5113,7 +5119,7 @@ function renderNav(){
     'Сұрақ '+(st.currentIndex-section.start+1)+' / '+(section.end-section.start)+
     ' · Жауап берілді: '+st.questions.slice(section.start,section.end).filter(q=>st.answers[q.id]!==undefined).length;
   ['subject-prev'].forEach(id=>{document.getElementById(id).disabled=index<=0});
-  ['subject-next','subject-next-bottom','subject-next-side'].forEach(id=>{document.getElementById(id).disabled=index>=sections.length-1});
+  ['subject-next','subject-next-bottom'].forEach(id=>{document.getElementById(id).disabled=index>=sections.length-1});
   nav.innerHTML=st.questions.slice(section.start,section.end).map((q,offset)=>{
     const i=section.start+offset;
     return `<button type="button" class="qn" data-question-index="${i}" onclick="goQ(${i})" aria-label="${offset+1}-сұрақ">${offset+1}</button>`;
