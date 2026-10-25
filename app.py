@@ -584,8 +584,14 @@ def _start_exam(state, sess, d):
                                  "limit": test.get("limit"), "questions": [dict(q) for q in qs],
                                  "topic": (str(test.get("subjectName") or "") + " · " + str(test.get("topic") or "Тест")).strip(" ·"),
                                  "expires": time.time() + timer + 90}
-        visible = [{**{k: v for k, v in q.items() if k != "correct"}, "id": "examq" + str(i)} for i, q in enumerate(qs)]
-        return {"ok": True, "exam": nonce, "questions": visible, "topic": state["exams"][nonce]["topic"], "timer": timer}
+        # Only the author's own practice tests expose keys before completion.
+        allow_instant = bool(test.get("authorId") == uid and not aid and
+                             not test.get("assignmentId") and not test.get("classId"))
+        visible = [{**{k: v for k, v in q.items() if k != "correct" or allow_instant},
+                    "id": "examq" + str(i)} for i, q in enumerate(qs)]
+        return {"ok": True, "exam": nonce, "questions": visible,
+                "allowInstantFeedback": allow_instant,
+                "topic": state["exams"][nonce]["topic"], "timer": timer}
 
 
 def _start_public_mix(state, sess, d):
@@ -4747,7 +4753,7 @@ async function startUserTest(id,accessCode){
   const r=await authCall('start_exam',{testId:id,accessCode:accessCode||'',assignmentId:permit&&permit.id,attemptToken:permit&&permit.attemptToken});
   if(!r.ok){alert(r.msg||'Тест басталмады');return}
   st=baseState();st.questions=r.questions.map(q=>({...q,subjectName:r.topic}));st.subjectName=r.topic;st.testId=id;
-  st.secureExam=r.exam;st.timerSeconds=r.timer;beginTest();
+  st.secureExam=r.exam;st.allowInstantFeedback=r.allowInstantFeedback===true;st.timerSeconds=r.timer;beginTest();
 }
 const bankSearchTimers=new Map();
 function scheduleBankSearch(kind){
@@ -4884,19 +4890,20 @@ function startBank(key){
   st.timerSeconds=Math.max(b.qs.length*90,600);shuf(st.questions);beginTest();
 }
 function beginTest(){
+  const canInstantFeedback=!st.secureExam||st.allowInstantFeedback===true;
   const existing=document.getElementById('ubt-start-overlay');if(existing)existing.remove();
   const modal=document.createElement('div');modal.id='ubt-start-overlay';modal.className='ovl';
   modal.innerHTML=`<div class="box" style="max-width:470px;margin:9vh auto;padding:28px">
     <h2 style="margin-bottom:8px">📘 Тестті бастау</h2>
     <p class="sub" style="margin-bottom:20px">${esc(st.subjectName||'Тест')} · ${st.questions.length} сұрақ</p>
-    <label class="ubt-instant-switch"><input id="ubt-instant-choice" type="checkbox" ${st.secureExam?'disabled':''}><span><strong>Жауапты бірден шығару</strong><small>${st.secureExam?'Қорғалған тестте жауаптар аяқталғаннан кейін ашылады.':'Жауапты белгілегенде дұрыс не қате екенін бірден көрсетеді.'}</small></span></label>
+    <label class="ubt-instant-switch"><input id="ubt-instant-choice" type="checkbox" ${canInstantFeedback?'':'disabled'}><span><strong>Жауапты бірден шығару</strong><small>${canInstantFeedback?'Жауапты белгілегенде дұрыс не қате екенін бірден көрсетеді.':'Қорғалған тестте жауаптар аяқталғаннан кейін ашылады.'}</small></span></label>
     <p class="sub" style="margin:12px 0 20px">${st.secureExam?'Тапсыру саны нәтиже сақталғанда есептеледі.':'Өшірулі болса, жауаптар тест аяқталғанда көрсетіледі.'}</p>
     <div class="row"><button class="btn btn-s" id="ubt-start-cancel">Бас тарту</button><button class="btn btn-p" id="ubt-start-confirm">▶ Тестті бастау</button></div>
   </div>`;
   document.body.appendChild(modal);
   document.getElementById('ubt-start-cancel').onclick=async()=>{modal.remove();if(st.secureExam){const r=await authCall('cancel_exam',{exam:st.secureExam});if(!r.ok)alert(r.msg||'Тапсыру лимиті сақталды')}st=baseState()};
   document.getElementById('ubt-start-confirm').onclick=()=>{
-    st.instantFeedback=!st.secureExam&&document.getElementById('ubt-instant-choice').checked;
+    st.instantFeedback=canInstantFeedback&&document.getElementById('ubt-instant-choice').checked;
     modal.remove();
     const prepared=st.questions.map(q=>st.secureExam?{...q,options:q.options.slice()}:shuffleOpts({...q,options:Array.isArray(q.options)?q.options.slice():[]}));
     if(st.is140){
@@ -8492,7 +8499,7 @@ async function startPublicMix(){
   const r=await authCall('start_public_mix',{testIds:ids,subject,count});
   if(!r.ok){alert(r.msg||'Аралас тест басталмады');return}
   st=baseState();st.questions=r.questions.map(q=>({...q,subjectName:subjName(subject)}));
-  st.subjectName=r.topic;st.secureExam=r.exam;st.timerSeconds=r.timer;beginTest();
+  st.subjectName=r.topic;st.secureExam=r.exam;st.allowInstantFeedback=r.allowInstantFeedback===true;st.timerSeconds=r.timer;beginTest();
 }
 function showPublicTests(subj){
   pubSubj=(typeof subj==='string')?subj:'';
