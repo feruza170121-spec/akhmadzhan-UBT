@@ -2704,6 +2704,29 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
   documents.forEach(function(d){try{var queued=false;new MutationObserver(function(){if(queued)return;queued=true;setTimeout(function(){queued=false;sync()},0)}).observe(d.documentElement,{childList:true,subtree:true})}catch(e){}});
 })();
 </script>
+<style>
+/* Dense menu rows, including actions revealed by account permissions. */
+#app-menu{width:min(310px,92vw)}
+#app-menu .app-menu-head{padding:8px 12px;min-height:42px}
+#app-menu .app-menu-head strong{font-size:15px}
+#app-menu .app-menu-head .btn{padding:4px 8px;min-height:28px}
+#app-menu nav{padding:4px 7px 10px;min-height:0;scrollbar-width:thin}
+#app-menu .app-menu-home{padding:6px 9px;font-size:12px;min-height:28px}
+#app-menu .app-menu-group{padding:1px 0}
+#app-menu summary{padding:6px 7px;font-size:12px;line-height:16px}
+#app-menu .app-menu-items{gap:0;padding:0 0 3px 5px}
+#app-menu .mode{display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;align-items:center!important;justify-content:flex-start!important;gap:7px!important;min-height:28px!important;padding:4px 7px!important;line-height:18px!important}
+#app-menu .mode[style*="display:none"],#app-menu .mode[style*="display: none"],#app-menu .mode[hidden]{display:none!important}
+#app-menu .mode .ic{display:inline-flex!important;flex:0 0 19px!important;width:19px!important;height:19px!important;font-size:15px!important;line-height:19px!important}
+#app-menu .mode h3{display:block;flex:1;min-width:0;font-size:11.5px!important;line-height:18px!important;white-space:nowrap!important;overflow:hidden;text-overflow:ellipsis;margin:0!important}
+#app-menu .mode .badge{font-size:10px;padding:1px 4px}
+@media(max-height:760px){
+ #app-menu .app-menu-head{padding:5px 10px;min-height:36px}
+ #app-menu .mode{min-height:24px!important;padding-top:2px!important;padding-bottom:2px!important}
+ #app-menu summary{padding-top:4px;padding-bottom:4px}
+ #app-menu .app-menu-home{min-height:24px;padding-top:4px;padding-bottom:4px}
+}
+</style>
 </head>
 <body>
 
@@ -2874,8 +2897,8 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
       <button class="mode" onclick="showQuestionBank()" style="grid-column:1/-1"><span class="ic">📚</span><h3>Сұрақтар базасы</h3><p>Пәндер бойынша өз сұрақтарым</p></button>
       <button class="mode" id="admin-btn" style="display:none" onclick="showAdmin()"><span class="ic">👑</span><h3>Админ панелі</h3><p>Толық басқару</p></button>
       <button class="mode" id="admin-requests-card" style="display:none" onclick="showAccessRequests()"><span class="ic">📨</span><h3>Өтініштер <span id="home-requests-count"></span></h3><p>Тіркелу өтініштері</p></button>
-      <button class="mode" style="grid-column:1/-1" onclick="exportAll()"><span class="ic">💾</span><h3>Тесттер мен жинақтардың көшірмесі</h3><p>JSON файлға сақтау</p></button>
-      <label class="mode" style="grid-column:1/-1;cursor:pointer"><span class="ic">📥</span><h3>Көшірмеден қалпына келтіру</h3><p>JSON файлын қосу; бар тесттер сақталады</p><input type="file" accept=".json,application/json" style="display:none" onchange="importAll(this)"></label></div></details>
+      <button class="mode" style="grid-column:1/-1" onclick="exportAll()"><span class="ic">💾</span><h3 title="Тесттер мен жинақтардың көшірмесі">Көшірмені сақтау</h3><p>JSON файлға сақтау</p></button>
+      <label class="mode" style="grid-column:1/-1;cursor:pointer"><span class="ic">📥</span><h3 title="Көшірмеден қалпына келтіру">Көшірмеден қалпына келтіру</h3><p>JSON файлын қосу; бар тесттер сақталады</p><input type="file" accept=".json,application/json" style="display:none" onchange="importAll(this)"></label></div></details>
   </nav>
 </aside>
 
