@@ -2727,6 +2727,28 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
  #app-menu .app-menu-home{min-height:24px;padding-top:4px;padding-bottom:4px}
 }
 </style>
+<style>
+#s-test .side{flex:0 0 250px;width:250px;min-width:0}
+#s-test .qnav{display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr))!important;grid-auto-rows:36px!important;gap:5px;align-content:start;padding:10px;min-height:0}
+#s-test .qnav .qn{width:100%;height:36px;min-height:0!important;aspect-ratio:auto!important;border-radius:9px;font-size:12px}
+#s-test .qnav .qn.flg,body.dark #s-test .qnav .qn.flg{background:#b91c1c!important;border-color:#f87171!important;color:#fff!important}
+#s-test .qnav .qn.cur{outline:2px solid var(--p);outline-offset:1px}
+#s-test .tmain{min-width:0;max-width:1000px}
+.test-subject-toolbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:10px;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--b)}
+.test-subject-caption{text-align:center;min-width:0}
+.test-subject-caption strong{display:block;font-size:18px;line-height:1.3;overflow-wrap:anywhere}
+.test-subject-caption small{display:block;color:var(--m);font-size:11px;line-height:1.5;margin-top:4px}
+.test-subject-footer{display:flex;gap:8px;justify-content:space-between}
+.test-subject-footer .btn{flex:1;white-space:nowrap;padding-left:8px;padding-right:8px}
+.test-end-actions{margin-top:12px;padding-top:12px;border-top:1px solid var(--b)}
+#s-test .btn:disabled{opacity:.4;cursor:default}
+@media(max-width:768px){
+ #s-test .side{flex-basis:auto}
+ .test-subject-toolbar{gap:5px;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr) minmax(0,1fr)}
+ .test-subject-toolbar .btn{font-size:10px;padding:7px 4px;white-space:normal}
+ .test-subject-caption strong{font-size:14px}.test-subject-caption small{font-size:10px}
+}
+</style>
 </head>
 <body>
 
@@ -3314,9 +3336,14 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
     <aside class="side" id="sidebar">
       <div class="side-h"><span id="t-subj">Пән</span><button class="side-tog" onclick="togSide()">☰</button></div>
       <div class="qnav" id="qnav"></div>
-      <div class="side-f"><button class="btn btn-d btn-sm" style="width:100%" onclick="finishTest()">Аяқтау</button></div>
+      <div class="side-f test-subject-footer"><button class="btn btn-d btn-sm" onclick="finishTest()">Аяқтау</button><button class="btn btn-p btn-sm" id="subject-next-side" onclick="changeTestSubject(1)">Келесі пән →</button></div>
     </aside>
     <main class="tmain">
+      <div class="test-subject-toolbar">
+        <button type="button" class="btn btn-s btn-sm" id="subject-prev" onclick="changeTestSubject(-1)">← Алдыңғы пән</button>
+        <div class="test-subject-caption"><strong id="test-subject-title">Пән</strong><small id="test-subject-progress" aria-live="polite"></small></div>
+        <button type="button" class="btn btn-s btn-sm" id="subject-next" onclick="changeTestSubject(1)">Келесі пән →</button>
+      </div>
       <div class="ttop">
         <div class="prog-t" id="prog-t">Сұрақ 1 / 10</div>
         <div class="prog-w"><div class="prog-f" id="prog-f" style="width:0%"></div></div>
@@ -3332,8 +3359,9 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
       </div>
       <div class="navb">
         <button class="btn btn-s" id="prev" onclick="prevQ()">← Алдыңғы</button>
-        <button class="btn btn-p" id="next" onclick="nextQ()">Келесі →</button>
+        <button class="btn btn-p" id="next" onclick="nextQ()">Келесі сұрақ →</button>
       </div>
+      <div class="test-subject-footer test-end-actions"><button class="btn btn-d" onclick="finishTest()">Аяқтау</button><button class="btn btn-p" id="subject-next-bottom" onclick="changeTestSubject(1)">Келесі пән →</button></div>
     </main>
   </div>
 </div>
@@ -5058,23 +5086,50 @@ function pressCalculator(key){
   }
   document.getElementById('calc-display').value=c.value;
 }
+function testSubjectSections(){
+  const sections=[];
+  st.questions.forEach((q,i)=>{
+    const name=q.subjectName||st.subjectName||'Пән';
+    const last=sections[sections.length-1];
+    if(!last||last.name!==name)sections.push({name,start:i,end:i+1});else last.end=i+1;
+  });
+  return sections;
+}
+function currentTestSubject(){
+  const sections=testSubjectSections();
+  const index=sections.findIndex(x=>st.currentIndex>=x.start&&st.currentIndex<x.end);
+  return {sections,index,section:sections[index]};
+}
+function changeTestSubject(step){
+  const {sections,index}=currentTestSubject();
+  const target=sections[index+step];if(target)goQ(target.start);
+}
 function renderNav(){
   const nav=document.getElementById('qnav');
-  if(st.is140){
-    let previous='';
-    nav.innerHTML=st.questions.map((q,i)=>{
-      const name=q.subjectName||'Басқа пән';
-      const heading=name!==previous?`<div class="ubt-subject-header" data-subject-start="${i}"><button type="button" onclick="goQ(${i})">📚 ${esc(name)} <span>→</span></button></div>`:'';
-      previous=name;
-      return heading+`<button class="qn" onclick="goQ(${i})">${i+1}</button>`;
-    }).join('');
-  }else{
-    nav.innerHTML=st.questions.map((_,i)=>`<button class="qn" onclick="goQ(${i})">${i+1}</button>`).join('');
-  }
+  const {sections,index,section}=currentTestSubject();if(!section){nav.innerHTML='';return}
+  document.getElementById('t-subj').textContent=section.name;
+  document.getElementById('test-subject-title').textContent=section.name;
+  document.getElementById('test-subject-progress').textContent=
+    'Сұрақ '+(st.currentIndex-section.start+1)+' / '+(section.end-section.start)+
+    ' · Жауап берілді: '+st.questions.slice(section.start,section.end).filter(q=>st.answers[q.id]!==undefined).length;
+  ['subject-prev'].forEach(id=>{document.getElementById(id).disabled=index<=0});
+  ['subject-next','subject-next-bottom','subject-next-side'].forEach(id=>{document.getElementById(id).disabled=index>=sections.length-1});
+  nav.innerHTML=st.questions.slice(section.start,section.end).map((q,offset)=>{
+    const i=section.start+offset;
+    return `<button type="button" class="qn" data-question-index="${i}" onclick="goQ(${i})" aria-label="${offset+1}-сұрақ">${offset+1}</button>`;
+  }).join('');
   updNav();
 }
-
-function updNav(){document.querySelectorAll('.qn').forEach((b,i)=>{b.classList.remove('cur','ans','flg');if(i===st.currentIndex)b.classList.add('cur');if(st.answers[st.questions[i].id]!==undefined)b.classList.add('ans');if(st.flags[st.questions[i].id])b.classList.add('flg')})}
+function updNav(){
+  document.querySelectorAll('#qnav .qn').forEach(b=>{
+    const i=Number(b.dataset.questionIndex),q=st.questions[i];if(!q)return;
+    b.classList.toggle('cur',i===st.currentIndex);
+    b.classList.toggle('ans',st.answers[q.id]!==undefined);
+    b.classList.toggle('flg',!!st.flags[q.id]);
+    b.setAttribute('aria-current',i===st.currentIndex?'step':'false');
+    b.setAttribute('aria-label',b.textContent+'-сұрақ'+(st.flags[q.id]?' · белгі қойылған':''));
+  });
+}
 let codeColorsLoading=false;
 function ensureCodeColors(){
   if(window.hljs){document.querySelectorAll('#qtext pre code').forEach(el=>window.hljs.highlightElement(el));return}
@@ -5127,7 +5182,7 @@ function renderQ(){
   feedback.innerHTML=revealed?`<div class="ubt-feedback ${chosen===q.correct?'yes':'no'}">${chosen===q.correct?'✅ Дұрыс жауап!':'❌ Қате жауап.'} <span>Дұрысы: <b>${L[q.correct]||''}) ${esc(q.options[q.correct]||'')}</b></span></div>`:'';
   document.getElementById('prev').disabled=st.currentIndex===0;
   document.getElementById('next').textContent=st.currentIndex===st.questions.length-1?'Аяқтау':'Келесі →';
-  updNav();updateProg();
+  renderNav();updateProg();
 }
 function qMedia(q){
   if(!q)return '';
