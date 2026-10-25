@@ -2163,6 +2163,30 @@ html_code = r"""
 <title>ҰБТ+</title>
 <style>
 /* Админ, тіркелу және мұғалім панельдері қайта қосылды. */
+
+/* Compact application navigation; separate from test question navigation. */
+#app-menu-backdrop{position:fixed;inset:0;z-index:220;background:rgba(5,9,24,.5)}
+#app-menu-backdrop[hidden]{display:none}
+#app-menu{position:fixed;left:0;top:0;bottom:0;width:min(300px,86vw);height:100dvh;z-index:221;background:var(--c);color:var(--t);border-right:1px solid var(--b);box-shadow:12px 0 40px #0003;transform:translateX(-105%);visibility:hidden;transition:transform .22s ease,visibility .22s;display:flex;flex-direction:column;overflow:hidden;text-align:left}
+#app-menu.is-open{transform:translateX(0);visibility:visible}
+.app-menu-head{display:flex;align-items:center;justify-content:space-between;padding:18px 16px;border-bottom:1px solid var(--b);flex:none}
+.app-menu-head strong{font-size:18px}
+#app-menu nav{padding:10px 12px 24px;overflow-y:auto;overscroll-behavior:contain;flex:1}
+#app-menu .app-menu-home{font:inherit;font-weight:600;color:var(--t);background:transparent;width:100%;border:0;border-radius:10px;padding:12px;text-align:left;cursor:pointer}
+#app-menu .app-menu-group{border-bottom:1px solid var(--b);padding:4px 0}
+#app-menu summary{padding:12px 8px;cursor:pointer;font-size:14px;font-weight:700;list-style-position:inside}
+#app-menu .app-menu-items{display:flex;flex-direction:column;gap:3px;padding:0 0 8px 10px}
+#app-menu .mode{display:flex;align-items:center;gap:10px;width:100%!important;min-height:44px!important;height:auto!important;padding:10px!important;margin:0!important;border:0!important;border-radius:10px!important;background:transparent!important;box-shadow:none!important;transform:none!important;text-align:left!important;cursor:pointer;color:var(--t);font:inherit}
+#app-menu .mode::before,#app-menu .mode::after{display:none!important}
+#app-menu .mode .ic{display:inline-flex;align-items:center;justify-content:center;width:28px!important;height:28px!important;font-size:19px!important;margin:0!important;padding:0!important;flex:none;background:transparent!important;border-radius:6px!important}
+#app-menu .mode h3{font-size:13px!important;font-weight:600;line-height:1.4;margin:0!important}
+#app-menu .mode p{display:none!important}
+#app-menu .mode:hover,#app-menu .app-menu-home:hover{background:color-mix(in srgb,var(--p) 12%,transparent)!important}
+#app-menu .mode:focus-visible,#app-menu summary:focus-visible{outline:2px solid var(--p);outline-offset:-2px}
+body.app-menu-open{overflow:hidden!important}
+#app-menu-toggle{font-size:20px;padding:7px 11px;flex:none}
+#s-home>.wrap>.hdr{margin-bottom:18px}
+@media(prefers-reduced-motion:reduce){#app-menu{transition:none}}
 </style>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script defer src="https://cdn.jsdelivr.net/npm/mammoth@1.9.1/mammoth.browser.min.js"></script>
@@ -2794,6 +2818,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
 <div id="maintenance-overlay" style="display:none;position:fixed;inset:0;z-index:999999;background:#f8fafc;color:#1e293b;align-items:center;justify-content:center;padding:24px;text-align:center"><div class="card" style="max-width:430px;width:100%;padding:32px"><div style="font-size:52px">🛠</div><h2>Админ өзгеріс енгізіп жатыр</h2><p class="sub">Сайт сәлден кейін қайта ашылады.</p></div></div>
 <div id="s-home" class="screen">
   <div class="profile-bar">
+    <button type="button" id="app-menu-toggle" class="btn btn-s btn-sm" aria-label="Мәзірді ашу" aria-controls="app-menu" aria-expanded="false" onclick="openAppMenu()">☰</button>
     <div class="app-profile" style="display:flex;align-items:center;gap:12px;cursor:pointer" onclick="showMyProfile()">
       <div style="position:relative">
         <div class="avatar" id="avatar" style="width:44px;height:44px;font-size:16px;border:3px solid #93c5fd">?</div>
@@ -2812,21 +2837,26 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
   </div>
   <div class="wrap">
     <div class="hdr"><h2>Басты бет</h2><p class="sub">Тест тапсырыңыз немесе өз тестіңізді құрыңыз</p></div>
-    <button class="mode" id="admin-inbox-card" style="display:none;width:100%;margin-bottom:18px;text-align:left" onclick="showAdminInbox()"><span class="ic">📩</span><h3>Админнен <span id="admin-inbox-badge" class="badge" style="background:#ef4444;color:white;display:none">0</span></h3><p id="admin-inbox-sub">Келген хабарламалар</p></button>
-    <div class="grid2 exam-entry">
-      <button class="mode" onclick="showUbt140()"><span class="ic">🎓</span><h3>140 форматтағы тест</h3><p>120 сұрақ · өз базаңыздан таңдаңыз немесе кездейсоқ алыңыз</p></button>
-      <button class="mode" onclick="startQuickSubject()"><span class="ic">📘</span><h3>Пән тесттерім</h3><p>Әр пәнді бөлек тапсырыңыз · қолмен немесе кездейсоқ</p></button>
-    </div>
+    <button type="button" class="btn btn-p" onclick="openAppMenu()" style="margin-bottom:18px">☰ Бөлімдерді ашу</button>
     <div id="home-extras"></div>
-    <div class="grid2" style="margin-bottom:20px">
-      <div class="mode" onclick="showMyTests()"><div class="ic">📚</div><h3>Менің тесттерім</h3><p>Өз тесттеріңіз</p></div>
+  </div>
+</div>
+
+<div id="app-menu-backdrop" hidden onclick="closeAppMenu()"></div>
+<aside id="app-menu" role="dialog" aria-modal="true" aria-labelledby="app-menu-title" aria-hidden="true" inert>
+  <div class="app-menu-head"><strong id="app-menu-title">Мәзір</strong><button type="button" class="btn btn-s btn-sm" aria-label="Мәзірді жабу" onclick="closeAppMenu()">✕</button></div>
+  <nav aria-label="Негізгі мәзір">
+    <button type="button" class="app-menu-home" onclick="goHome()">⌂ Басты бет</button>
+    <details class="app-menu-group" open><summary>Тесттер</summary><div class="app-menu-items"><button class="mode" onclick="showUbt140()"><span class="ic">🎓</span><h3>140 тест</h3><p>120 сұрақ · өз базаңыздан таңдаңыз немесе кездейсоқ алыңыз</p></button>      <div class="mode" onclick="showMyTests()"><div class="ic">📚</div><h3>Өз тестім</h3><p>Өз тесттеріңіз</p></div><button class="mode" onclick="startQuickSubject()"><span class="ic">📘</span><h3>Пәндік тесттер</h3><p>Әр пәнді бөлек тапсырыңыз · қолмен немесе кездейсоқ</p></button></div></details>
+    <details class="app-menu-group" open><summary>Сабақ</summary><div class="app-menu-items">      <div class="mode" onclick="showLessons()"><div class="ic">🎬</div><h3>Анимация сабақтар</h3><p>Анимация + код</p></div></div></details>
+    <details class="app-menu-group"><summary>Құру және материалдар</summary><div class="app-menu-items">
+
       <div class="mode" onclick="showCreate()"><div class="ic">➕</div><h3>Тест құру</h3><p>Атауы + сұрақтар</p></div>
       <div class="mode" onclick="showAddQ()"><div class="ic">🖼</div><h3>Сұрақ қосу</h3><p>Сурет · кесте · барлық пән</p></div>
       <div class="mode" onclick="showSchemes()"><div class="ic">🗺</div><h3>Схема құру</h3><p>Кезеңдер · карточка · фото</p></div>
-      <div class="mode" onclick="showLessons()"><div class="ic">🎬</div><h3>Анимациялық сабақтар</h3><p>Анимация + код</p></div>
-      <div class="mode" onclick="showLibrary()"><div class="ic">📖</div><h3>Кітапхана</h3><p>Әр пәннің кітаптары бөлек</p></div>
-    </div>
-    <div class="grid2 home-tools">
+
+      <div class="mode" onclick="showLibrary()"><div class="ic">📖</div><h3>Кітапхана</h3><p>Әр пәннің кітаптары бөлек</p></div></div></details>
+    <details class="app-menu-group"><summary>Басқа бөлімдер</summary><div class="app-menu-items">    <button class="mode" id="admin-inbox-card" style="display:none;width:100%;margin-bottom:18px;text-align:left" onclick="showAdminInbox()"><span class="ic">📩</span><h3>Админнен <span id="admin-inbox-badge" class="badge" style="background:#ef4444;color:white;display:none">0</span></h3><p id="admin-inbox-sub">Келген хабарламалар</p></button>
       <button class="mode" onclick="showFormulas()"><span class="ic">📐</span><h3>Формула</h3><p>Формулаларды қарау</p></button>
       <button class="mode" onclick="showMistakes()"><span class="ic">❌</span><h3>Қателер</h3><p>Қате жауаптар</p></button>
       <button class="mode" onclick="showHistory()"><span class="ic">📋</span><h3>Тарих</h3><p>Тест нәтижелері</p></button>
@@ -2845,10 +2875,9 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
       <button class="mode" id="admin-btn" style="display:none" onclick="showAdmin()"><span class="ic">👑</span><h3>Админ панелі</h3><p>Толық басқару</p></button>
       <button class="mode" id="admin-requests-card" style="display:none" onclick="showAccessRequests()"><span class="ic">📨</span><h3>Өтініштер <span id="home-requests-count"></span></h3><p>Тіркелу өтініштері</p></button>
       <button class="mode" style="grid-column:1/-1" onclick="exportAll()"><span class="ic">💾</span><h3>Тесттер мен жинақтардың көшірмесі</h3><p>JSON файлға сақтау</p></button>
-      <label class="mode" style="grid-column:1/-1;cursor:pointer"><span class="ic">📥</span><h3>Көшірмеден қалпына келтіру</h3><p>JSON файлын қосу; бар тесттер сақталады</p><input type="file" accept=".json,application/json" style="display:none" onchange="importAll(this)"></label>
-    </div>
-  </div>
-</div>
+      <label class="mode" style="grid-column:1/-1;cursor:pointer"><span class="ic">📥</span><h3>Көшірмеден қалпына келтіру</h3><p>JSON файлын қосу; бар тесттер сақталады</p><input type="file" accept=".json,application/json" style="display:none" onchange="importAll(this)"></label></div></details>
+  </nav>
+</aside>
 
 <div id="s-admin-inbox" class="screen">
   <div class="wrap">
@@ -4554,7 +4583,42 @@ function adminDelFormula(i){
   const f=LS.get('ubt_formulas',[]);f.splice(i,1);LS.set('ubt_formulas',f);showAdmin();
 }
 
-function showScr(id){document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));document.getElementById(id).classList.add('active');try{chromeSync()}catch(e){}}
+
+let appMenuReturnFocus=null;
+function openAppMenu(){
+  const active=document.querySelector('.screen.active');
+  if(!user||!active||['s-login','s-test'].includes(active.id))return;
+  const menu=document.getElementById('app-menu');
+  appMenuReturnFocus=document.activeElement;
+  menu.inert=false;menu.setAttribute('aria-hidden','false');menu.classList.add('is-open');
+  document.getElementById('app-menu-backdrop').hidden=false;
+  document.getElementById('app-menu-toggle').setAttribute('aria-expanded','true');
+  document.body.classList.add('app-menu-open');
+  menu.querySelector('button').focus();
+}
+function closeAppMenu(restoreFocus=true){
+  const menu=document.getElementById('app-menu');if(!menu)return;
+  menu.classList.remove('is-open');menu.inert=true;menu.setAttribute('aria-hidden','true');
+  document.getElementById('app-menu-backdrop').hidden=true;
+  document.getElementById('app-menu-toggle').setAttribute('aria-expanded','false');
+  document.body.classList.remove('app-menu-open');
+  if(restoreFocus&&appMenuReturnFocus&&appMenuReturnFocus.isConnected)appMenuReturnFocus.focus();
+  appMenuReturnFocus=null;
+}
+document.getElementById('app-menu').addEventListener('click',e=>{
+  if(e.target.closest('.mode, .app-menu-home'))closeAppMenu(false);
+});
+document.addEventListener('keydown',e=>{
+  const menu=document.getElementById('app-menu');if(!menu.classList.contains('is-open'))return;
+  if(e.key==='Escape'){e.preventDefault();closeAppMenu();return}
+  if(e.key!=='Tab')return;
+  const items=[...menu.querySelectorAll('button, summary, [tabindex="0"], input')].filter(el=>!el.disabled&&el.getClientRects().length);
+  if(!items.length)return;
+  const first=items[0],last=items[items.length-1];
+  if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}
+  else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}
+});
+function showScr(id){closeAppMenu(false);document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));document.getElementById(id).classList.add('active');try{chromeSync()}catch(e){}}
 function goHome(){if(lock.on)return;stopTimer();st=baseState();showScr('s-home')}
 
 const BANK={
