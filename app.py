@@ -887,10 +887,61 @@ def _explain_review(state, sess, d):
                 state["ai_review_successes_v2"].setdefault(uid, []).append(time.time())
 
 
+def _catalog_sync(state):
+    """Persistent question catalogue. Legacy banks/tests are import sources only."""
+    catalog = _jload(state["db"].get("ubt_question_catalog", "[]"), list, [])
+    seen = {q.get("id") for q in catalog if isinstance(q, dict)}
+    names = {p.get("id"): p.get("name") for p in _profiles(state).values() if isinstance(p, dict)}
+    changed = False
+    def add(q, uid, subject, origin, name=None):
+        nonlocal changed
+        if not uid or not isinstance(q, dict) or not isinstance(q.get("text"), str) or not q["text"].strip():
+            return
+        if not isinstance(q.get("options"), list) or type(q.get("correct")) is not int or not 0 <= q["correct"] < len(q["options"]):
+            return
+        identity = _jdump([uid, subject, q["text"].strip().lower()])
+        qid = "catalog:" + hashlib.sha256(identity.encode()).hexdigest()
+        if qid in seen:
+            return
+        seen.add(qid)
+        catalog.append({**q, "id": qid, "subject": subject, "authorId": uid,
+                        "authorName": names.get(uid) or name or uid, "source": origin, "deleted": False})
+        changed = True
+    for key, raw in list(state["db"].items()):
+        if key.startswith("ubt_qbank_") and not key.startswith("ubt_qbank_hidden_"):
+            uid = key[len("ubt_qbank_"):]
+            hidden = set(_jload(state["db"].get("ubt_qbank_hidden_" + uid, "[]"), list, []))
+            for q in _jload(raw, list, []):
+                if isinstance(q, dict) and str(q.get("subject")) + "|" + str(q.get("text", "")).strip().lower() not in hidden:
+                    add(q, uid, q.get("subject", "other"), q.get("origin") or "Базаға қосылған")
+    for t in _jload(state["db"].get("ubt_tests", "[]"), list, []):
+        if not isinstance(t, dict) or t.get("assignmentId"):
+            continue
+        for q in t.get("questions", []):
+            add(q, t.get("authorId"), t.get("subject", "other"), t.get("topic") or "Тест", t.get("authorName"))
+    if changed:
+        _put(state, "ubt_question_catalog", _jdump(catalog))
+        _commit(state)
+    return catalog
+
+
 def _handle_req(state, sid, rq):
     typ = rq.get("type")
     d = rq.get("data") if isinstance(rq.get("data"), dict) else {}
     sess = _session(state, rq.get("tok"))
+
+    if typ == "bank_delete_question":
+        if not sess or not sess["admin"]:
+            return {"ok": False, "msg": "Сұрақты тек админ өшіре алады"}
+        with state["lock"]:
+            catalog = _catalog_sync(state)
+            q = next((q for q in catalog if q.get("id") == d.get("id") and not q.get("deleted")), None)
+            if not q:
+                return {"ok": False, "msg": "Сұрақ табылмады"}
+            q["deleted"] = True
+            _put(state, "ubt_question_catalog", _jdump(catalog))
+            _commit(state)
+        return {"ok": True}
 
     controls = _jload(state["db"].get("ubt_site_controls", "{}"), dict, {})
     if typ == "admin_set_site_controls":
@@ -1868,7 +1919,10 @@ def _authorize(state, sess, k, v, chat_token=""):
         return _merge_profiles(state, sess, v)
     if k == "ubt_user_stats":
         return _merge_stats(state, sess, v)
+    if k == "ubt_question_catalog":
+        return None
     if k == "ubt_tests":
+        _catalog_sync(state)  # Archive before a test or its questions are removed.
         return _merge_tests(state, sess, v)
     if k == "ubt_assigned_tests":
         return None  
@@ -1928,6 +1982,24 @@ def _authorize(state, sess, k, v, chat_token=""):
                    len(card["f"]) > 600 or len(card["b"]) > 1200 for card in cards):
                 return None
         return _jdump(decks)
+    if k.startswith("ubt_qbank_hidden_"):
+        return None
+    if k.startswith("ubt_qbank_"):
+        if k != "ubt_qbank_" + sess["uid"]:
+            return None
+        incoming = _jload(v, list, None)
+        if incoming is None or len(incoming) > 10000:
+            return None
+        old = _jload(state["db"].get(k, "[]"), list, [])
+        seen = {(q.get("subject"), q.get("text")) for q in old if isinstance(q, dict)}
+        for q in incoming:
+            if not isinstance(q, dict) or not isinstance(q.get("text"), str):
+                continue
+            identity = (q.get("subject"), q["text"])
+            if identity not in seen:
+                old.append({**q, "authorId": sess["uid"], "authorName": sess["name"]})
+                seen.add(identity)
+        return _jdump(old)
     if k != "ubt_qotd_day" and any(k.startswith(p) for p in _USER_PREFIXES):
         if sess["admin"] or any(k == p + sess["uid"] for p in _USER_PREFIXES):
             return v
@@ -2071,6 +2143,7 @@ def _snapshot(tok="", claim=""):
     """Браузерге жіберілетін дерек: хэштер жоқ, бөтен чаттар жоқ, кірмеген адамға — ештеңе жоқ."""
     state = _store()
     with state["lock"]:
+        _catalog_sync(state)
         db = dict(state["db"])
         sess = _session(state, tok)
         profs = _profiles(state) if sess else {}
@@ -2081,6 +2154,9 @@ def _snapshot(tok="", claim=""):
         chat = _chat_for(db.get("ubt_chat"), sess, claim, state)
     if not sess:
         return {"ubt_chat": chat}
+    catalog = _jload(db.get("ubt_question_catalog", "[]"), list, [])
+    db["ubt_question_catalog"] = _jdump([q for q in catalog if not q.get("deleted") and
+        (sess["admin"] or q.get("authorId") == sess["uid"])])
     db["ubt_chat"] = chat
     assignments = _jload(db.get("ubt_assigned_tests", "[]"), list, [])
     db["ubt_assigned_tests"] = _jdump(assignments if sess["admin"] else [a for a in assignments if isinstance(a, dict) and a.get("uid") == sess["uid"]])
@@ -2864,7 +2940,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
     <div class="card"><h3 style="margin-bottom:10px">📈 График</h3><div id="uv-chart"></div></div>
     <div class="card"><h3 style="margin-bottom:10px">📋 Тест тарихы</h3><div id="uv-hist" class="list"></div></div>
     <div class="card"><h3 style="margin-bottom:10px">❌ Қателері</h3><div id="uv-mist" class="list"></div></div>
-    <div class="card"><h3 style="margin-bottom:8px">📚 Сұрақтар базасы</h3><p class="sub" style="margin-bottom:12px">Осы қолданушының базаға қосқан және өзі жасаған тесттеріндегі сұрақтар</p><div id="uv-question-bank" class="list"></div></div>
+
     <div class="row"><button class="btn btn-s" onclick="showRegistered()">Артқа</button></div>
   </div>
 </div>
@@ -3573,13 +3649,13 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
 
 <div id="s-question-bank" class="screen">
   <div class="wrap">
-    <div class="hdr"><h2>📚 Сұрақтар базасы</h2><p class="sub">Әр пәннің сұрақтары бөлек. Тестте немесе осында қосқан сұрақтарыңыз сақталады.</p></div>
+    <div class="hdr"><h2>📚 Сұрақтар базасы</h2><p class="sub">Бірыңғай база: пәндер және авторлар бойынша. Сұрақтарды тек админ осы жерден өшіреді.</p></div>
     <div class="grid2 exam-entry">
       <button class="mode" onclick="showUbt140()"><span class="ic">🎓</span><h3>140 формат</h3><p>Базадан қолмен не кездейсоқ алу</p></button>
       <button class="mode" onclick="showBankSubjectTest()"><span class="ic">📘</span><h3>Пән тесттерім</h3><p>Әр пәнді жеке тапсыру · қолмен немесе кездейсоқ</p></button>
     </div>
     <div class="card">
-      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:12px"><h3>Пәндер бойынша сұрақтарым</h3><button class="btn btn-s btn-sm" onclick="showMyTests()">📚 Менің тесттерім</button></div>
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:12px"><h3>Пәндер бойынша бірыңғай база</h3><button class="btn btn-s btn-sm" onclick="showMyTests()">📚 Менің тесттерім</button></div>
       <p class="sub" style="margin-bottom:12px">Өзіңіз енгізген сұрақтар пәні бойынша сақталады. 140 форматқа қолмен таңдаңыз немесе өз базаңыздан кездейсоқ алыңыз.</p>
       <div class="card" style="border:1px solid var(--p);margin-bottom:16px">
         <h3>📥 10 000 сұрақты бірден базаға қосу</h3>
@@ -3591,6 +3667,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
       </div>
       <div class="grid2">
         <div class="fg"><label>Пән бойынша сүзу</label><select id="u-bank-subject" onchange="renderUbtBank()"></select></div>
+        <div class="fg"><label>Кім қосқан?</label><select id="u-bank-owner" onchange="renderUbtBank()"><option value="all">Барлығы</option><option value="mine">Мен қосқан сұрақтар</option><option value="others">Адамдар қосқан сұрақтар</option></select></div>
         <div class="fg"><label>Сұрақты іздеу</label><input id="u-bank-search" placeholder="Сұрақ мәтіні" oninput="scheduleBankSearch('bank')"></div>
       </div>
       <div class="row" style="justify-content:flex-start;margin-bottom:16px"><button class="btn btn-ok" onclick="showAddQuestionFromBank()">➕ Сұрақ қосу</button><button class="btn btn-s" onclick="showPublicTests()">🌐 Жария тесттен жүктеу</button></div>
@@ -4588,43 +4665,9 @@ function adminViewUser(id){
   document.getElementById('uv-mist').innerHTML=mist.length?mist.map(q=>`
     <div class="item"><div class="info"><h4>${esc((q.text||'').substring(0,80))}</h4><p>${esc(q.subjectName||'')}</p></div></div>`).join(''):'<p class="sub">Қате жоқ</p>';
   document.getElementById('uv-newpass').value='';
-  renderAdminUserQuestions(id);
+
   renderProgress('uv-chart',null,getProg(id));
   showScr('s-user-view');
-}
-function adminUserQuestions(uid){
-  if(!user||!user.isAdmin)return [];
-  const found=[],seen=new Set(),hidden=new Set(LS.get('ubt_qbank_hidden_'+uid,[]));
-  const add=(q,subject,origin)=>{
-    if(!q||typeof q.text!=='string'||!q.text.trim()||!Array.isArray(q.options)||q.options.length<2)return;
-    const correct=Number(q.correct),key=ubtBankIdentity(subject,q.text);
-    if(!Number.isInteger(correct)||correct<0||correct>=q.options.length||seen.has(key)||hidden.has(key))return;
-    seen.add(key);found.push({subject,text:q.text,options:q.options,correct,img:q.img,tbl:q.tbl,origin});
-  };
-  LS.get('ubt_qbank_'+uid,[]).forEach(q=>add(q,q.subject,q.origin||'Сұрақтар базасы'));
-  allTests().filter(t=>t.authorId===uid&&!t.assignmentId).forEach(t=>(t.questions||[]).forEach(q=>add(q,t.subject,t.topic||'Тест')));
-  return found;
-}
-function renderAdminUserQuestions(uid){
-  if(!user||!user.isAdmin||viewingUserId!==uid)return;
-  const qs=adminUserQuestions(uid),el=document.getElementById('uv-question-bank');
-  el.innerHTML=qs.length?`<p class="sub" style="margin-bottom:10px">${qs.length} сұрақ</p><button class="btn btn-p btn-sm" style="margin-bottom:12px" onclick="adminTakeUserQuestions(${jsq(uid)})">📥 Барлығын өз базама алу</button>`
-    +qs.map((q,i)=>`<div class="item"><div class="info"><h4>${esc(q.text)}</h4><p>${esc(subjName(q.subject)||q.subject||'Басқа')} · ${esc(q.origin)} · Дұрыс жауап: ${esc(q.options[q.correct])}</p>${qMedia(q)}</div><button class="btn btn-s btn-sm" onclick="adminTakeUserQuestions(${jsq(uid)},${i})">📥 Алу</button></div>`).join(''):'<p class="sub">Бұл қолданушының сұрақтары әзірге жоқ</p>';
-}
-function adminTakeUserQuestions(uid,index){
-  if(!user||!user.isAdmin||viewingUserId!==uid)return;
-  const qs=adminUserQuestions(uid),selected=Number.isInteger(index)?[qs[index]]:qs;
-  const author=Object.values(LS.get('ubt_profiles',{})).find(p=>p&&p.id===uid);
-  const groups=new Map();
-  for(const q of selected){
-    if(!q||!q.subject)continue;
-    if(!groups.has(q.subject))groups.set(q.subject,[]);
-    groups.get(q.subject).push(q);
-  }
-  const before=LS.get('ubt_qbank_'+user.id,[]).length;
-  groups.forEach((questions,subject)=>rememberQuestionsInBank(subject,questions,'Қолданушы сұрақтары: '+(author&&author.name||uid),true));
-  const added=LS.get('ubt_qbank_'+user.id,[]).length-before;
-  alert(added?'✅ '+added+' сұрақ базаңызға қосылды':'Бұл сұрақтар базаңызда бар немесе жүктеуге жарамсыз');
 }
 function adminChangeUserPass(){return guarded(async()=>{
   if(!viewingUserId||!user||!user.isAdmin)return;
@@ -8737,18 +8780,9 @@ function rememberQuestionsInBank(subject,questions,origin,restore=false){
 }
 function ubtQuestionBank(){
   if(!user)return [];
-  const seen=new Set(),hidden=new Set(LS.get('ubt_qbank_hidden_'+user.id,[])),out=[];
-  function add(q,subject,id,source,editable){
-    if(!q||typeof q.text!=='string'||!q.text.trim()||!Array.isArray(q.options)||q.options.length<2)return;
-    const correct=Number(q.correct);
-    if(!Number.isInteger(correct)||correct<0||correct>=q.options.length)return;
-    const key=ubtBankIdentity(subject,q.text);
-    if(hidden.has(key)||seen.has(key))return;seen.add(key);
-    out.push({id,subject,text:q.text,options:q.options.slice(),correct,source,editable,img:q.img,tbl:q.tbl});
-  }
-  LS.get('ubt_qbank_'+user.id,[]).forEach(q=>add(q,q.subject,'bank:'+q.id,q.origin||'Базаға қосылған',true));
-  myTests().forEach(t=>(t.questions||[]).forEach((q,i)=>add(q,t.subject,'test:'+t.id+':'+i,t.topic||'Менің тестім',false)));
-  return out;
+  const catalog=LS.get('ubt_question_catalog',[]);
+  return catalog.filter(q=>!q.deleted&&(user.isAdmin||q.authorId===user.id))
+    .map(q=>({...q,editable:!!user.isAdmin}));
 }
 function ubtSelectedIDs(){return LS.get('ubt_ubt140_selection_'+user.id,[])}
 function ubtMode(){return (document.querySelector('input[name="u-mode"]:checked')||{}).value||'manual'}
@@ -8893,7 +8927,8 @@ function renderUbtBank(){
   const query=document.getElementById('u-bank-search').value.trim().toLowerCase();
   const sections=ubtSections(document.getElementById('u-p1').value,document.getElementById('u-p2').value);
   const allowed=new Set(sections.map(s=>s.key)),selected=new Set(ubtSelectedIDs()),manual=ubtMode()==='manual';
-  const matched=bank.filter(q=>(!filter||q.subject===filter)&&(!query||q.text.toLowerCase().includes(query)));
+  const owner=document.getElementById('u-bank-owner').value;
+  const matched=bank.filter(q=>(!filter||q.subject===filter)&&(!query||q.text.toLowerCase().includes(query))&&(owner==='all'||(owner==='mine'?q.authorId===user.id:q.authorId!==user.id)));
   const visible=matched.slice(0,150);
   const groups=[...new Set(visible.map(q=>q.subject))];
   const subjectOrder=Array.from(document.querySelectorAll('#c-subject option')).map(o=>o.value);
@@ -8901,17 +8936,17 @@ function renderUbtBank(){
   el.innerHTML=`<p class="sub" style="margin-bottom:10px">Барлығы: <b>${bank.length}</b> · Сүзгіде: <b>${matched.length}</b> · Алғашқы <b>${visible.length}</b> көрсетілді · Таңдалғаны: <b>${bank.filter(q=>selected.has(q.id)).length}</b></p>`+
     (visible.length?groups.map(subject=>{
       const sq=visible.filter(q=>q.subject===subject);
-      const folders=[...new Set(sq.map(q=>q.source||'Басқа сұрақтар'))];
+      const folderName=q=>(q.authorId===user.id?'Мен қосқан сұрақтар':'Адамдар қосқан сұрақтар')+' · '+(q.authorName||q.authorId)+' · '+(q.source||'База');
+      const folders=[...new Set(sq.map(folderName))];
       return `<details class="card" style="margin-top:12px" ${filter?'open':''}><summary style="cursor:pointer;font-weight:700;font-size:16px">📁 ${esc(subjName(subject))} · ${sq.length} сұрақ</summary>`+
         folders.map(folder=>{
-          const fq=sq.filter(q=>(q.source||'Басқа сұрақтар')===folder);
+          const fq=sq.filter(q=>folderName(q)===folder);
           return `<details style="margin:10px 0 0 12px;padding:10px;border:1px solid var(--b);border-radius:14px;background:var(--bg)" ${query?'open':''}><summary style="cursor:pointer;font-weight:600">📄 ${esc(folder)} · ${fq.length} сұрақ</summary><div style="margin-top:12px">`+
           fq.map(q=>{
             const canPick=manual&&allowed.has(q.subject);
             return `<div class="ubt-bank-row"><input type="checkbox" aria-label="140 форматқа қосу" ${selected.has(q.id)?'checked':''} ${canPick?'':'disabled'} onchange="toggleUbtQuestion(${jsq(q.id)},this.checked)">
-            <div class="info"><strong>${esc(q.text)}</strong><p>Дұрыс жауап: ${esc(q.options[q.correct])}</p>${!allowed.has(q.subject)?'<p>Бұл пән таңдалған ҰБТ құрамына кірмейді</p>':''}</div>
-            <select ${q.editable?'':'disabled'} aria-label="Сұрақтың пәнін ауыстыру" title="Сұрақтың пәнін ауыстыру" style="max-width:125px" onchange="moveUbtBankQuestion(${jsq(q.id)},this.value)">${Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value).map(o=>`<option value="${esc(o.value)}" ${o.value===q.subject?'selected':''}>${esc(o.textContent)}</option>`).join('')}</select>
-            ${q.editable?`<button class="btn btn-d btn-sm" onclick="deleteUbtBankQuestion(${jsq(q.id)})">Өшіру</button>`:'<span class="sub">🔒 Тест сұрағы</span>'}</div>`;
+            <div class="info"><strong>${esc(q.text)}</strong><p>Қосқан: ${esc(q.authorName||q.authorId)}</p><p>Дұрыс жауап: ${esc(q.options[q.correct])}</p>${!allowed.has(q.subject)?'<p>Бұл пән таңдалған ҰБТ құрамына кірмейді</p>':''}</div>
+            ${q.editable?`<button class="btn btn-d btn-sm" onclick="deleteUbtBankQuestion(${jsq(q.id)})">Өшіру</button>`:'<span class="sub">🔒 Тек админ өшіреді</span>'}</div>`;
           }).join('')+'</div></details>';
         }).join('')+'</details>';
     }).join(''):'<p class="sub">Бұл сүзгі бойынша сұрақ жоқ. Жаңа сұрақ қосыңыз немесе өз тестіңізді құрыңыз.</p>');
@@ -8927,25 +8962,14 @@ function toggleUbtQuestion(id,on){
   if(on)selected.add(id);else selected.delete(id);
   LS.set('ubt_ubt140_selection_'+user.id,Array.from(selected));renderUbt140();
 }
-function moveUbtBankQuestion(id,target){
-  if(!user)return;
-  const q=ubtQuestionBank().find(x=>x.id===id);
-  if(!q||!target||q.subject===target)return;
-  const existing=ubtQuestionBank().some(x=>x.subject===target&&ubtBankIdentity(target,x.text)===ubtBankIdentity(target,q.text));
-  if(existing){alert('Бұл сұрақ таңдалған пәнде бұрыннан бар');renderUbt140();return}
-  const hiddenKey='ubt_qbank_hidden_'+user.id,hidden=new Set(LS.get(hiddenKey,[]));
-  hidden.add(ubtBankIdentity(q.subject,q.text));LS.set(hiddenKey,Array.from(hidden));
-  LS.set('ubt_qbank_'+user.id,LS.get('ubt_qbank_'+user.id,[]).filter(x=>ubtBankIdentity(x.subject,x.text)!==ubtBankIdentity(q.subject,q.text)));
-  LS.set('ubt_ubt140_selection_'+user.id,ubtSelectedIDs().filter(x=>x!==id));
-  rememberQuestionsInBank(target,[q],'Пәні ауыстырылды: '+subjName(q.subject),true);
-  renderUbt140();
-}
-function deleteUbtBankQuestion(id){
-  const q=ubtQuestionBank().find(x=>x.id===id);
-  if(!q||!confirm('Сұрақты өз базаңыздан өшіру керек пе? Тесттің ішіндегі сұрақ сақталады.'))return;
-  const hiddenKey='ubt_qbank_hidden_'+user.id,hidden=new Set(LS.get(hiddenKey,[]));
-  hidden.add(ubtBankIdentity(q.subject,q.text));LS.set(hiddenKey,Array.from(hidden));
-  LS.set('ubt_qbank_'+user.id,LS.get('ubt_qbank_'+user.id,[]).filter(x=>ubtBankIdentity(x.subject,x.text)!==ubtBankIdentity(q.subject,q.text)));
+async function deleteUbtBankQuestion(id){
+  if(!user||!user.isAdmin||!document.getElementById('s-question-bank').classList.contains('active'))return;
+  if(!confirm('Сұрақты бірыңғай базадан өшіру керек пе? Бұрын сақталған тесттер өзгермейді.'))return;
+  const r=await authCall('bank_delete_question',{id});
+  if(!r.ok){alert(r.msg||'Өшіру орындалмады');return}
+  // Server owns the catalogue; update this view without sending a generic write.
+  const rows=LS.get('ubt_question_catalog',[]).filter(q=>q.id!==id);
+  localStorage.setItem('ubt_question_catalog',JSON.stringify(rows));
   LS.set('ubt_ubt140_selection_'+user.id,ubtSelectedIDs().filter(x=>x!==id));
   renderUbt140();
 }
