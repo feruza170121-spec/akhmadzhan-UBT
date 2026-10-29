@@ -935,18 +935,35 @@ def _handle_req(state, sid, rq):
     d = rq.get("data") if isinstance(rq.get("data"), dict) else {}
     sess = _session(state, rq.get("tok"))
 
-    if typ == "bank_delete_question":
+    if typ in ("bank_delete_question", "bank_delete_file"):
         if not sess or not sess["admin"]:
-            return {"ok": False, "msg": "Сұрақты тек админ өшіре алады"}
+            return {"ok": False, "msg": "Сұрақтарды тек админ өшіре алады"}
         with state["lock"]:
             catalog = _catalog_sync(state)
-            q = next((q for q in catalog if q.get("id") == d.get("id") and not q.get("deleted")), None)
-            if not q:
-                return {"ok": False, "msg": "Сұрақ табылмады"}
-            q["deleted"] = True
+            ids = d.get("ids") if typ == "bank_delete_file" else [d.get("id")]
+            if not isinstance(ids, list) or not 0 < len(ids) <= 20000 or any(not isinstance(i, str) for i in ids):
+                return {"ok": False, "msg": "Сұрақтар тізімі жарамсыз"}
+            wanted = set(ids)
+            targets = []
+            for q in catalog:
+                identity = "local:" + json.dumps([q.get("authorId") or "", q.get("subject") or "other", str(q.get("text") or "").strip().lower()], ensure_ascii=False, separators=(",", ":"))
+                if not q.get("deleted") and (q.get("id") in wanted or identity in wanted):
+                    targets.append(q)
+            if not targets:
+                return {"ok": False, "msg": "Сұрақ табылмады. Базаны жаңартыңыз"}
+            if typ == "bank_delete_file":
+                file_key = d.get("fileKey")
+                if not isinstance(file_key, str) or len(file_key) > 2000:
+                    return {"ok": False, "msg": "Файл жарамсыз"}
+                hidden = _jload(state["db"].get("ubt_question_catalog_files", "[]"), list, [])
+                if file_key not in hidden:
+                    hidden.append(file_key)
+                _put(state, "ubt_question_catalog_files", _jdump(hidden))
+            for q in targets:
+                q["deleted"] = True
             _put(state, "ubt_question_catalog", _jdump(catalog))
             _commit(state)
-        return {"ok": True}
+        return {"ok": True, "count": len(targets)}
 
     controls = _jload(state["db"].get("ubt_site_controls", "{}"), dict, {})
     if typ == "admin_set_site_controls":
@@ -8910,7 +8927,7 @@ function renderUbt140(){
     const ok=(manual?chosen:have)>=s.n;
     return `<tr><td>${esc(subjName(s.key))}</td><td>${s.n}</td><td>${have}</td><td style="color:${ok?'var(--ok)':'var(--warn)'};font-weight:700">${manual?chosen:(Math.min(have,s.n))}${ok?'':' ⚠'}</td></tr>`;
   }).join('');
-  document.getElementById('u-info').innerHTML=`<div class="tscroll"><table class="ttable"><tr><th>Пән</th><th>Керек</th><th>Базада</th><th>${manual?'Таңдалған':'Алынатын'}</th></tr>${rows}</table></div><p class="sub" style="margin:8px 0 12px">${p1===p2?'⚠ Екі түрлі бейіндік пән таңдаңыз.':manual?'«Сұрақтар базасы» батырмасын басып, әр пәннен қажетті сұрақтарды белгілеңіз.':'Сұрақтар тек өз базаңыздан кездейсоқ таңдалады.'}</p>`;
+  document.getElementById('u-info').innerHTML=`<div class="tscroll"><table class="ttable"><tr><th>Пән</th><th>Керек</th><th>Базада</th><th>${manual?'Таңдалған':'Алынатын'}</th></tr>${rows}</table></div><p class="sub" style="margin:8px 0 12px">${p1===p2?'⚠ Екі түрлі бейіндік пән таңдаңыз.':manual?'«Сұрақтар базасы» батырмасын басып, әр пәннен қажетті сұрақтарды белгілеңіз.':'Әр пәндегі тақырыптардан кезекпен кездейсоқ алынады: мүмкіндігінше барлық тақырып қамтылады.'}</p>`;
   renderUbtBank();
 }
 let questionBankFolders=[];
@@ -8947,21 +8964,23 @@ function renderUbtBank(){
   for(const t of bankTestSources()){
     const qs=(t.questions||[]).map(q=>{
       const c=byIdentity.get(identity({...q,subject:t.subject,authorId:t.authorId}));
-      if(c)used.add(c.id);
-      return {...q,id:c?c.id:'test:'+t.id+':'+q.id,catalog:!!c};
-    });
-    if(qs.length)folders.push({subject:t.subject,title:t.topic||'Тест',authorId:t.authorId,authorName:t.authorName||t.authorId||'Белгісіз',testId:t.authorId==='system'?null:t.id,questions:qs});
+      if(!c)return null;
+      used.add(c.id);
+      return {...c,catalog:true};
+    }).filter(Boolean);
+    if(qs.length)folders.push({fileKey:JSON.stringify([t.authorId,t.subject,t.id]),subject:t.subject,title:t.topic||'Тест',authorId:t.authorId,authorName:t.authorName||t.authorId||'Белгісіз',testId:t.authorId==='system'?null:t.id,questions:qs});
   }
   const extra=new Map();
   bank.filter(q=>!used.has(q.id)).forEach(q=>{
     const key=JSON.stringify([q.subject,q.authorId,q.source]);
-    if(!extra.has(key))extra.set(key,{subject:q.subject,title:q.source||'Базаға қосылған сұрақтар',authorId:q.authorId,authorName:q.authorName||q.authorId,questions:[]});
+    if(!extra.has(key))extra.set(key,{fileKey:JSON.stringify([q.authorId,q.subject,'source:'+q.source]),subject:q.subject,title:q.source||'Базаға қосылған сұрақтар',authorId:q.authorId,authorName:q.authorName||q.authorId,questions:[]});
     extra.get(key).questions.push({...q,catalog:true});
   });
   folders.push(...extra.values());
-  questionBankFolders=folders.filter(f=>(!filter||f.subject===filter)&&(owner==='all'||(owner==='mine'?f.authorId===user.id:f.authorId!==user.id))&&(!query||(f.title+' '+f.authorName).toLowerCase().includes(query)||f.questions.some(q=>q.text.toLowerCase().includes(query))));
+  const hiddenFiles=new Set(LS.get('ubt_question_catalog_files',[]));
+  questionBankFolders=folders.filter(f=>!hiddenFiles.has(f.fileKey)&&(!filter||f.subject===filter)&&(owner==='all'||(owner==='mine'?f.authorId===user.id:f.authorId!==user.id))&&(!query||(f.title+' '+f.authorName).toLowerCase().includes(query)||f.questions.some(q=>q.text.toLowerCase().includes(query))));
   const subjects=[...new Set(questionBankFolders.map(f=>f.subject))];
-  el.innerHTML=`<p class="sub">Тесттер: ${questionBankFolders.length} · Сұрақтар: ${questionBankFolders.reduce((n,f)=>n+f.questions.length,0)}. Әр тест жеке сақталған, сұрақтары араласпайды.</p>`+subjects.map(subject=>`<details class="card" ${filter?'open':''}><summary>📁 ${esc(subjName(subject))} · ${questionBankFolders.filter(f=>f.subject===subject).length} тест</summary>`+questionBankFolders.map((f,i)=>f.subject!==subject?'':`<details class="card" data-bank-folder="${i}" ontoggle="loadQuestionBankFolder(this)"><summary>📄 ${esc(f.title)} · ${f.questions.length} сұрақ · ${esc(f.authorName)} · ${f.authorId===user.id?'Мен қосқан':f.authorId==='system'?'Дайын тест':'Адамдар қосқан'}</summary><div class="bank-folder-questions"></div></details>`).join('')+'</details>').join('');
+  el.innerHTML=`<p class="sub">Тесттер: ${questionBankFolders.length} · Сұрақтар: ${questionBankFolders.reduce((n,f)=>n+f.questions.length,0)}. Әр тест жеке сақталған, сұрақтары араласпайды.</p>`+subjects.map(subject=>`<details class="card" ${filter?'open':''}><summary>📁 ${esc(subjName(subject))} · ${questionBankFolders.filter(f=>f.subject===subject).length} тест</summary>`+questionBankFolders.map((f,i)=>f.subject!==subject?'':`<details class="card" data-bank-folder="${i}" ontoggle="loadQuestionBankFolder(this)"><summary>📄 ${esc(f.title)} · ${f.questions.length} сұрақ · ${esc(f.authorName)} · ${f.authorId===user.id?'Мен қосқан':f.authorId==='system'?'Дайын тест':'Адамдар қосқан'}</summary>${user.isAdmin?`<button class="btn btn-d btn-sm" style="margin:12px 0" onclick="deleteQuestionBankFile(${i})">🗑 Файлды толық өшіру</button>`:''}<div class="bank-folder-questions"></div></details>`).join('')+'</details>').join('');
   if(!questionBankFolders.length)el.innerHTML+='<p class="sub">Бұл сүзгі бойынша тест жоқ. Барлық пәндер мен барлық авторларды таңдаңыз.</p>';
 }
 function toggleUbtQuestion(id,on){
@@ -8977,7 +8996,7 @@ function toggleUbtQuestion(id,on){
 }
 async function deleteUbtBankQuestion(id){
   if(!user||!user.isAdmin||!document.getElementById('s-question-bank').classList.contains('active'))return;
-  if(!confirm('Сұрақты бірыңғай базадан өшіру керек пе? Бұрын сақталған тесттер өзгермейді.'))return;
+  if(!confirm('Сұрақты базадан өшіру керек пе? Ол 140 форматқа алынбайды.'))return;
   const r=await authCall('bank_delete_question',{id});
   if(!r.ok){alert(r.msg||'Өшіру орындалмады');return}
   // Server owns the catalogue; update this view without sending a generic write.
@@ -8988,6 +9007,39 @@ async function deleteUbtBankQuestion(id){
   LS.set('ubt_ubt140_selection_'+user.id,ubtSelectedIDs().filter(x=>x!==id));
   renderUbt140();
 }
+async function deleteQuestionBankFile(index){
+  const f=questionBankFolders[index];
+  if(!user||!user.isAdmin||!f||!confirm('«'+f.title+'» файлын және ішіндегі '+f.questions.length+' сұрақты базадан толық өшіру керек пе?'))return;
+  const r=await authCall('bank_delete_file',{fileKey:f.fileKey,ids:f.questions.map(q=>q.id)});
+  if(!r.ok){alert(r.msg||'Файл өшірілмеді');return}
+  const gone=new Set(LS.get('ubt_question_catalog_deleted',[]));
+  f.questions.forEach(q=>gone.add(bankQuestionIdentity(q)));
+  localStorage.setItem('ubt_question_catalog_deleted',JSON.stringify([...gone]));
+  const hidden=new Set(LS.get('ubt_question_catalog_files',[]));hidden.add(f.fileKey);
+  localStorage.setItem('ubt_question_catalog_files',JSON.stringify([...hidden]));
+  const ids=new Set(f.questions.map(q=>q.id));
+  LS.set('ubt_ubt140_selection_'+user.id,ubtSelectedIDs().filter(id=>!ids.has(id)));
+  await window.__bridge.refresh();renderUbt140();
+}
+function pickTopicsFor140(pool,count){
+  const allowed=new Map(pool.map(q=>[bankQuestionIdentity(q),q])),groups=new Map(),covered=new Set();
+  bankTestSources().forEach(t=>{
+    const questions=[];
+    (t.questions||[]).forEach(q=>{const row=allowed.get(bankQuestionIdentity({...q,subject:t.subject,authorId:t.authorId}));if(row){questions.push(row);covered.add(row.id)}});
+    if(questions.length)groups.set(JSON.stringify([t.subject,t.authorId,t.id]),shuffled(questions));
+  });
+  pool.filter(q=>!covered.has(q.id)).forEach(q=>{const key=JSON.stringify([q.subject,q.authorId,q.source]);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(q)});
+  const queues=shuffled([...groups.values()].map(shuffled)),picked=[],seen=new Set();
+  while(picked.length<count){
+    let added=0;
+    for(const queue of queues){
+      while(queue.length&&seen.has(queue[queue.length-1].id))queue.pop();
+      if(queue.length){const q=queue.pop();seen.add(q.id);picked.push(q);added++;if(picked.length===count)break}
+    }
+    if(!added)break;
+  }
+  return picked;
+}
 function startUbt140(){
   const p1=document.getElementById('u-p1').value,p2=document.getElementById('u-p2').value;
   if(p1===p2){alert('Екі түрлі бейіндік пән таңдаңыз');return}
@@ -8996,7 +9048,7 @@ function startUbt140(){
   sections.forEach(s=>{
     const pool=bank.filter(q=>q.subject===s.key&&(!manual||selected.has(q.id)));
     if(pool.length<s.n)short.push(subjName(s.key)+': '+pool.length+'/'+s.n);
-    (manual?pool:shuffled(pool)).slice(0,s.n).forEach(q=>qs.push({id:q.id,text:q.text,options:q.options.slice(),correct:q.correct,points:1,subjectName:subjName(s.key)}));
+    (manual?pool.slice(0,s.n):pickTopicsFor140(pool,s.n)).forEach(q=>qs.push({...q,options:q.options.slice(),points:1,subjectName:subjName(s.key)}));
   });
   if(short.length){alert((manual?'Таңдалған сұрақтар':'Өз базаңыздағы сұрақтар')+' жеткіліксіз:\n'+short.join('\n'));return}
   st=baseState();st.questions=qs;st.subjectName='ҰБТ 140 формат';st.is140=true;
