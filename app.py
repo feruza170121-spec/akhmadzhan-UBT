@@ -3003,6 +3003,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
   <nav aria-label="Негізгі мәзір">
     <button type="button" class="app-menu-home" onclick="goHome()">⌂ Басты бет</button>
     <button class="mode" onclick="showUbt140()"><span class="ic">🎓</span><h3>140 формат</h3><p>Сұрақтарды базадан таңдаңыз немесе кездейсоқ алыңыз</p></button>
+    <button class="mode" onclick="startQuickSubject()"><span class="ic">📘</span><h3>Пән тесттерім</h3><p>Әр пән бөлек · базадан өзім таңдау немесе кездейсоқ бастау</p></button>
     <details class="app-menu-group" open><summary>Сабақ</summary><div class="app-menu-items">      <div class="mode" onclick="showLessons()"><div class="ic">🎬</div><h3>Анимация сабақтар</h3><p>Анимация + код</p></div></div></details>
     <details class="app-menu-group"><summary>Құру және материалдар</summary><div class="app-menu-items">
 
@@ -3433,6 +3434,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
       <div class="fg" id="bs-count-wrap" style="display:none"><label>Кездейсоқ алынатын сұрақ саны</label><input id="bs-count" type="number" min="1" max="500" value="20"></div>
       <div class="grid2"><div class="fg"><label>🔎 Сұрақ іздеу</label><input id="bs-search" placeholder="Сұрақ немесе папка атауы" oninput="scheduleBankSearch('subject')"></div>
       <div class="fg"><label>⏱ Тест уақыты (минут)</label><input id="bs-timer" type="number" min="1" max="300" placeholder="Бос болса — автоматты"></div></div>
+      <label class="ubt-instant-switch"><input id="bs-instant" type="checkbox" checked><span><strong>Жауапты бірден шығару</strong><small>Жауап белгілегенде дұрыс не қате екенін көрсетеді.</small></span></label>
       <div class="fg"><label>📁 Тек осы файлдан сұрақ алу</label><select id="bs-source" onchange="renderBankSubjectList()"><option value="">Барлық файлдар</option></select></div>
       <div class="row" style="justify-content:flex-start;margin:12px 0 16px;position:sticky;top:8px;z-index:25;padding:10px;background:var(--c);border:1px solid var(--b);border-radius:18px;box-shadow:0 5px 20px #00000012"><button class="btn btn-p" id="bs-start" onclick="startBankSubject(bankSubjectMode()==='random')">▶ Тестті бастау</button><button class="btn btn-s" onclick="showQuestionBank()">📚 Сұрақтар базасы</button></div>
       <p class="sub" style="margin:6px 0">📁 Файлдарды ашып, сұрақтарды белгілеңіз. Іздеу сұрақтарды сүзеді; белгіленген сұрақтар сақталады.</p><div id="bs-list"></div>
@@ -3669,6 +3671,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
       <div id="u-info"></div>
       <div class="row" style="justify-content:flex-start"><button class="btn btn-s" onclick="showQuestionBank()">📚 Сұрақтар базасы</button><button class="btn btn-p" onclick="startUbt140()">▶ Бастау</button></div>
     </div>
+    <button class="mode" onclick="startQuickSubject()"><span class="ic">📘</span><h3>Пән тесттерім</h3><p>Әр пән бөлек · базадан өзім таңдау немесе кездейсоқ бастау</p></button>
     <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
 </div>
@@ -3676,8 +3679,9 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
 <div id="s-question-bank" class="screen">
   <div class="wrap">
     <div class="hdr"><h2>📚 Сұрақтар базасы</h2><p class="sub">Бірыңғай база: пәндер және авторлар бойынша. Сұрақтарды тек админ осы жерден өшіреді.</p></div>
-    <div class="grid2 exam-entry">
+    <div class="grid2 exam-entry" style="grid-template-columns:1fr">
       <button class="mode" onclick="showUbt140()"><span class="ic">🎓</span><h3>140 формат</h3><p>Базадан қолмен не кездейсоқ алу</p></button>
+      <button class="mode" onclick="startQuickSubject()"><span class="ic">📘</span><h3>Пән тесттерім</h3><p>Әр пән бөлек · базадан өзім таңдау немесе кездейсоқ бастау</p></button>
     </div>
     <div class="card">
       <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:12px"><h3>Пәндер бойынша бірыңғай база</h3></div>
@@ -4876,7 +4880,7 @@ function addBankToNewTest(random){
   const ids=new Set(Array.from(document.querySelectorAll('.c-bank-pick:checked')).map(e=>e.value));
   const picked=random?shuffled(pool).slice(0,count):pool.filter(q=>ids.has(q.id));
   if(!picked.length){alert(random?'Базада бұл пәннің бос сұрақтары жоқ':'Алдымен сұрақтарды белгілеңіз');return}
-  if(random&&picked.length<count){alert('Базада '+count+' сұрақ жоқ. Қолжетімді: '+pool.length);return}
+  if(random&&picked.length<count){alert('Базада '+count+' сұрақ жоқ. Қолжетімді: '+eligible.length);return}
   if(draftQs.length+picked.length>MAX_Q){alert('Бір тестте '+MAX_Q+' сұрақтан аспауы керек');return}
   picked.forEach(q=>draftQs.push({id:'q_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,10),text:q.text,options:q.options.slice(),correct:q.correct,points:1}));
   renderDraft();renderCreateBank();
@@ -4942,10 +4946,10 @@ function updateBankSubjectCounts(){
 const bankSubjectSelection=new Map();
 function bankSubjectMode(){return (document.querySelector('input[name="bs-mode"]:checked')||{}).value||'manual'}
 function startQuickSubject(subject){
-  showUbt140();return;
   const sel=document.getElementById('bs-subject');
   if(!sel.options.length)sel.innerHTML=Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value).map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('');
   const available=ubtQuestionBank();
+  [...new Set(available.map(q=>q.subject))].filter(Boolean).forEach(key=>{if(!Array.from(sel.options).some(o=>o.value===key))sel.add(new Option(subjName(key),key))});
   if(subject&&Array.from(sel.options).some(o=>o.value===subject))sel.value=subject;
   else if(!sel.value||!available.some(q=>q.subject===sel.value))sel.value=(available[0]||{}).subject||'history';
   document.getElementById('bs-count').value=Math.min(20,available.filter(q=>q.subject===sel.value).length)||1;
@@ -4953,7 +4957,6 @@ function startQuickSubject(subject){
   showScr('s-subj');
 }
 function showBankSubjectTest(){
-  showUbt140();return;
   startQuickSubject(document.getElementById('u-bank-subject').value);
 }
 function selectBankSubject(key){
@@ -5035,7 +5038,9 @@ function startBankSubject(random){
   const picked=random?shuffled(eligible).slice(0,count):pool.filter(q=>ids.has(q.id));
   if(!picked.length){alert(random?'Бұл пәннің базасында сұрақ жоқ':'Алдымен сұрақтарды белгілеңіз');return}
   if(random&&picked.length<count){alert('Базада '+count+' сұрақ жоқ. Қолжетімді: '+pool.length);return}
-  st=baseState();st.questions=picked.map(q=>({id:q.id,text:q.text,options:q.options.slice(),correct:q.correct,points:1,subjectName:subjName(key)}));
+  if(picked.length>MAX_Q){alert('Ең көбі '+MAX_Q+' сұрақ таңдаңыз');return}
+  st=baseState();st.questions=picked.map(q=>({...q,options:q.options.slice(),points:1,subjectName:subjName(key)}));
+  st.instantFeedback=document.getElementById('bs-instant').checked;
   st.subjectName=subjName(key)+' · өз базам';
   const mins=Number(document.getElementById('bs-timer').value);
   if(document.getElementById('bs-timer').value&&(mins<1||mins>300||!Number.isInteger(mins))){alert('Уақыт 1–300 минут болуы керек');return}
@@ -5052,7 +5057,7 @@ function beginTest(){
   modal.innerHTML=`<div class="box" style="max-width:470px;margin:9vh auto;padding:28px">
     <h2 style="margin-bottom:8px">📘 Тестті бастау</h2>
     <p class="sub" style="margin-bottom:20px">${esc(st.subjectName||'Тест')} · ${st.questions.length} сұрақ</p>
-    <label class="ubt-instant-switch"><input id="ubt-instant-choice" type="checkbox" ${canInstantFeedback?'':'disabled'}><span><strong>Жауапты бірден шығару</strong><small>${canInstantFeedback?'Жауапты белгілегенде дұрыс не қате екенін бірден көрсетеді.':'Қорғалған тестте жауаптар аяқталғаннан кейін ашылады.'}</small></span></label>
+    <label class="ubt-instant-switch"><input id="ubt-instant-choice" type="checkbox" ${canInstantFeedback&&st.instantFeedback?'checked':''} ${canInstantFeedback?'':'disabled'}><span><strong>Жауапты бірден шығару</strong><small>${canInstantFeedback?'Жауапты белгілегенде дұрыс не қате екенін бірден көрсетеді.':'Қорғалған тестте жауаптар аяқталғаннан кейін ашылады.'}</small></span></label>
     <p class="sub" style="margin:12px 0 20px">${st.secureExam?'Тапсыру саны нәтиже сақталғанда есептеледі.':'Өшірулі болса, жауаптар тест аяқталғанда көрсетіледі.'}</p>
     <div class="row"><button class="btn btn-s" id="ubt-start-cancel">Бас тарту</button><button class="btn btn-p" id="ubt-start-confirm">▶ Тестті бастау</button></div>
   </div>`;
