@@ -1,13 +1,5 @@
-# SECURITY SETUP (run once in Supabase SQL Editor, never in the browser):
-# This table is accessed exclusively by this Python server using SUPABASE_KEY.
-# BEGIN;
-# ALTER TABLE public.ubt_kv ENABLE ROW LEVEL SECURITY;
-# REVOKE ALL ON TABLE public.ubt_kv FROM anon, authenticated, PUBLIC;
-# GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.ubt_kv TO service_role;
-# COMMIT;
-# Keep ADMIN_PASSWORD and SUPABASE_KEY in Streamlit Secrets; never paste them into HTML.
-# Existing public/anon policies do not bypass the revoked table privileges.
 
+import atexit
 import base64
 import binascii
 import hashlib
@@ -28,39 +20,14 @@ import urllib.request
 import streamlit as st
 import streamlit.components.v1 as components
 
-
-
-
-
-
-
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.environ.get("UBT_DATA_FILE") or os.path.join(_HERE, "ubt_data.json")
 FRONT_DIR = os.path.join(_HERE, "ubt_frontend_zheke")
 _NO_SYNC = ("ubt_current", "ubt_dark")
 
-
-
-
-
-
-
-
-
-
-
 _TABLE = "ubt_kv"
 _BOOK_BUCKET = "ubt-books"
 _MAX_BOOK_BYTES = 5 * 1024 * 1024
-
-
-
-
-
-
-
-
-
 
 _PBKDF_ITER = 100_000
 _MIN_PASS = 10
@@ -77,7 +44,6 @@ _SINGLE_DEVICE = True
 _MAX_FAILS = 5
 _FAIL_WINDOW = 600
 
-
 def _sb_conf():
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")
@@ -88,7 +54,7 @@ def _sb_conf():
         pass
     if url and key:
         key = str(key).strip()
-        # This app stores password hashes and exam keys; use a server-only key with RLS.
+        
         privileged = key.startswith("sb_secret_")
         if key.startswith("eyJ"):
             try:
@@ -102,7 +68,6 @@ def _sb_conf():
         return str(url).strip().rstrip("/"), key
     return None
 
-
 def _secret(name):
     v = os.environ.get(name)
     if not v:
@@ -111,7 +76,6 @@ def _secret(name):
         except Exception:
             v = None
     return str(v) if v else None
-
 
 def _sb_call(conf, method, path, body=None, prefer=None, timeout=30):
     url, key = conf
@@ -134,18 +98,16 @@ def _sb_call(conf, method, path, body=None, prefer=None, timeout=30):
         raise RuntimeError("HTTP %s %s" % (e.code, detail))
     return json.loads(raw.decode("utf-8")) if raw else None
 
-
 def _sb_load_all(conf):
-    out, off, step = {}, 0, 200
+    out, off, step = {}, 0, 1000
     while True:
         rows = _sb_call(conf, "GET", "%s?select=key,value&order=key.asc&limit=%d&offset=%d" % (_TABLE, step, off))
         for r in rows or []:
             if isinstance(r, dict) and isinstance(r.get("key"), str) and isinstance(r.get("value"), str):
                 out[r["key"]] = r["value"]
-        if not rows or len(rows) < step:
+        if not rows:
             return out
-        off += step
-
+        off += len(rows)
 
 def _sb_upsert(conf, items):
     batch, size = [], 0
@@ -158,10 +120,8 @@ def _sb_upsert(conf, items):
     if batch:
         _sb_call(conf, "POST", "%s?on_conflict=key" % _TABLE, batch, prefer="resolution=merge-duplicates,return=minimal")
 
-
 def _sb_delete(conf, key):
     _sb_call(conf, "DELETE", "%s?key=eq.%s" % (_TABLE, urllib.parse.quote(key, safe="")), prefer="return=minimal")
-
 
 def _book_storage(conf, method, path, data=None, content_type="application/json"):
     base, key = conf
@@ -172,7 +132,6 @@ def _book_storage(conf, method, path, data=None, content_type="application/json"
     with urllib.request.urlopen(req, timeout=50) as response:
         raw = response.read()
     return json.loads(raw) if raw else {}
-
 
 def _book_storage_bucket(conf):
     try:
@@ -185,13 +144,10 @@ def _book_storage_bucket(conf):
         _book_storage(conf, "POST", "bucket", _jdump({"id": _BOOK_BUCKET, "name": _BOOK_BUCKET,
             "public": False, "file_size_limit": _MAX_BOOK_BYTES, "allowed_mime_types": ["application/pdf"]}).encode("utf-8"))
 
-
-
 def _hash_pw(pw, salt=None, it=_PBKDF_ITER):
     salt = salt or secrets.token_hex(16)
     dk = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), bytes.fromhex(salt), it)
     return {"alg": "pbkdf2_sha256", "it": it, "salt": salt, "hash": dk.hex()}
-
 
 def _check_pw(pw, ph):
     try:
@@ -200,7 +156,6 @@ def _check_pw(pw, ph):
     except Exception:
         return False
 
-
 def _jload(raw, typ, default):
     try:
         v = json.loads(raw)
@@ -208,11 +163,8 @@ def _jload(raw, typ, default):
         return default
     return v if isinstance(v, typ) else default
 
-
 def _jdump(v):
     return json.dumps(v, ensure_ascii=False)
-
-
 
 @st.cache_resource
 def _store():
@@ -233,13 +185,13 @@ def _store():
     _migrate_start(state)
     return state
 
-
 def _put(state, k, v):
+    if k in state["db"] and state["db"][k] == v and k not in state["deleted"]:
+        return
     state["db"][k] = v
     state["rev"] = state.get("rev", 1) + 1
     state["dirty"].add(k)
     state["deleted"].discard(k)
-
 
 def _drop(state, k):
     state["db"].pop(k, None)
@@ -247,14 +199,12 @@ def _drop(state, k):
     state["dirty"].discard(k)
     state["deleted"].add(k)
 
-
 def _commit(state):
     try:
         _db_save(state["db"])
     except Exception:
         pass
     _flush_async(state)
-
 
 def _remote_sync(state):
     """Supabase-тен барлық деректі алады (ол басым). Тек жергілікті бар кілттерді Supabase-ке жібереді."""
@@ -285,7 +235,6 @@ def _remote_sync(state):
     _restore_exams(state)
     _flush_async(state)
     _migrate_start(state)
-
 
 def _flush(state):
     conf = state.get("sb")
@@ -318,7 +267,6 @@ def _flush(state):
             with state["lock"]:
                 state["deleted"].discard(k)
 
-
 def _flush_async(state):
     if not state.get("sb"):
         return
@@ -339,7 +287,6 @@ def _flush_async(state):
                     return
                 state["flush_again"] = False
     threading.Thread(target=run, daemon=True).start()
-
 
 def _ensure_remote(state):
     """Байланыс үзілсе қайта қосады, жіберілмей қалған өзгерістерді қайта жібереді."""
@@ -362,22 +309,58 @@ def _ensure_remote(state):
     elif state["dirty"] or state["deleted"]:
         _flush_async(state)
 
-
 def _store_mode(state):
     if not state.get("sb"):
         return "local"
     return "remote" if state["ok"] and not state["dirty"] else ("pending" if state["ok"] else "error")
 
+_SAVE = {"db": None, "pending": False, "lock": threading.Lock(), "io": threading.Lock()}
+
+def _db_write_now():
+    db = _SAVE["db"]
+    if db is None:
+        return
+    for _ in range(5):
+        try:
+            snap = dict(db)
+            break
+        except RuntimeError:
+            time.sleep(0.01)
+    else:
+        return
+    with _SAVE["io"]:
+        tmp = DATA_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(snap, f, ensure_ascii=False, separators=(",", ":"))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, DATA_FILE)
+
+def _db_save_worker():
+    time.sleep(0.8)
+    with _SAVE["lock"]:
+        _SAVE["pending"] = False
+    try:
+        _db_write_now()
+    except Exception:
+        pass
 
 def _db_save(db):
-    tmp = DATA_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(db, f, ensure_ascii=False)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, DATA_FILE)
+    """Дискіге жазуды фондық ағынға шығарады: бірнеше өзгеріс бір жазуға біріктіріледі."""
+    _SAVE["db"] = db
+    with _SAVE["lock"]:
+        if _SAVE["pending"]:
+            return
+        _SAVE["pending"] = True
+    threading.Thread(target=_db_save_worker, daemon=True).start()
 
+def _db_save_on_exit():
+    try:
+        _db_write_now()
+    except Exception:
+        pass
 
+atexit.register(_db_save_on_exit)
 
 def _migrate_once(state):
     """Ашық мәтінді парольдерді хэшке айналдырады. Ескі ubt_admin_pass кілтін өшіреді."""
@@ -418,7 +401,6 @@ def _migrate_once(state):
             _commit(state)
     return changed
 
-
 def _migrate_start(state):
     if state.get("migrating"):
         return
@@ -434,15 +416,11 @@ def _migrate_start(state):
 
     threading.Thread(target=run, daemon=True).start()
 
-
-
 def _profiles(state):
     return _jload(state["db"].get("ubt_profiles", "{}"), dict, {})
 
-
 def _pub_user(p):
     return {k: v for k, v in p.items() if k not in ("ph", "password")}
-
 
 def _new_session(state, uid, name, admin):
     now = time.time()
@@ -457,7 +435,6 @@ def _new_session(state, uid, name, admin):
                               "exp": now + (_ADMIN_TTL if admin else _USER_TTL)}
     return tok
 
-
 def _session(state, tok):
     if not isinstance(tok, str) or not tok:
         return None
@@ -468,17 +445,20 @@ def _session(state, tok):
         state["sessions"].pop(tok, None)
         return None
     if not s["admin"]:
-        prof = next((p for p in _profiles(state).values() if isinstance(p, dict) and p.get("id") == s["uid"]), None)
+        raw = state["db"].get("ubt_profiles", "{}")
+        cached = state.get("session_profile_index")
+        if cached is None or cached[0] != raw:
+            cached = (raw, {p.get("id"): p for p in _profiles(state).values() if isinstance(p, dict)})
+            state["session_profile_index"] = cached
+        prof = cached[1].get(s["uid"])
         if not prof or prof.get("accessApproved") is not True:
             state["sessions"].pop(tok, None)
             return None
     return s
 
-
 def _revoke_uid(state, uid):
     for t in [t for t, s in state["sessions"].items() if s["uid"] == uid]:
         state["sessions"].pop(t, None)
-
 
 def _is_teacher(state, uid):
     for p in _profiles(state).values():
@@ -486,11 +466,9 @@ def _is_teacher(state, uid):
             return p.get("role") == "teacher" and bool(p.get("teacherApproved"))
     return False
 
-
 def _is_student(state, uid):
     return any(isinstance(p, dict) and p.get("id") == uid and p.get("role") != "teacher"
                for p in _profiles(state).values())
-
 
 def _guest_chat(state, token):
     if not isinstance(token, str) or not token:
@@ -503,8 +481,6 @@ def _guest_chat(state, token):
         return None
     return claim
 
-
-
 def _locked(state, key):
     now = time.time()
     lst = [t for t in state["fails"].get(key, []) if now - t < _FAIL_WINDOW]
@@ -514,17 +490,14 @@ def _locked(state, key):
         state["fails"].pop(key, None)
     return len(lst) >= _MAX_FAILS
 
-
 def _fail(state, *keys):
     if len(state["fails"]) > 20000:
         state["fails"].clear()
     for k in keys:
         state["fails"].setdefault(k, []).append(time.time())
 
-
 _MSG_LOCK = "Тым көп қате әрекет. 10 минуттан кейін қайталаңыз."
 _MSG_BAD = "Логин немесе пароль қате"
-
 
 def _new_uid(state, key):
     ids = {p.get("id") for p in _profiles(state).values() if isinstance(p, dict)}
@@ -533,13 +506,11 @@ def _new_uid(state, key):
         if uid not in ids:
             return uid
 
-
 def _clean_name(raw):
     name = str(raw or "").strip()
     if len(name) < 2 or len(name) > 40 or re.search(r"[\x00-\x1f<>]", name):
         return None
     return name
-
 
 def _restore_exams(state):
     now = time.time()
@@ -552,7 +523,6 @@ def _restore_exams(state):
         else:
             _drop(state, key)
 
-
 def _save_exam(state, token, commit=True):
     now = time.time()
     for old, exam in list(state["exams"].items()):
@@ -564,11 +534,9 @@ def _save_exam(state, token, commit=True):
     if commit:
         _commit(state)
 
-
 def _exam_capacity(state, uid):
     return sum(e.get("uid") == uid and not e.get("completed") and e.get("expires", 0) > time.time()
                for e in state["exams"].values()) < 3
-
 
 def _resume_exam(state, sess, d):
     if not sess or not isinstance(d.get("exam"), str):
@@ -583,7 +551,6 @@ def _resume_exam(state, sess, d):
         visible = [{**{k: v for k, v in q.items() if k != "correct"}, "id": "examq" + str(i)}
                    for i, q in enumerate(exam["questions"])]
         return {"ok": True, "questions": visible, "timer": remaining, "topic": exam["topic"]}
-
 
 def _start_exam(state, sess, d):
     tid = d.get("testId")
@@ -657,7 +624,7 @@ def _start_exam(state, sess, d):
                                  "topic": (str(test.get("subjectName") or "") + " · " + str(test.get("topic") or "Тест")).strip(" ·"),
                                  "expires": time.time() + timer + 90}
         _save_exam(state, nonce)
-        # Only the author's own practice tests expose keys before completion.
+        
         allow_instant = bool(test.get("authorId") == uid and not aid and
                              not test.get("assignmentId") and not test.get("classId"))
         visible = [{**{k: v for k, v in q.items() if k != "correct" or allow_instant},
@@ -665,7 +632,6 @@ def _start_exam(state, sess, d):
         return {"ok": True, "exam": nonce, "questions": visible,
                 "allowInstantFeedback": allow_instant,
                 "topic": state["exams"][nonce]["topic"], "timer": timer}
-
 
 def _start_public_mix(state, sess, d):
     if not sess:
@@ -710,7 +676,6 @@ def _start_public_mix(state, sess, d):
         visible = [{**{k: v for k, v in q.items() if k != "correct"}, "id": "examq" + str(i)}
                    for i, q in enumerate(qs)]
         return {"ok": True, "exam": nonce, "questions": visible, "topic": topic, "timer": timer}
-
 
 def _finish_exam(state, sess, d):
     token = d.get("exam")
@@ -802,7 +767,6 @@ def _finish_exam(state, sess, d):
         _save_exam(state, token)
         return result
 
-
 def _cancel_exam(state, sess, d):
     if not sess or not isinstance(d.get("exam"), str):
         return {"ok": False}
@@ -814,7 +778,6 @@ def _cancel_exam(state, sess, d):
         _drop(state, "ubt_server_exam_" + d["exam"])
         _commit(state)
         return {"ok": True}
-
 
 def _gemini_review_request(api_key, model, body, state):
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
@@ -855,7 +818,7 @@ def _gemini_review_request(api_key, model, body, state):
         token = page.get("nextPageToken")
         if not token:
             break
-    # Only fall back to text models with a documented free tier.
+    
     candidates = [name for name in ("gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash") if name in available and name != selected]
     for name in candidates:
         try:
@@ -872,7 +835,6 @@ def _gemini_review_request(api_key, model, body, state):
             routes[identity] = (name, time.time())
         return result
     raise urllib.error.HTTPError("https://generativelanguage.googleapis.com", 404, "No supported free-tier text model", {}, None)
-
 
 def _explain_review(state, sess, d):
     if not sess:
@@ -971,15 +933,16 @@ def _explain_review(state, sess, d):
             if succeeded:
                 state["ai_review_successes_v2"].setdefault(uid, []).append(time.time())
 
-
 _BUILTIN_BANK_TESTS = json.loads('[{"id": "ubt_read_01", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 01 — Қала кітапханасы", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_01_1", "text": "Мәтін: «Қала кітапханасы»\\nҚала кітапханасы дүйсенбіден сенбіге дейін ашық. Оқырмандар саны көбейген соң кітапхана кешкі сағат сегізге дейін жұмыс істейтін болды. Жексенбіде қызметкерлер кітап қорын реттейді. Жаңа кесте емтиханға дайындалатын оқушыларға ыңғайлы болды.\\n\\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["оқырмандар саны көбейгендіктен", "ешқандай өзгеріс болмағандықтан", "кездейсоқ мереке болғандықтан", "барлығы алдын ала шешілгендіктен"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_01_2", "text": "Мәтін: «Қала кітапханасы»\\nҚала кітапханасы дүйсенбіден сенбіге дейін ашық. Оқырмандар саны көбейген соң кітапхана кешкі сағат сегізге дейін жұмыс істейтін болды. Жексенбіде қызметкерлер кітап қорын реттейді. Жаңа кесте емтиханға дайындалатын оқушыларға ыңғайлы болды.\\n\\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["кешкі сағат сегізге дейін", "қатысушылар саны нөлге түсті", "барлық жұмыс тоқтады", "мәселе күрделене түсті"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_01_3", "text": "Мәтін: «Қала кітапханасы»\\nҚала кітапханасы дүйсенбіден сенбіге дейін ашық. Оқырмандар саны көбейген соң кітапхана кешкі сағат сегізге дейін жұмыс істейтін болды. Жексенбіде қызметкерлер кітап қорын реттейді. Жаңа кесте емтиханға дайындалатын оқушыларға ыңғайлы болды.\\n\\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["мәтінде айтылмаған алыс болашақта", "жексенбіде", "жоба басталмай тұрып", "әрқашан бір мезгілде"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "read_01_4", "text": "Мәтін: «Қала кітапханасы»\\nҚала кітапханасы дүйсенбіден сенбіге дейін ашық. Оқырмандар саны көбейген соң кітапхана кешкі сағат сегізге дейін жұмыс істейтін болды. Жексенбіде қызметкерлер кітап қорын реттейді. Жаңа кесте емтиханға дайындалатын оқушыларға ыңғайлы болды.\\n\\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ештеңені өзгертпеу қажет", "ортақ жұмыс әрқашан зиян", "деректерді тексерудің қажеті жоқ", "емтиханға дайындалатын оқушыларға"], "correct": 3, "points": 2, "difficulty": "қиын"}, {"id": "read_01_5", "text": "Мәтін: «Қала кітапханасы»\\nҚала кітапханасы дүйсенбіден сенбіге дейін ашық. Оқырмандар саны көбейген соң кітапхана кешкі сағат сегізге дейін жұмыс істейтін болды. Жексенбіде қызметкерлер кітап қорын реттейді. Жаңа кесте емтиханға дайындалатын оқушыларға ыңғайлы болды.\\n\\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Мәселені елемеу ең тиімді жол.", "Шешім қабылдау үшін дерек қажет емес."], "correct": 1, "points": 2, "difficulty": "қиын"}], "authorId": "system", "authorName": "Дайын тесттер"}, {"id": "ubt_read_02", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 02 — Суды үнемдеу", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_02_1", "text": "Мәтін: «Суды үнемдеу»\\nМектеп оқушылары бір апта бойы су шығынын бақылап, крандардың кейбірі толық жабылмайтынын анықтады. Олар ақаулы крандарды жөндетіп, әр сыныпқа ескерту ілді. Келесі аптада су тұтыну азайды. Жоба шағын әрекеттердің ортақ нәтижеге әсерін көрсетті.\\n\\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["ешқандай өзгеріс болмағандықтан", "барлығы алдын ала шешілгендіктен", "кездейсоқ мереке болғандықтан", "су шығынын бақылау барысында ақау табылғандықтан"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_02_2", "text": "Мәтін: «Суды үнемдеу»\\nМектеп оқушылары бір апта бойы су шығынын бақылап, крандардың кейбірі толық жабылмайтынын анықтады. Олар ақаулы крандарды жөндетіп, әр сыныпқа ескерту ілді. Келесі аптада су тұтыну азайды. Жоба шағын әрекеттердің ортақ нәтижеге әсерін көрсетті.\\n\\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["су тұтыну азайды", "мәселе күрделене түсті", "барлық жұмыс тоқтады", "қатысушылар саны нөлге түсті"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_02_3", "text": "Мәтін: «Суды үнемдеу»\\nМектеп оқушылары бір апта бойы су шығынын бақылап, крандардың кейбірі толық жабылмайтынын анықтады. Олар ақаулы крандарды жөндетіп, әр сыныпқа ескерту ілді. Келесі аптада су тұтыну азайды. Жоба шағын әрекеттердің ортақ нәтижеге әсерін көрсетті.\\n\\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["жоба басталмай тұрып", "мәтінде айтылмаған алыс болашақта", "әрқашан бір мезгілде", "бір апта бойы"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_02_4", "text": "Мәтін: «Суды үнемдеу»\\nМектеп оқушылары бір апта бойы су шығынын бақылап, крандардың кейбірі толық жабылмайтынын анықтады. Олар ақаулы крандарды жөндетіп, әр сыныпқа ескерту ілді. Келесі аптада су тұтыну азайды. Жоба шағын әрекеттердің ортақ нәтижеге әсерін көрсетті.\\n\\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ештеңені өзгертпеу қажет", "ортақ жұмыс әрқашан зиян", "шағын әрекеттердің нәтижесін көрсетуге", "деректерді тексерудің қажеті жоқ"], "correct": 2, "points": 2, "difficulty": "қиын"}, {"id": "read_02_5", "text": "Мәтін: «Суды үнемдеу»\\nМектеп оқушылары бір апта бойы су шығынын бақылап, крандардың кейбірі толық жабылмайтынын анықтады. Олар ақаулы крандарды жөндетіп, әр сыныпқа ескерту ілді. Келесі аптада су тұтыну азайды. Жоба шағын әрекеттердің ортақ нәтижеге әсерін көрсетті.\\n\\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Шешім қабылдау үшін дерек қажет емес.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Мәселені елемеу ең тиімді жол."], "correct": 1, "points": 2, "difficulty": "қиын"}], "authorId": "system", "authorName": "Дайын тесттер"}, {"id": "ubt_read_03", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 03 — Ауыл бағы", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_03_1", "text": "Мәтін: «Ауыл бағы»\\nАуыл тұрғындары бос жатқан жерге жеміс ағаштарын отырғызды. Алғашқы жылы көшеттердің біразы қурады, өйткені суару жүйесі тұрақты болмады. Келесі жылы тұрғындар кезекшілік кестесін жасап, ағаштарды жүйелі суарды. Соның арқасында көшеттер жақсы өсті.\\n\\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["суару жүйесі тұрақты болмағандықтан", "барлығы алдын ала шешілгендіктен", "кездейсоқ мереке болғандықтан", "ешқандай өзгеріс болмағандықтан"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_03_2", "text": "Мәтін: «Ауыл бағы»\\nАуыл тұрғындары бос жатқан жерге жеміс ағаштарын отырғызды. Алғашқы жылы көшеттердің біразы қурады, өйткені суару жүйесі тұрақты болмады. Келесі жылы тұрғындар кезекшілік кестесін жасап, ағаштарды жүйелі суарды. Соның арқасында көшеттер жақсы өсті.\\n\\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["барлық жұмыс тоқтады", "көшеттер жақсы өсті", "мәселе күрделене түсті", "қатысушылар саны нөлге түсті"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "read_03_3", "text": "Мәтін: «Ауыл бағы»\\nАуыл тұрғындары бос жатқан жерге жеміс ағаштарын отырғызды. Алғашқы жылы көшеттердің біразы қурады, өйткені суару жүйесі тұрақты болмады. Келесі жылы тұрғындар кезекшілік кестесін жасап, ағаштарды жүйелі суарды. Соның арқасында көшеттер жақсы өсті.\\n\\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["мәтінде айтылмаған алыс болашақта", "жоба басталмай тұрып", "әрқашан бір мезгілде", "келесі жылы"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_03_4", "text": "Мәтін: «Ауыл бағы»\\nАуыл тұрғындары бос жатқан жерге жеміс ағаштарын отырғызды. Алғашқы жылы көшеттердің біразы қурады, өйткені суару жүйесі тұрақты болмады. Келесі жылы тұрғындар кезекшілік кестесін жасап, ағаштарды жүйелі суарды. Соның арқасында көшеттер жақсы өсті.\\n\\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ортақ жұмыс әрқашан зиян", "деректерді тексерудің қажеті жоқ", "ортақ жауапкершілікті күшейтуге", "ештеңені өзгертпеу қажет"], "correct": 2, "points": 2, "difficulty": "қиын"}, {"id": "read_03_5", "text": "Мәтін: «Ауыл бағы»\\nАуыл тұрғындары бос жатқан жерге жеміс ағаштарын отырғызды. Алғашқы жылы көшеттердің біразы қурады, өйткені суару жүйесі тұрақты болмады. Келесі жылы тұрғындар кезекшілік кестесін жасап, ағаштарды жүйелі суарды. Соның арқасында көшеттер жақсы өсті.\\n\\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Мәселені елемеу ең тиімді жол.", "Шешім қабылдау үшін дерек қажет емес.", "Кез келген өзгеріс міндетті түрде сәтсіз болады."], "correct": 0, "points": 2, "difficulty": "қиын"}], "authorId": "system", "authorName": "Дайын тесттер"}, {"id": "ubt_read_04", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 04 — Күн энергиясы", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_04_1", "text": "Мәтін: «Күн энергиясы»\\nМектеп шатырына шағын күн панельдері орнатылды. Ашық күндері панельдер зертханадағы шамдарды қуаттандыруға жеткілікті энергия өндірді. Бұлтты күндері қосымша электр желісі қажет болды. Оқушылар жаңартылатын энергияның мүмкіндігімен бірге шектеулерін де зерттеді.\\n\\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["кездейсоқ мереке болғандықтан", "барлығы алдын ала шешілгендіктен", "күн сәулесі тұрақты түспегендіктен", "ешқандай өзгеріс болмағандықтан"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_04_2", "text": "Мәтін: «Күн энергиясы»\\nМектеп шатырына шағын күн панельдері орнатылды. Ашық күндері панельдер зертханадағы шамдарды қуаттандыруға жеткілікті энергия өндірді. Бұлтты күндері қосымша электр желісі қажет болды. Оқушылар жаңартылатын энергияның мүмкіндігімен бірге шектеулерін де зерттеді.\\n\\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["барлық жұмыс тоқтады", "мәселе күрделене түсті", "зертхана шамдары қуаттандырылды", "қатысушылар саны нөлге түсті"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_04_3", "text": "Мәтін: «Күн энергиясы»\\nМектеп шатырына шағын күн панельдері орнатылды. Ашық күндері панельдер зертханадағы шамдарды қуаттандыруға жеткілікті энергия өндірді. Бұлтты күндері қосымша электр желісі қажет болды. Оқушылар жаңартылатын энергияның мүмкіндігімен бірге шектеулерін де зерттеді.\\n\\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["бұлтты күндері", "әрқашан бір мезгілде", "жоба басталмай тұрып", "мәтінде айтылмаған алыс болашақта"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_04_4", "text": "Мәтін: «Күн энергиясы»\\nМектеп шатырына шағын күн панельдері орнатылды. Ашық күндері панельдер зертханадағы шамдарды қуаттандыруға жеткілікті энергия өндірді. Бұлтты күндері қосымша электр желісі қажет болды. Оқушылар жаңартылатын энергияның мүмкіндігімен бірге шектеулерін де зерттеді.\\n\\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ортақ жұмыс әрқашан зиян", "деректерді тексерудің қажеті жоқ", "ештеңені өзгертпеу қажет", "энергия көздерінің шектеулерін түсінуге"], "correct": 3, "points": 2, "difficulty": "қиын"}, {"id": "read_04_5", "text": "Мәтін: «Күн энергиясы»\\nМектеп шатырына шағын күн панельдері орнатылды. Ашық күндері панельдер зертханадағы шамдарды қуаттандыруға жеткілікті энергия өндірді. Бұлтты күндері қосымша электр желісі қажет болды. Оқушылар жаңартылатын энергияның мүмкіндігімен бірге шектеулерін де зерттеді.\\n\\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Шешім қабылдау үшін дерек қажет емес.", "Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Мәселені елемеу ең тиімді жол.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады."], "correct": 3, "points": 2, "difficulty": "қиын"}], "authorId": "system", "authorName": "Дайын тесттер"}, {"id": "ubt_read_05", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 05 — Қоғамдық көлік", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_05_1", "text": "Мәтін: «Қоғамдық көлік»\\nҚалада автобустарға арналған жеке жолақ ашылды. Алғашында кейбір жүргізушілер жаңа тәртіпке үйрене алмады. Бір айдан кейін автобустардың кешігуі азайып, жолаушылар саны өсті. Қала әкімдігі өзгерістің нәтижесін бақылауды жалғастырды.\\n\\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["жаңа тәртіпке бейімделу қажет болғандықтан", "барлығы алдын ала шешілгендіктен", "ешқандай өзгеріс болмағандықтан", "кездейсоқ мереке болғандықтан"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_05_2", "text": "Мәтін: «Қоғамдық көлік»\\nҚалада автобустарға арналған жеке жолақ ашылды. Алғашында кейбір жүргізушілер жаңа тәртіпке үйрене алмады. Бір айдан кейін автобустардың кешігуі азайып, жолаушылар саны өсті. Қала әкімдігі өзгерістің нәтижесін бақылауды жалғастырды.\\n\\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["қатысушылар саны нөлге түсті", "мәселе күрделене түсті", "автобустардың кешігуі азайды", "барлық жұмыс тоқтады"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_05_3", "text": "Мәтін: «Қоғамдық көлік»\\nҚалада автобустарға арналған жеке жолақ ашылды. Алғашында кейбір жүргізушілер жаңа тәртіпке үйрене алмады. Бір айдан кейін автобустардың кешігуі азайып, жолаушылар саны өсті. Қала әкімдігі өзгерістің нәтижесін бақылауды жалғастырды.\\n\\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["жоба басталмай тұрып", "әрқашан бір мезгілде", "бір айдан кейін", "мәтінде айтылмаған алыс болашақта"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_05_4", "text": "Мәтін: «Қоғамдық көлік»\\nҚалада автобустарға арналған жеке жолақ ашылды. Алғашында кейбір жүргізушілер жаңа тәртіпке үйрене алмады. Бір айдан кейін автобустардың кешігуі азайып, жолаушылар саны өсті. Қала әкімдігі өзгерістің нәтижесін бақылауды жалғастырды.\\n\\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["жолаушылар тасымалын жақсартуға", "ештеңені өзгертпеу қажет", "ортақ жұмыс әрқашан зиян", "деректерді тексерудің қажеті жоқ"], "correct": 0, "points": 2, "difficulty": "қиын"}, {"id": "read_05_5", "text": "Мәтін: «Қоғамдық көлік»\\nҚалада автобустарға арналған жеке жолақ ашылды. Алғашында кейбір жүргізушілер жаңа тәртіпке үйрене алмады. Бір айдан кейін автобустардың кешігуі азайып, жолаушылар саны өсті. Қала әкімдігі өзгерістің нәтижесін бақылауды жалғастырды.\\n\\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Шешім қабылдау үшін дерек қажет емес.", "Мәселені елемеу ең тиімді жол.", "Кез келген өзгеріс міндетті түрде сәтсіз болады."], "correct": 0, "points": 2, "difficulty": "қиын"}], "authorId": "system", "authorName": "Дайын тесттер"}, {"id": "ubt_read_06", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 06 — Мектеп газеті", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_06_1", "text": "Мәтін: «Мектеп газеті»\\nОқушылар ай сайын электронды газет шығара бастады. Алғашқы шығарылымда жаңалықтар аз болды. Редакция сыныптардан тілшілер тағайындап, ақпарат жинау жолын өзгертті. Келесі шығарылымдарда мектеп өмірі кеңірек қамтылды.\\n\\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["ешқандай өзгеріс болмағандықтан", "ақпарат жинау жеткіліксіз болғандықтан", "кездейсоқ мереке болғандықтан", "барлығы алдын ала шешілгендіктен"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "read_06_2", "text": "Мәтін: «Мектеп газеті»\\nОқушылар ай сайын электронды газет шығара бастады. Алғашқы шығарылымда жаңалықтар аз болды. Редакция сыныптардан тілшілер тағайындап, ақпарат жинау жолын өзгертті. Келесі шығарылымдарда мектеп өмірі кеңірек қамтылды.\\n\\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["барлық жұмыс тоқтады", "мәселе күрделене түсті", "мектеп өмірі кеңірек қамтылды", "қатысушылар саны нөлге түсті"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_06_3", "text": "Мәтін: «Мектеп газеті»\\nОқушылар ай сайын электронды газет шығара бастады. Алғашқы шығарылымда жаңалықтар аз болды. Редакция сыныптардан тілшілер тағайындап, ақпарат жинау жолын өзгертті. Келесі шығарылымдарда мектеп өмірі кеңірек қамтылды.\\n\\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["келесі шығарылымдарда", "әрқашан бір мезгілде", "жоба басталмай тұрып", "мәтінде айтылмаған алыс болашақта"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_06_4", "text": "Мәтін: «Мектеп газеті»\\nОқушылар ай сайын электронды газет шығара бастады. Алғашқы шығарылымда жаңалықтар аз болды. Редакция сыныптардан тілшілер тағайындап, ақпарат жинау жолын өзгертті. Келесі шығарылымдарда мектеп өмірі кеңірек қамтылды.\\n\\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ортақ жұмыс әрқашан зиян", "ештеңені өзгертпеу қажет", "деректерді тексерудің қажеті жоқ", "ақпарат алмасуды жақсартуға"], "correct": 3, "points": 2, "difficulty": "қиын"}, {"id": "read_06_5", "text": "Мәтін: «Мектеп газеті»\\nОқушылар ай сайын электронды газет шығара бастады. Алғашқы шығарылымда жаңалықтар аз болды. Редакция сыныптардан тілшілер тағайындап, ақпарат жинау жолын өзгертті. Келесі шығарылымдарда мектеп өмірі кеңірек қамтылды.\\n\\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Мәселені елемеу ең тиімді жол.", "Шешім қабылдау үшін дерек қажет емес.", "Кез келген өзгеріс міндетті түрде сәтсіз болады."], "correct": 0, "points": 2, "difficulty": "қиын"}], "authorId": "system", "authorName": "Дайын тесттер"}, {"id": "ubt_read_07", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 07 — Орман соқпағы", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_07_1", "text": "Мәтін: «Орман соқпағы»\\nТуристер орманда белгіленген соқпақтан жиі шығып кететін. Нәтижесінде жас өсімдіктер тапталды. Еріктілер бағыттаушы белгілер қойып, түсіндіру жұмыстарын жүргізді. Біраз уақыттан кейін өсімдіктердің зақымдануы азайды.\\n\\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["ешқандай өзгеріс болмағандықтан", "туристер соқпақтан шығып кеткендіктен", "барлығы алдын ала шешілгендіктен", "кездейсоқ мереке болғандықтан"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "read_07_2", "text": "Мәтін: «Орман соқпағы»\\nТуристер орманда белгіленген соқпақтан жиі шығып кететін. Нәтижесінде жас өсімдіктер тапталды. Еріктілер бағыттаушы белгілер қойып, түсіндіру жұмыстарын жүргізді. Біраз уақыттан кейін өсімдіктердің зақымдануы азайды.\\n\\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["мәселе күрделене түсті", "барлық жұмыс тоқтады", "қатысушылар саны нөлге түсті", "өсімдіктердің зақымдануы азайды"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_07_3", "text": "Мәтін: «Орман соқпағы»\\nТуристер орманда белгіленген соқпақтан жиі шығып кететін. Нәтижесінде жас өсімдіктер тапталды. Еріктілер бағыттаушы белгілер қойып, түсіндіру жұмыстарын жүргізді. Біраз уақыттан кейін өсімдіктердің зақымдануы азайды.\\n\\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["жоба басталмай тұрып", "әрқашан бір мезгілде", "мәтінде айтылмаған алыс болашақта", "біраз уақыттан кейін"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_07_4", "text": "Мәтін: «Орман соқпағы»\\nТуристер орманда белгіленген соқпақтан жиі шығып кететін. Нәтижесінде жас өсімдіктер тапталды. Еріктілер бағыттаушы белгілер қойып, түсіндіру жұмыстарын жүргізді. Біраз уақыттан кейін өсімдіктердің зақымдануы азайды.\\n\\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["табиғатты қорғауға", "ештеңені өзгертпеу қажет", "деректерді тексерудің қажеті жоқ", "ортақ жұмыс әрқашан зиян"], "correct": 0, "points": 2, "difficulty": "қиын"}, {"id": "read_07_5", "text": "Мәтін: «Орман соқпағы»\\nТуристер орманда белгіленген соқпақтан жиі шығып кететін. Нәтижесінде жас өсімдіктер тапталды. Еріктілер бағыттаушы белгілер қойып, түсіндіру жұмыстарын жүргізді. Біраз уақыттан кейін өсімдіктердің зақымдануы азайды.\\n\\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Мәселені елемеу ең тиімді жол.", "Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Шешім қабылдау үшін дерек қажет емес."], "correct": 2, "points": 2, "difficulty": "қиын"}], "authorId": "system", "authorName": "Дайын тесттер"}, {"id": "ubt_read_08", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 08 — Ғылыми үйірме", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_08_1", "text": "Мәтін: «Ғылыми үйірме»\\nҮйірме мүшелері роботты жарысқа дайындады. Алғашқы сынақта робот бұрылыстардан өте алмады. Балалар бағдарламаны түзетіп, бірнеше рет тәжірибе жасады. Соңғы сынақта робот жолды қатесіз жүріп өтті.\\n\\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["кездейсоқ мереке болғандықтан", "барлығы алдын ала шешілгендіктен", "ешқандай өзгеріс болмағандықтан", "бағдарлама бұрылыстарды дұрыс өңдемегендіктен"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_08_2", "text": "Мәтін: «Ғылыми үйірме»\\nҮйірме мүшелері роботты жарысқа дайындады. Алғашқы сынақта робот бұрылыстардан өте алмады. Балалар бағдарламаны түзетіп, бірнеше рет тәжірибе жасады. Соңғы сынақта робот жолды қатесіз жүріп өтті.\\n\\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["робот жолды қатесіз жүріп өтті", "қатысушылар саны нөлге түсті", "барлық жұмыс тоқтады", "мәселе күрделене түсті"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_08_3", "text": "Мәтін: «Ғылыми үйірме»\\nҮйірме мүшелері роботты жарысқа дайындады. Алғашқы сынақта робот бұрылыстардан өте алмады. Балалар бағдарламаны түзетіп, бірнеше рет тәжірибе жасады. Соңғы сынақта робот жолды қатесіз жүріп өтті.\\n\\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["жоба басталмай тұрып", "мәтінде айтылмаған алыс болашақта", "әрқашан бір мезгілде", "соңғы сынақта"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_08_4", "text": "Мәтін: «Ғылыми үйірме»\\nҮйірме мүшелері роботты жарысқа дайындады. Алғашқы сынақта робот бұрылыстардан өте алмады. Балалар бағдарламаны түзетіп, бірнеше рет тәжірибе жасады. Соңғы сынақта робот жолды қатесіз жүріп өтті.\\n\\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["тәжірибе арқылы үйренуге", "ештеңені өзгертпеу қажет", "ортақ жұмыс әрқашан зиян", "деректерді тексерудің қажеті жоқ"], "correct": 0, "points": 2, "difficulty": "қиын"}, {"id": "read_08_5", "text": "Мәтін: «Ғылыми үйірме»\\nҮйірме мүшелері роботты жарысқа дайындады. Алғашқы сынақта робот бұрылыстардан өте алмады. Балалар бағдарламаны түзетіп, бірнеше рет тәжірибе жасады. Соңғы сынақта робот жолды қатесіз жүріп өтті.\\n\\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Шешім қабылдау үшін дерек қажет емес.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Мәселені елемеу ең тиімді жол."], "correct": 2, "points": 2, "difficulty": "қиын"}], "authorId": "system", "authorName": "Дайын тесттер"}, {"id": "ubt_read_09", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 09 — Ескі көпір", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_09_1", "text": "Мәтін: «Ескі көпір»\\nӨзен үстіндегі ескі көпірге жөндеу қажет болды. Мамандар қауіпсіздік үшін көліктердің қозғалысын уақытша тоқтатты. Тұрғындар балама жолды пайдаланды. Жөндеу аяқталғаннан кейін көпір қайта ашылды.\\n\\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["көпірді қауіпсіз жөндеу қажет болғандықтан", "барлығы алдын ала шешілгендіктен", "кездейсоқ мереке болғандықтан", "ешқандай өзгеріс болмағандықтан"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_09_2", "text": "Мәтін: «Ескі көпір»\\nӨзен үстіндегі ескі көпірге жөндеу қажет болды. Мамандар қауіпсіздік үшін көліктердің қозғалысын уақытша тоқтатты. Тұрғындар балама жолды пайдаланды. Жөндеу аяқталғаннан кейін көпір қайта ашылды.\\n\\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["көпір қайта ашылды", "мәселе күрделене түсті", "қатысушылар саны нөлге түсті", "барлық жұмыс тоқтады"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_09_3", "text": "Мәтін: «Ескі көпір»\\nӨзен үстіндегі ескі көпірге жөндеу қажет болды. Мамандар қауіпсіздік үшін көліктердің қозғалысын уақытша тоқтатты. Тұрғындар балама жолды пайдаланды. Жөндеу аяқталғаннан кейін көпір қайта ашылды.\\n\\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["мәтінде айтылмаған алыс болашақта", "әрқашан бір мезгілде", "жоба басталмай тұрып", "жөндеу аяқталғаннан кейін"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_09_4", "text": "Мәтін: «Ескі көпір»\\nӨзен үстіндегі ескі көпірге жөндеу қажет болды. Мамандар қауіпсіздік үшін көліктердің қозғалысын уақытша тоқтатты. Тұрғындар балама жолды пайдаланды. Жөндеу аяқталғаннан кейін көпір қайта ашылды.\\n\\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["жол қауіпсіздігін қамтамасыз етуге", "ештеңені өзгертпеу қажет", "деректерді тексерудің қажеті жоқ", "ортақ жұмыс әрқашан зиян"], "correct": 0, "points": 2, "difficulty": "қиын"}, {"id": "read_09_5", "text": "Мәтін: «Ескі көпір»\\nӨзен үстіндегі ескі көпірге жөндеу қажет болды. Мамандар қауіпсіздік үшін көліктердің қозғалысын уақытша тоқтатты. Тұрғындар балама жолды пайдаланды. Жөндеу аяқталғаннан кейін көпір қайта ашылды.\\n\\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Мәселені елемеу ең тиімді жол.", "Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Шешім қабылдау үшін дерек қажет емес."], "correct": 0, "points": 2, "difficulty": "қиын"}], "authorId": "system", "authorName": "Дайын тесттер"}, {"id": "ubt_read_10", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 10 — Қалдықтарды сұрыптау", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_10_1", "text": "Мәтін: «Қалдықтарды сұрыптау»\\nМектепте қағаз бен пластикке бөлек жәшіктер қойылды. Алғашқы күндері оқушылар қалдықтарды шатастырып салды. Мұғалімдер түсіндірме сабақ өткізді. Бірнеше аптадан кейін сұрыптау сапасы жақсарды.\\n\\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["барлығы алдын ала шешілгендіктен", "кездейсоқ мереке болғандықтан", "ешқандай өзгеріс болмағандықтан", "сұрыптау ережелері түсініксіз болғандықтан"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_10_2", "text": "Мәтін: «Қалдықтарды сұрыптау»\\nМектепте қағаз бен пластикке бөлек жәшіктер қойылды. Алғашқы күндері оқушылар қалдықтарды шатастырып салды. Мұғалімдер түсіндірме сабақ өткізді. Бірнеше аптадан кейін сұрыптау сапасы жақсарды.\\n\\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["мәселе күрделене түсті", "барлық жұмыс тоқтады", "сұрыптау сапасы жақсарды", "қатысушылар саны нөлге түсті"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_10_3", "text": "Мәтін: «Қалдықтарды сұрыптау»\\nМектепте қағаз бен пластикке бөлек жәшіктер қойылды. Алғашқы күндері оқушылар қалдықтарды шатастырып салды. Мұғалімдер түсіндірме сабақ өткізді. Бірнеше аптадан кейін сұрыптау сапасы жақсарды.\\n\\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["бірнеше аптадан кейін", "мәтінде айтылмаған алыс болашақта", "жоба басталмай тұрып", "әрқашан бір мезгілде"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_10_4", "text": "Мәтін: «Қалдықтарды сұрыптау»\\nМектепте қағаз бен пластикке бөлек жәшіктер қойылды. Алғашқы күндері оқушылар қалдықтарды шатастырып салды. Мұғалімдер түсіндірме сабақ өткізді. Бірнеше аптадан кейін сұрыптау сапасы жақсарды.\\n\\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ештеңені өзгертпеу қажет", "ортақ жұмыс әрқашан зиян", "қайта өңдеуді жеңілдетуге", "деректерді тексерудің қажеті жоқ"], "correct": 2, "points": 2, "difficulty": "қиын"}, {"id": "read_10_5", "text": "Мәтін: «Қалдықтарды сұрыптау»\\nМектепте қағаз бен пластикке бөлек жәшіктер қойылды. Алғашқы күндері оқушылар қалдықтарды шатастырып салды. Мұғалімдер түсіндірме сабақ өткізді. Бірнеше аптадан кейін сұрыптау сапасы жақсарды.\\n\\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Шешім қабылдау үшін дерек қажет емес.", "Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Мәселені елемеу ең тиімді жол."], "correct": 0, "points": 2, "difficulty": "қиын"}], "authorId": "system", "authorName": "Дайын тесттер"}, {"id": "ubt_read_11", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 11 — Спорт алаңы", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_11_1", "text": "Мәтін: «Спорт алаңы»\\nАуладағы спорт алаңы кешке қараңғы болатын. Тұрғындар жарық орнатуға қаражат жинады. Жарық қосылған соң балалар жаттығуды қауіпсіз жалғастыра алды. Дегенмен тұрғындар тыныштық уақытын сақтауға келісті.\\n\\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["кешкі жарық жеткіліксіз болғандықтан", "ешқандай өзгеріс болмағандықтан", "барлығы алдын ала шешілгендіктен", "кездейсоқ мереке болғандықтан"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_11_2", "text": "Мәтін: «Спорт алаңы»\\nАуладағы спорт алаңы кешке қараңғы болатын. Тұрғындар жарық орнатуға қаражат жинады. Жарық қосылған соң балалар жаттығуды қауіпсіз жалғастыра алды. Дегенмен тұрғындар тыныштық уақытын сақтауға келісті.\\n\\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["қатысушылар саны нөлге түсті", "мәселе күрделене түсті", "балалар қауіпсіз жаттыға алды", "барлық жұмыс тоқтады"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_11_3", "text": "Мәтін: «Спорт алаңы»\\nАуладағы спорт алаңы кешке қараңғы болатын. Тұрғындар жарық орнатуға қаражат жинады. Жарық қосылған соң балалар жаттығуды қауіпсіз жалғастыра алды. Дегенмен тұрғындар тыныштық уақытын сақтауға келісті.\\n\\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["жарық қосылған соң", "мәтінде айтылмаған алыс болашақта", "жоба басталмай тұрып", "әрқашан бір мезгілде"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_11_4", "text": "Мәтін: «Спорт алаңы»\\nАуладағы спорт алаңы кешке қараңғы болатын. Тұрғындар жарық орнатуға қаражат жинады. Жарық қосылған соң балалар жаттығуды қауіпсіз жалғастыра алды. Дегенмен тұрғындар тыныштық уақытын сақтауға келісті.\\n\\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["қауіпсіздік пен тыныштықты үйлестіруге", "деректерді тексерудің қажеті жоқ", "ештеңені өзгертпеу қажет", "ортақ жұмыс әрқашан зиян"], "correct": 0, "points": 2, "difficulty": "қиын"}, {"id": "read_11_5", "text": "Мәтін: «Спорт алаңы»\\nАуладағы спорт алаңы кешке қараңғы болатын. Тұрғындар жарық орнатуға қаражат жинады. Жарық қосылған соң балалар жаттығуды қауіпсіз жалғастыра алды. Дегенмен тұрғындар тыныштық уақытын сақтауға келісті.\\n\\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Шешім қабылдау үшін дерек қажет емес.", "Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Мәселені елемеу ең тиімді жол.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады."], "correct": 3, "points": 2, "difficulty": "қиын"}], "authorId": "system", "authorName": "Дайын тесттер"}, {"id": "ubt_read_12", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 12 — Ауа райын бақылау", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_12_1", "text": "Мәтін: «Ауа райын бақылау»\\nОқушылар күн сайын температураны бір мезгілде өлшеді. Бір күні құрал көлеңкеге, келесі күні күн астына қойылғандықтан деректер салыстыруға келмеді. Олар өлшеу орнын тұрақтандырды. Осыдан кейін нәтижелер сенімді бола түсті.\\n\\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["кездейсоқ мереке болғандықтан", "ешқандай өзгеріс болмағандықтан", "өлшеу шарттары бірдей болмағандықтан", "барлығы алдын ала шешілгендіктен"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_12_2", "text": "Мәтін: «Ауа райын бақылау»\\nОқушылар күн сайын температураны бір мезгілде өлшеді. Бір күні құрал көлеңкеге, келесі күні күн астына қойылғандықтан деректер салыстыруға келмеді. Олар өлшеу орнын тұрақтандырды. Осыдан кейін нәтижелер сенімді бола түсті.\\n\\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["нәтижелер сенімді бола түсті", "қатысушылар саны нөлге түсті", "мәселе күрделене түсті", "барлық жұмыс тоқтады"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_12_3", "text": "Мәтін: «Ауа райын бақылау»\\nОқушылар күн сайын температураны бір мезгілде өлшеді. Бір күні құрал көлеңкеге, келесі күні күн астына қойылғандықтан деректер салыстыруға келмеді. Олар өлшеу орнын тұрақтандырды. Осыдан кейін нәтижелер сенімді бола түсті.\\n\\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["жоба басталмай тұрып", "өлшеу орнын тұрақтандырғаннан кейін", "әрқашан бір мезгілде", "мәтінде айтылмаған алыс болашақта"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "read_12_4", "text": "Мәтін: «Ауа райын бақылау»\\nОқушылар күн сайын температураны бір мезгілде өлшеді. Бір күні құрал көлеңкеге, келесі күні күн астына қойылғандықтан деректер салыстыруға келмеді. Олар өлшеу орнын тұрақтандырды. Осыдан кейін нәтижелер сенімді бола түсті.\\n\\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["әділ салыстыру жасауға", "ештеңені өзгертпеу қажет", "ортақ жұмыс әрқашан зиян", "деректерді тексерудің қажеті жоқ"], "correct": 0, "points": 2, "difficulty": "қиын"}, {"id": "read_12_5", "text": "Мәтін: «Ауа райын бақылау»\\nОқушылар күн сайын температураны бір мезгілде өлшеді. Бір күні құрал көлеңкеге, келесі күні күн астына қойылғандықтан деректер салыстыруға келмеді. Олар өлшеу орнын тұрақтандырды. Осыдан кейін нәтижелер сенімді бола түсті.\\n\\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Шешім қабылдау үшін дерек қажет емес.", "Мәселені елемеу ең тиімді жол."], "correct": 0, "points": 2, "difficulty": "қиын"}], "authorId": "system", "authorName": "Дайын тесттер"}, {"id": "ubt_read_13", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 13 — Тіл үйрену", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_13_1", "text": "Мәтін: «Тіл үйрену»\\nАйдана күн сайын он жаңа сөз жаттайтын, бірақ сөйлескенде оларды қолдана алмады. Мұғалімі сөздерді сөйлем ішінде пайдалануды ұсынды. Айдана қысқа әңгімелер құра бастады. Бір айдан соң еркін сөйлеуі жақсарды.\\n\\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["сөздерді тәжірибеде қолданбағандықтан", "кездейсоқ мереке болғандықтан", "барлығы алдын ала шешілгендіктен", "ешқандай өзгеріс болмағандықтан"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_13_2", "text": "Мәтін: «Тіл үйрену»\\nАйдана күн сайын он жаңа сөз жаттайтын, бірақ сөйлескенде оларды қолдана алмады. Мұғалімі сөздерді сөйлем ішінде пайдалануды ұсынды. Айдана қысқа әңгімелер құра бастады. Бір айдан соң еркін сөйлеуі жақсарды.\\n\\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["барлық жұмыс тоқтады", "мәселе күрделене түсті", "еркін сөйлеуі жақсарды", "қатысушылар саны нөлге түсті"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_13_3", "text": "Мәтін: «Тіл үйрену»\\nАйдана күн сайын он жаңа сөз жаттайтын, бірақ сөйлескенде оларды қолдана алмады. Мұғалімі сөздерді сөйлем ішінде пайдалануды ұсынды. Айдана қысқа әңгімелер құра бастады. Бір айдан соң еркін сөйлеуі жақсарды.\\n\\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["бір айдан соң", "әрқашан бір мезгілде", "мәтінде айтылмаған алыс болашақта", "жоба басталмай тұрып"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_13_4", "text": "Мәтін: «Тіл үйрену»\\nАйдана күн сайын он жаңа сөз жаттайтын, бірақ сөйлескенде оларды қолдана алмады. Мұғалімі сөздерді сөйлем ішінде пайдалануды ұсынды. Айдана қысқа әңгімелер құра бастады. Бір айдан соң еркін сөйлеуі жақсарды.\\n\\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ортақ жұмыс әрқашан зиян", "сөзді контексте қолдануға", "ештеңені өзгертпеу қажет", "деректерді тексерудің қажеті жоқ"], "correct": 1, "points": 2, "difficulty": "қиын"}, {"id": "read_13_5", "text": "Мәтін: «Тіл үйрену»\\nАйдана күн сайын он жаңа сөз жаттайтын, бірақ сөйлескенде оларды қолдана алмады. Мұғалімі сөздерді сөйлем ішінде пайдалануды ұсынды. Айдана қысқа әңгімелер құра бастады. Бір айдан соң еркін сөйлеуі жақсарды.\\n\\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Шешім қабылдау үшін дерек қажет емес.", "Мәселені елемеу ең тиімді жол.", "Кез келген өзгеріс міндетті түрде сәтсіз болады."], "correct": 0, "points": 2, "difficulty": "қиын"}], "authorId": "system", "authorName": "Дайын тесттер"}, {"id": "ubt_read_14", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 14 — Көрме дайындау", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_14_1", "text": "Мәтін: «Көрме дайындау»\\nМұражай қызметкерлері тарихи көрме ұйымдастырды. Экспонаттардың жанына қысқа түсіндірмелер орналастырылды. Келушілер заттардың қолданылуын жақсырақ түсіне бастады. Қызметкерлер кейін аудиогид қосуды жоспарлады.\\n\\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["барлығы алдын ала шешілгендіктен", "кездейсоқ мереке болғандықтан", "экспонаттар туралы түсіндірме қажет болғандықтан", "ешқандай өзгеріс болмағандықтан"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_14_2", "text": "Мәтін: «Көрме дайындау»\\nМұражай қызметкерлері тарихи көрме ұйымдастырды. Экспонаттардың жанына қысқа түсіндірмелер орналастырылды. Келушілер заттардың қолданылуын жақсырақ түсіне бастады. Қызметкерлер кейін аудиогид қосуды жоспарлады.\\n\\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["мәселе күрделене түсті", "қатысушылар саны нөлге түсті", "барлық жұмыс тоқтады", "келушілердің түсінуі жақсарды"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_14_3", "text": "Мәтін: «Көрме дайындау»\\nМұражай қызметкерлері тарихи көрме ұйымдастырды. Экспонаттардың жанына қысқа түсіндірмелер орналастырылды. Келушілер заттардың қолданылуын жақсырақ түсіне бастады. Қызметкерлер кейін аудиогид қосуды жоспарлады.\\n\\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["әрқашан бір мезгілде", "түсіндірмелер қойылғаннан кейін", "мәтінде айтылмаған алыс болашақта", "жоба басталмай тұрып"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "read_14_4", "text": "Мәтін: «Көрме дайындау»\\nМұражай қызметкерлері тарихи көрме ұйымдастырды. Экспонаттардың жанына қысқа түсіндірмелер орналастырылды. Келушілер заттардың қолданылуын жақсырақ түсіне бастады. Қызметкерлер кейін аудиогид қосуды жоспарлады.\\n\\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ештеңені өзгертпеу қажет", "ортақ жұмыс әрқашан зиян", "деректерді тексерудің қажеті жоқ", "тарихи ақпаратты қолжетімді етуге"], "correct": 3, "points": 2, "difficulty": "қиын"}, {"id": "read_14_5", "text": "Мәтін: «Көрме дайындау»\\nМұражай қызметкерлері тарихи көрме ұйымдастырды. Экспонаттардың жанына қысқа түсіндірмелер орналастырылды. Келушілер заттардың қолданылуын жақсырақ түсіне бастады. Қызметкерлер кейін аудиогид қосуды жоспарлады.\\n\\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Шешім қабылдау үшін дерек қажет емес.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Мәселені елемеу ең тиімді жол."], "correct": 2, "points": 2, "difficulty": "қиын"}], "authorId": "system", "authorName": "Дайын тесттер"}, {"id": "ubt_read_15", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 15 — Еріктілер тобы", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_15_1", "text": "Мәтін: «Еріктілер тобы»\\nЕріктілер қарттарға азық-түлік жеткізді. Алғашында тапсырыстар телефон арқылы ретсіз қабылданды. Кейін ортақ тізім жасалды. Соның нәтижесінде жеткізу уақыты қысқарды және қателер азайды.\\n\\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["кездейсоқ мереке болғандықтан", "тапсырыстар жүйесіз қабылданғандықтан", "ешқандай өзгеріс болмағандықтан", "барлығы алдын ала шешілгендіктен"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "read_15_2", "text": "Мәтін: «Еріктілер тобы»\\nЕріктілер қарттарға азық-түлік жеткізді. Алғашында тапсырыстар телефон арқылы ретсіз қабылданды. Кейін ортақ тізім жасалды. Соның нәтижесінде жеткізу уақыты қысқарды және қателер азайды.\\n\\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["жеткізу уақыты қысқарды", "қатысушылар саны нөлге түсті", "барлық жұмыс тоқтады", "мәселе күрделене түсті"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_15_3", "text": "Мәтін: «Еріктілер тобы»\\nЕріктілер қарттарға азық-түлік жеткізді. Алғашында тапсырыстар телефон арқылы ретсіз қабылданды. Кейін ортақ тізім жасалды. Соның нәтижесінде жеткізу уақыты қысқарды және қателер азайды.\\n\\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["мәтінде айтылмаған алыс болашақта", "жоба басталмай тұрып", "ортақ тізім жасалғаннан кейін", "әрқашан бір мезгілде"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_15_4", "text": "Мәтін: «Еріктілер тобы»\\nЕріктілер қарттарға азық-түлік жеткізді. Алғашында тапсырыстар телефон арқылы ретсіз қабылданды. Кейін ортақ тізім жасалды. Соның нәтижесінде жеткізу уақыты қысқарды және қателер азайды.\\n\\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ештеңені өзгертпеу қажет", "жұмысты ұйымдастыруға", "ортақ жұмыс әрқашан зиян", "деректерді тексерудің қажеті жоқ"], "correct": 1, "points": 2, "difficulty": "қиын"}, {"id": "read_15_5", "text": "Мәтін: «Еріктілер тобы»\\nЕріктілер қарттарға азық-түлік жеткізді. Алғашында тапсырыстар телефон арқылы ретсіз қабылданды. Кейін ортақ тізім жасалды. Соның нәтижесінде жеткізу уақыты қысқарды және қателер азайды.\\n\\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Мәселені елемеу ең тиімді жол.", "Шешім қабылдау үшін дерек қажет емес.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады."], "correct": 3, "points": 2, "difficulty": "қиын"}], "authorId": "system", "authorName": "Дайын тесттер"}, {"id": "ubt_read_16", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 16 — Мектеп асханасы", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_16_1", "text": "Мәтін: «Мектеп асханасы»\\nАсханада үзіліс кезінде ұзын кезек пайда болатын. Әкімшілік алдын ала тапсырыс беру жүйесін енгізді. Оқушылар тағамды ертерек таңдайтын болды. Нәтижесінде кезек қысқарды, бірақ тапсырысты уақытында беру маңызды болып қалды.\\n\\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["тапсырыстар бір мезгілде жиналғандықтан", "кездейсоқ мереке болғандықтан", "барлығы алдын ала шешілгендіктен", "ешқандай өзгеріс болмағандықтан"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_16_2", "text": "Мәтін: «Мектеп асханасы»\\nАсханада үзіліс кезінде ұзын кезек пайда болатын. Әкімшілік алдын ала тапсырыс беру жүйесін енгізді. Оқушылар тағамды ертерек таңдайтын болды. Нәтижесінде кезек қысқарды, бірақ тапсырысты уақытында беру маңызды болып қалды.\\n\\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["кезек қысқарды", "қатысушылар саны нөлге түсті", "мәселе күрделене түсті", "барлық жұмыс тоқтады"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_16_3", "text": "Мәтін: «Мектеп асханасы»\\nАсханада үзіліс кезінде ұзын кезек пайда болатын. Әкімшілік алдын ала тапсырыс беру жүйесін енгізді. Оқушылар тағамды ертерек таңдайтын болды. Нәтижесінде кезек қысқарды, бірақ тапсырысты уақытында беру маңызды болып қалды.\\n\\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["әрқашан бір мезгілде", "мәтінде айтылмаған алыс болашақта", "жоба басталмай тұрып", "алдын ала тапсырыс енгізілгеннен кейін"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_16_4", "text": "Мәтін: «Мектеп асханасы»\\nАсханада үзіліс кезінде ұзын кезек пайда болатын. Әкімшілік алдын ала тапсырыс беру жүйесін енгізді. Оқушылар тағамды ертерек таңдайтын болды. Нәтижесінде кезек қысқарды, бірақ тапсырысты уақытында беру маңызды болып қалды.\\n\\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["деректерді тексерудің қажеті жоқ", "ортақ жұмыс әрқашан зиян", "ештеңені өзгертпеу қажет", "уақытты үнемдеуге"], "correct": 3, "points": 2, "difficulty": "қиын"}, {"id": "read_16_5", "text": "Мәтін: «Мектеп асханасы»\\nАсханада үзіліс кезінде ұзын кезек пайда болатын. Әкімшілік алдын ала тапсырыс беру жүйесін енгізді. Оқушылар тағамды ертерек таңдайтын болды. Нәтижесінде кезек қысқарды, бірақ тапсырысты уақытында беру маңызды болып қалды.\\n\\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Шешім қабылдау үшін дерек қажет емес.", "Мәселені елемеу ең тиімді жол.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Кез келген өзгеріс міндетті түрде сәтсіз болады."], "correct": 2, "points": 2, "difficulty": "қиын"}], "authorId": "system", "authorName": "Дайын тесттер"}, {"id": "ubt_read_17", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 17 — Құс ұялары", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_17_1", "text": "Мәтін: «Құс ұялары»\\nБалалар көктемде аулаға құс ұяларын орнатты. Бірнеше ұя тым төмен ілінгендіктен құстар оларды пайдаланбады. Биология мұғалімі қауіпсіз биіктікті түсіндірді. Ұялар қайта орналастырылған соң құстар келе бастады.\\n\\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["ұялар қолайсыз биіктікте болғандықтан", "кездейсоқ мереке болғандықтан", "барлығы алдын ала шешілгендіктен", "ешқандай өзгеріс болмағандықтан"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_17_2", "text": "Мәтін: «Құс ұялары»\\nБалалар көктемде аулаға құс ұяларын орнатты. Бірнеше ұя тым төмен ілінгендіктен құстар оларды пайдаланбады. Биология мұғалімі қауіпсіз биіктікті түсіндірді. Ұялар қайта орналастырылған соң құстар келе бастады.\\n\\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["барлық жұмыс тоқтады", "мәселе күрделене түсті", "құстар келе бастады", "қатысушылар саны нөлге түсті"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_17_3", "text": "Мәтін: «Құс ұялары»\\nБалалар көктемде аулаға құс ұяларын орнатты. Бірнеше ұя тым төмен ілінгендіктен құстар оларды пайдаланбады. Биология мұғалімі қауіпсіз биіктікті түсіндірді. Ұялар қайта орналастырылған соң құстар келе бастады.\\n\\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["жоба басталмай тұрып", "ұялар қайта орналастырылған соң", "мәтінде айтылмаған алыс болашақта", "әрқашан бір мезгілде"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "read_17_4", "text": "Мәтін: «Құс ұялары»\\nБалалар көктемде аулаға құс ұяларын орнатты. Бірнеше ұя тым төмен ілінгендіктен құстар оларды пайдаланбады. Биология мұғалімі қауіпсіз биіктікті түсіндірді. Ұялар қайта орналастырылған соң құстар келе бастады.\\n\\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["деректерді тексерудің қажеті жоқ", "жануарлар тіршілігін ескеруге", "ортақ жұмыс әрқашан зиян", "ештеңені өзгертпеу қажет"], "correct": 1, "points": 2, "difficulty": "қиын"}, {"id": "read_17_5", "text": "Мәтін: «Құс ұялары»\\nБалалар көктемде аулаға құс ұяларын орнатты. Бірнеше ұя тым төмен ілінгендіктен құстар оларды пайдаланбады. Биология мұғалімі қауіпсіз биіктікті түсіндірді. Ұялар қайта орналастырылған соң құстар келе бастады.\\n\\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Шешім қабылдау үшін дерек қажет емес.", "Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Мәселені елемеу ең тиімді жол.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады."], "correct": 3, "points": 2, "difficulty": "қиын"}], "authorId": "system", "authorName": "Дайын тесттер"}, {"id": "ubt_read_18", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 18 — Шағын кәсіп", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_18_1", "text": "Мәтін: «Шағын кәсіп»\\nЕкі дос үйде жасалған дәптерлер сатты. Алғашқыда бағасы шығынды өтемеді. Олар материал құнын есептеп, бағаны қайта белгіледі. Сатылым саны сәл азайса да, әр дәптерден түсетін пайда артты.\\n\\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["ешқандай өзгеріс болмағандықтан", "барлығы алдын ала шешілгендіктен", "кездейсоқ мереке болғандықтан", "материал шығыны есептелмегендіктен"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_18_2", "text": "Мәтін: «Шағын кәсіп»\\nЕкі дос үйде жасалған дәптерлер сатты. Алғашқыда бағасы шығынды өтемеді. Олар материал құнын есептеп, бағаны қайта белгіледі. Сатылым саны сәл азайса да, әр дәптерден түсетін пайда артты.\\n\\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["әр дәптерден пайда артты", "барлық жұмыс тоқтады", "мәселе күрделене түсті", "қатысушылар саны нөлге түсті"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_18_3", "text": "Мәтін: «Шағын кәсіп»\\nЕкі дос үйде жасалған дәптерлер сатты. Алғашқыда бағасы шығынды өтемеді. Олар материал құнын есептеп, бағаны қайта белгіледі. Сатылым саны сәл азайса да, әр дәптерден түсетін пайда артты.\\n\\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["баға өзгергеннен кейін", "мәтінде айтылмаған алыс болашақта", "әрқашан бір мезгілде", "жоба басталмай тұрып"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_18_4", "text": "Мәтін: «Шағын кәсіп»\\nЕкі дос үйде жасалған дәптерлер сатты. Алғашқыда бағасы шығынды өтемеді. Олар материал құнын есептеп, бағаны қайта белгіледі. Сатылым саны сәл азайса да, әр дәптерден түсетін пайда артты.\\n\\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["деректерді тексерудің қажеті жоқ", "шығын мен пайданы есептеуге", "ештеңені өзгертпеу қажет", "ортақ жұмыс әрқашан зиян"], "correct": 1, "points": 2, "difficulty": "қиын"}, {"id": "read_18_5", "text": "Мәтін: «Шағын кәсіп»\\nЕкі дос үйде жасалған дәптерлер сатты. Алғашқыда бағасы шығынды өтемеді. Олар материал құнын есептеп, бағаны қайта белгіледі. Сатылым саны сәл азайса да, әр дәптерден түсетін пайда артты.\\n\\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Мәселені елемеу ең тиімді жол.", "Шешім қабылдау үшін дерек қажет емес."], "correct": 1, "points": 2, "difficulty": "қиын"}], "authorId": "system", "authorName": "Дайын тесттер"}, {"id": "ubt_read_19", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 19 — Кітап алмасу", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_19_1", "text": "Мәтін: «Кітап алмасу»\\nСынып оқушылары өздері оқыған кітаптарын алмасатын бұрыш ашты. Кей кітаптар уақытында қайтарылмады. Оқушылар қарапайым тіркеу журналын енгізді. Осыдан кейін кітап жоғалту азайды.\\n\\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["ешқандай өзгеріс болмағандықтан", "кездейсоқ мереке болғандықтан", "барлығы алдын ала шешілгендіктен", "кітаптардың қозғалысы тіркелмегендіктен"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_19_2", "text": "Мәтін: «Кітап алмасу»\\nСынып оқушылары өздері оқыған кітаптарын алмасатын бұрыш ашты. Кей кітаптар уақытында қайтарылмады. Оқушылар қарапайым тіркеу журналын енгізді. Осыдан кейін кітап жоғалту азайды.\\n\\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["барлық жұмыс тоқтады", "мәселе күрделене түсті", "қатысушылар саны нөлге түсті", "кітап жоғалту азайды"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_19_3", "text": "Мәтін: «Кітап алмасу»\\nСынып оқушылары өздері оқыған кітаптарын алмасатын бұрыш ашты. Кей кітаптар уақытында қайтарылмады. Оқушылар қарапайым тіркеу журналын енгізді. Осыдан кейін кітап жоғалту азайды.\\n\\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["жоба басталмай тұрып", "журнал енгізілгеннен кейін", "әрқашан бір мезгілде", "мәтінде айтылмаған алыс болашақта"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "read_19_4", "text": "Мәтін: «Кітап алмасу»\\nСынып оқушылары өздері оқыған кітаптарын алмасатын бұрыш ашты. Кей кітаптар уақытында қайтарылмады. Оқушылар қарапайым тіркеу журналын енгізді. Осыдан кейін кітап жоғалту азайды.\\n\\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ортақ жұмыс әрқашан зиян", "ортақ мүлікке жауапкершілікпен қарауға", "ештеңені өзгертпеу қажет", "деректерді тексерудің қажеті жоқ"], "correct": 1, "points": 2, "difficulty": "қиын"}, {"id": "read_19_5", "text": "Мәтін: «Кітап алмасу»\\nСынып оқушылары өздері оқыған кітаптарын алмасатын бұрыш ашты. Кей кітаптар уақытында қайтарылмады. Оқушылар қарапайым тіркеу журналын енгізді. Осыдан кейін кітап жоғалту азайды.\\n\\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Мәселені елемеу ең тиімді жол.", "Шешім қабылдау үшін дерек қажет емес.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады."], "correct": 3, "points": 2, "difficulty": "қиын"}], "authorId": "system", "authorName": "Дайын тесттер"}, {"id": "ubt_read_20", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 20 — Қауіпсіз интернет", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_20_1", "text": "Мәтін: «Қауіпсіз интернет»\\nОқушылар белгісіз сілтемелерді ашудың қауіпті екенін талқылады. Мұғалім оларға күмәнді хабарламаларды тексеруді үйретті. Кейін оқушылар фишинг белгілерін тану тапсырмасын орындады. Көпшілігі жалған хабарламаларды дұрыс ажыратты.\\n\\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["кездейсоқ мереке болғандықтан", "ешқандай өзгеріс болмағандықтан", "барлығы алдын ала шешілгендіктен", "күмәнді сілтемелер қауіп төндіретіндіктен"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_20_2", "text": "Мәтін: «Қауіпсіз интернет»\\nОқушылар белгісіз сілтемелерді ашудың қауіпті екенін талқылады. Мұғалім оларға күмәнді хабарламаларды тексеруді үйретті. Кейін оқушылар фишинг белгілерін тану тапсырмасын орындады. Көпшілігі жалған хабарламаларды дұрыс ажыратты.\\n\\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["қатысушылар саны нөлге түсті", "мәселе күрделене түсті", "барлық жұмыс тоқтады", "жалған хабарламаларды ажырату жақсарды"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_20_3", "text": "Мәтін: «Қауіпсіз интернет»\\nОқушылар белгісіз сілтемелерді ашудың қауіпті екенін талқылады. Мұғалім оларға күмәнді хабарламаларды тексеруді үйретті. Кейін оқушылар фишинг белгілерін тану тапсырмасын орындады. Көпшілігі жалған хабарламаларды дұрыс ажыратты.\\n\\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["мәтінде айтылмаған алыс болашақта", "әрқашан бір мезгілде", "жоба басталмай тұрып", "түсіндіру сабағынан кейін"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_20_4", "text": "Мәтін: «Қауіпсіз интернет»\\nОқушылар белгісіз сілтемелерді ашудың қауіпті екенін талқылады. Мұғалім оларға күмәнді хабарламаларды тексеруді үйретті. Кейін оқушылар фишинг белгілерін тану тапсырмасын орындады. Көпшілігі жалған хабарламаларды дұрыс ажыратты.\\n\\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ештеңені өзгертпеу қажет", "деректерді тексерудің қажеті жоқ", "ортақ жұмыс әрқашан зиян", "цифрлық қауіпсіздікті арттыруға"], "correct": 3, "points": 2, "difficulty": "қиын"}, {"id": "read_20_5", "text": "Мәтін: «Қауіпсіз интернет»\\nОқушылар белгісіз сілтемелерді ашудың қауіпті екенін талқылады. Мұғалім оларға күмәнді хабарламаларды тексеруді үйретті. Кейін оқушылар фишинг белгілерін тану тапсырмасын орындады. Көпшілігі жалған хабарламаларды дұрыс ажыратты.\\n\\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Шешім қабылдау үшін дерек қажет емес.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Мәселені елемеу ең тиімді жол."], "correct": 2, "points": 2, "difficulty": "қиын"}], "authorId": "system", "authorName": "Дайын тесттер"}, {"id": "builtin_mathlit", "subject": "mathlit", "topic": "Математикалық сауаттылық · логика", "authorId": "system", "authorName": "Дайын тесттер", "questions": [{"id": "mathlit_001", "text": "Дүкенде 13 қорап бар, әр қорапта 4 дәптерден. Барлық дәптердің төрттен бірі сатылса, қанша дәптер қалады?", "options": ["42", "45", "36", "39"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_002", "text": "Автобус бірінші күні 44 км, екінші күні одан 12 км артық жүрді. Екінші күні қанша км жүрді?", "options": ["59", "62", "56", "53"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_003", "text": "Тік төртбұрыштың ұзындығы 11 м, ені 5 м. Ауданы қанша м²?", "options": ["55", "58", "61", "52"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_004", "text": "9 оқушының әрқайсысы 3 есептен шығарды. Барлығы неше есеп шығарылды?", "options": ["30", "33", "27", "24"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_005", "text": "Дүкенде 17 қорап бар, әр қорапта 8 дәптерден. Барлық дәптердің төрттен бірі сатылса, қанша дәптер қалады?", "options": ["102", "108", "105", "99"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_006", "text": "Автобус бірінші күні 52 км, екінші күні одан 16 км артық жүрді. Екінші күні қанша км жүрді?", "options": ["71", "65", "68", "74"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_007", "text": "Тік төртбұрыштың ұзындығы 15 м, ені 4 м. Ауданы қанша м²?", "options": ["63", "57", "66", "60"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_008", "text": "13 оқушының әрқайсысы 3 есептен шығарды. Барлығы неше есеп шығарылды?", "options": ["45", "39", "42", "36"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_009", "text": "Дүкенде 20 қорап бар, әр қорапта 6 дәптерден. Барлық дәптердің төрттен бірі сатылса, қанша дәптер қалады?", "options": ["96", "87", "90", "93"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_010", "text": "Автобус бірінші күні 60 км, екінші күні одан 20 км артық жүрді. Екінші күні қанша км жүрді?", "options": ["77", "80", "86", "83"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_011", "text": "Тік төртбұрыштың ұзындығы 19 м, ені 3 м. Ауданы қанша м²?", "options": ["54", "57", "60", "63"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_012", "text": "17 оқушының әрқайсысы 3 есептен шығарды. Барлығы неше есеп шығарылды?", "options": ["54", "48", "51", "57"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_013", "text": "Дүкенде 25 қорап бар, әр қорапта 4 дәптерден. Барлық дәптердің төрттен бірі сатылса, қанша дәптер қалады?", "options": ["81", "75", "78", "72"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_014", "text": "Автобус бірінші күні 68 км, екінші күні одан 24 км артық жүрді. Екінші күні қанша км жүрді?", "options": ["98", "95", "89", "92"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_015", "text": "Тік төртбұрыштың ұзындығы 23 м, ені 2 м. Ауданы қанша м²?", "options": ["43", "52", "49", "46"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_016", "text": "21 оқушының әрқайсысы 3 есептен шығарды. Барлығы неше есеп шығарылды?", "options": ["63", "66", "60", "69"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_017", "text": "Дүкенде 29 қорап бар, әр қорапта 8 дәптерден. Барлық дәптердің төрттен бірі сатылса, қанша дәптер қалады?", "options": ["174", "177", "180", "171"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_018", "text": "Автобус бірінші күні 76 км, екінші күні одан 28 км артық жүрді. Екінші күні қанша км жүрді?", "options": ["104", "107", "110", "101"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_019", "text": "Тік төртбұрыштың ұзындығы 27 м, ені 6 м. Ауданы қанша м²?", "options": ["168", "159", "165", "162"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_020", "text": "25 оқушының әрқайсысы 3 есептен шығарды. Барлығы неше есеп шығарылды?", "options": ["81", "78", "72", "75"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_021", "text": "Дүкенде 32 қорап бар, әр қорапта 6 дәптерден. Барлық дәптердің төрттен бірі сатылса, қанша дәптер қалады?", "options": ["141", "144", "150", "147"], "correct": 1, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_022", "text": "Автобус бірінші күні 84 км, екінші күні одан 32 км артық жүрді. Екінші күні қанша км жүрді?", "options": ["116", "122", "113", "119"], "correct": 0, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_023", "text": "Тік төртбұрыштың ұзындығы 31 м, ені 5 м. Ауданы қанша м²?", "options": ["155", "158", "161", "152"], "correct": 0, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_024", "text": "29 оқушының әрқайсысы 3 есептен шығарды. Барлығы неше есеп шығарылды?", "options": ["84", "93", "90", "87"], "correct": 3, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_025", "text": "Дүкенде 37 қорап бар, әр қорапта 4 дәптерден. Барлық дәптердің төрттен бірі сатылса, қанша дәптер қалады?", "options": ["108", "117", "111", "114"], "correct": 2, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_026", "text": "Автобус бірінші күні 92 км, екінші күні одан 36 км артық жүрді. Екінші күні қанша км жүрді?", "options": ["125", "134", "131", "128"], "correct": 3, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_027", "text": "Тік төртбұрыштың ұзындығы 35 м, ені 4 м. Ауданы қанша м²?", "options": ["143", "146", "137", "140"], "correct": 3, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_028", "text": "33 оқушының әрқайсысы 3 есептен шығарды. Барлығы неше есеп шығарылды?", "options": ["99", "102", "105", "96"], "correct": 0, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_029", "text": "Дүкенде 41 қорап бар, әр қорапта 8 дәптерден. Барлық дәптердің төрттен бірі сатылса, қанша дәптер қалады?", "options": ["249", "246", "243", "252"], "correct": 1, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_030", "text": "Автобус бірінші күні 100 км, екінші күні одан 40 км артық жүрді. Екінші күні қанша км жүрді?", "options": ["146", "137", "143", "140"], "correct": 3, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_031", "text": "Тік төртбұрыштың ұзындығы 39 м, ені 3 м. Ауданы қанша м²?", "options": ["123", "120", "114", "117"], "correct": 3, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_032", "text": "37 оқушының әрқайсысы 3 есептен шығарды. Барлығы неше есеп шығарылды?", "options": ["111", "114", "117", "108"], "correct": 0, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_033", "text": "Дүкенде 44 қорап бар, әр қорапта 6 дәптерден. Барлық дәптердің төрттен бірі сатылса, қанша дәптер қалады?", "options": ["198", "195", "204", "201"], "correct": 0, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_034", "text": "Автобус бірінші күні 108 км, екінші күні одан 44 км артық жүрді. Екінші күні қанша км жүрді?", "options": ["155", "149", "158", "152"], "correct": 3, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_035", "text": "Тік төртбұрыштың ұзындығы 43 м, ені 2 м. Ауданы қанша м²?", "options": ["92", "89", "86", "83"], "correct": 2, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_036", "text": "41 оқушының әрқайсысы 3 есептен шығарды. Барлығы неше есеп шығарылды?", "options": ["126", "123", "129", "120"], "correct": 1, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_037", "text": "Дүкенде 49 қорап бар, әр қорапта 4 дәптерден. Барлық дәптердің төрттен бірі сатылса, қанша дәптер қалады?", "options": ["144", "153", "150", "147"], "correct": 3, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_038", "text": "Автобус бірінші күні 116 км, екінші күні одан 48 км артық жүрді. Екінші күні қанша км жүрді?", "options": ["170", "167", "161", "164"], "correct": 3, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_039", "text": "Тік төртбұрыштың ұзындығы 47 м, ені 6 м. Ауданы қанша м²?", "options": ["279", "288", "282", "285"], "correct": 2, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_040", "text": "45 оқушының әрқайсысы 3 есептен шығарды. Барлығы неше есеп шығарылды?", "options": ["138", "132", "135", "141"], "correct": 2, "points": 1, "difficulty": "қиын"}]}, {"id": "builtin_history", "subject": "history", "topic": "Қазақстан тарихы · дайын тест", "authorId": "system", "authorName": "Дайын тесттер", "questions": [{"id": "h1", "text": "Қазақ хандығы қай жылы құрылды?", "options": ["1456", "1465", "1480", "1511"], "correct": 1}, {"id": "h2", "text": "Абылай ханның шын есімі?", "options": ["Әбілмансұр", "Тәуке", "Қасым", "Хақназар"], "correct": 0}, {"id": "h3", "text": "«Жеті жарғы» кімдікі?", "options": ["Қасым хан", "Есім хан", "Тәуке хан", "Абылай хан"], "correct": 2}, {"id": "h4", "text": "Тәуелсіздік күні?", "options": ["16 желтоқсан", "25 қазан", "30 тамыз", "1 мамыр"], "correct": 0}, {"id": "h5", "text": "Алаш Орда қай жылы?", "options": ["1916", "1917", "1918", "1920"], "correct": 1}]}, {"id": "builtin_math", "subject": "math", "topic": "Математика · дайын тест", "authorId": "system", "authorName": "Дайын тесттер", "questions": [{"id": "m1", "text": "2x+5=17, x=?", "options": ["5", "6", "7", "12"], "correct": 1}, {"id": "m2", "text": "f(x)=x²-4x+3, f(2)=?", "options": ["-1", "0", "1", "3"], "correct": 0}, {"id": "m3", "text": "Үшбұрыш бұрыштары қосындысы?", "options": ["90°", "180°", "270°", "360°"], "correct": 1}]}, {"id": "builtin_physics", "subject": "physics", "topic": "Физика · дайын тест", "authorId": "system", "authorName": "Дайын тесттер", "questions": [{"id": "p1", "text": "Жарық жылдамдығы (вакуум)?", "options": ["3×10⁸ м/с", "3×10⁶", "3×10¹⁰", "300"], "correct": 0}, {"id": "p2", "text": "Ньютон 2-заңы?", "options": ["F=ma", "E=mc²", "P=mv", "W=Fs"], "correct": 0}]}, {"id": "builtin_biology", "subject": "biology", "topic": "Биология · дайын тест", "authorId": "system", "authorName": "Дайын тесттер", "questions": [{"id": "b1", "text": "Жасуша энергия станциясы?", "options": ["Ядро", "Митохондрия", "Рибосома", "Гольджи"], "correct": 1}, {"id": "b2", "text": "ДНҚ толық атауы?", "options": ["Дезоксирибонуклеин қышқылы", "Рибонуклеин қышқылы", "АТФ", "Аминқышқыл"], "correct": 0}]}]')
 
 def _catalog_sync(state):
     """Persistent question catalogue. Legacy banks/tests are import sources only."""
     db = state["db"]
+    cached = state.get("catalog_cache")
+    if cached and state.get("catalog_rev") == state.get("rev"):
+        return cached[2]
     sources = {k: v for k, v in db.items() if k in ("ubt_tests", "ubt_profiles") or k.startswith("ubt_qbank_")}
     raw = db.get("ubt_question_catalog", "[]")
-    cached = state.get("catalog_cache")
     if cached and cached[0] == raw and cached[1] == sources:
         return cached[2]
     catalog = _jload(raw, list, [])
@@ -1018,7 +981,6 @@ def _catalog_sync(state):
     state["catalog_rev"] = state.get("rev")
     state["catalog_cache"] = (state["db"].get("ubt_question_catalog", "[]"), sources, catalog)
     return catalog
-
 
 def _handle_req(state, sid, rq):
     typ = rq.get("type")
@@ -1530,7 +1492,6 @@ def _handle_req(state, sid, rq):
             for k in names:
                 profs.pop(k, None)
             
-            
             _put(state, "ubt_profiles", _jdump(profs))
             _revoke_uid(state, uid)
             _commit(state)
@@ -1632,7 +1593,6 @@ def _handle_req(state, sid, rq):
 
     return {"ok": False, "msg": "Белгісіз сұраныс"}
 
-
 def _process_reqs(state, sid, reqs):
     if not isinstance(reqs, list):
         return False
@@ -1658,8 +1618,6 @@ def _process_reqs(state, sid, reqs):
         out.pop(k, None)
     done[sid] = last
     return new
-
-
 
 def _merge_chat(state, sess, v, chat_token=""):
     if not sess:
@@ -1691,7 +1649,6 @@ def _merge_chat(state, sess, v, chat_token=""):
     if not add:
         return None
     return _jdump(stored + add)
-
 
 def _merge_profiles(state, sess, v):
     inc = _jload(v, dict, None)
@@ -1745,7 +1702,6 @@ def _merge_profiles(state, sess, v):
         out[k] = n
     return _jdump(out)
 
-
 def _merge_stats(state, sess, v):
     inc = _jload(v, dict, None)
     if inc is None:
@@ -1769,7 +1725,6 @@ def _merge_stats(state, sess, v):
     n["points"] = int(old.get("points", 0) or 0)
     out[uid] = n
     return _jdump(out)
-
 
 def _merge_tests(state, sess, v):
     inc = _jload(v, list, None)
@@ -1846,13 +1801,11 @@ def _merge_tests(state, sess, v):
     result = _jdump(out)
     return result if len(result) < 7_800_000 else None
 
-
 def _class_manager(state, sess, cid):
     if sess["admin"]:
         return True
     return any(isinstance(c, dict) and c.get("id") == cid and c.get("teacherId") == sess["uid"]
                for c in _jload(state["db"].get("ubt_classes", "[]"), list, [])) and _is_teacher(state, sess["uid"])
-
 
 def _merge_classes(state, sess, v):
     incoming = _jload(v, list, None)
@@ -1894,7 +1847,6 @@ def _merge_classes(state, sess, v):
             out.append(c)
     return _jdump(out)
 
-
 def _merge_class_reqs(state, sess, v):
     inc = _jload(v, list, None)
     if inc is None or len(inc) > 2000:
@@ -1921,7 +1873,6 @@ def _merge_class_reqs(state, sess, v):
             break
     return _jdump(stored + additions) if additions else None
 
-
 def _merge_class_chat(state, sess, v):
     inc = _jload(v, dict, None)
     if inc is None:
@@ -1945,7 +1896,6 @@ def _merge_class_chat(state, sess, v):
             out[tid] = out.get(tid, old) + [{"from": "admin" if sess["admin"] else "teacher", "name": sess["name"],
                                               "text": m["text"], "t": int(time.time() * 1000)}]
     return _jdump(out) if len(_jdump(out)) < 2_000_000 else None
-
 
 def _merge_attempts(state, sess, key, value):
     if not sess["admin"]:
@@ -1981,12 +1931,10 @@ def _merge_attempts(state, sess, key, value):
         return None
     return _jdump({**old, uid: count})
 
-
 _SCH_CONTENT = ("subject", "title", "tabMain", "subs", "theme", "root", "kids")
 _SCH_MAX_ONE = 700_000
 _SCH_MAX_ALL = 7_000_000
 _SCH_MAX_PER_USER = 30
-
 
 def _merge_schemes(state, sess, v):
     """Схемалар: автор тек өзінікін өзгертеді, жариялауды тек админ мақұлдайды."""
@@ -2041,7 +1989,6 @@ def _merge_schemes(state, sess, v):
     res = _jdump(out)
     return res if len(res) < _SCH_MAX_ALL else None
 
-
 def _authorize(state, sess, k, v, chat_token=""):
     """Жаңа мәнді қайтарады (түзетілген болуы мүмкін) немесе None (жазуға рұқсат жоқ)."""
     if k in _SERVER_ONLY or k.startswith(_SERVER_PREFIXES):
@@ -2065,7 +2012,7 @@ def _authorize(state, sess, k, v, chat_token=""):
     if k == "ubt_question_catalog":
         return None
     if k == "ubt_tests":
-        _catalog_sync(state)  # Archive before a test or its questions are removed.
+        _catalog_sync(state)  
         return _merge_tests(state, sess, v)
     if k == "ubt_assigned_tests":
         return None  
@@ -2160,7 +2107,7 @@ def _authorize(state, sess, k, v, chat_token=""):
         if incoming is None or len(incoming) > 10000:
             return None
         stored = _jload(state["db"].get(k, "[]"), list, [])
-        # Legacy server result IDs use a 24-character hexadecimal suffix.
+        
         def trusted(row):
             return row.get("serverVerified") is True or bool(re.fullmatch(r"res_[0-9a-f]{24}", str(row.get("id", ""))))
         protected = {row["id"]: row for row in stored if isinstance(row, dict) and isinstance(row.get("id"), str) and trusted(row)}
@@ -2188,13 +2135,11 @@ def _authorize(state, sess, k, v, chat_token=""):
         return None
     return None
 
-
 def _key_ok(k):
     return (isinstance(k, str) and k.startswith("ubt_") and len(k) < 200
             and k not in _NO_SYNC and k not in _SERVER_ONLY and not k.startswith(_SERVER_PREFIXES)
             and k not in ("ubt_site_controls", "ubt_books")
             and not k.startswith(("ubt_cd_", "ubt_exam_done_")))
-
 
 def _apply_ops(res):
     """Браузерден келген сұраныстар мен жазбаларды қолданады. Жаңа нәрсе болса True қайтарады."""
@@ -2250,7 +2195,6 @@ def _apply_ops(res):
     acks[sid] = last
     return new
 
-
 def _chat_for(raw, sess, claim, state):
     if sess and sess["admin"]:
         return raw if isinstance(raw, str) else "[]"
@@ -2268,7 +2212,6 @@ def _chat_for(raw, sess, claim, state):
         if str(who or "").strip().lower() == key:
             out.append(m)
     return _jdump(out)
-
 
 def _public_class_board(db):
     classes = _jload(db.get("ubt_classes", "[]"), list, [])
@@ -2292,7 +2235,6 @@ def _public_class_board(db):
                     "n": len(students), "total": total, "avg": round(total / len(students)),
                     "tavg": round(sum(samples) / len(samples)) if samples else 0})
     return out
-
 
 def _award_finished_seasons(state):
     db = state["db"]
@@ -2320,7 +2262,6 @@ def _award_finished_seasons(state):
         _put(state, "ubt_awarded", _jdump(awarded))
         _commit(state)
 
-
 def _snapshot(tok="", claim=""):
     """Браузерге жіберілетін дерек: хэштер жоқ, бөтен чаттар жоқ, кірмеген адамға — ештеңе жоқ."""
     state = _store()
@@ -2337,12 +2278,23 @@ def _snapshot(tok="", claim=""):
         chat = _chat_for(db.get("ubt_chat"), sess, claim, state)
     if not sess:
         return {"ubt_chat": chat}
-    catalog = _jload(db.get("ubt_question_catalog", "[]"), list, [])
-    db["ubt_question_catalog"] = _jdump([q for q in catalog if not q.get("deleted") and
-        (sess["admin"] or q.get("authorId") in (sess["uid"], "system"))])
-    db["ubt_question_catalog_deleted"] = _jdump([
-        json.dumps([q.get("authorId") or "", q.get("subject") or "other", str(q.get("text") or "").strip().lower()], ensure_ascii=False, separators=(",", ":"))
-        for q in catalog if q.get("deleted") and (sess["admin"] or q.get("authorId") in (sess["uid"], "system"))])
+    with state["lock"]:
+        cache = state.setdefault("visible_catalog_cache", {})
+        scope = (sess["uid"], bool(sess["admin"]))
+        raw = db.get("ubt_question_catalog", "[]")
+        cached = cache.get(scope)
+        if cached is None or cached[0] != raw:
+            catalog = _jload(raw, list, [])
+            visible = _jdump([q for q in catalog if not q.get("deleted") and
+                (sess["admin"] or q.get("authorId") in (sess["uid"], "system"))])
+            deleted = _jdump([
+                json.dumps([q.get("authorId") or "", q.get("subject") or "other", str(q.get("text") or "").strip().lower()], ensure_ascii=False, separators=(",", ":"))
+                for q in catalog if q.get("deleted") and (sess["admin"] or q.get("authorId") in (sess["uid"], "system"))])
+            cached = (raw, visible, deleted)
+            if len(cache) >= 4 and scope not in cache:
+                cache.pop(next(iter(cache)))
+            cache[scope] = cached
+        db["ubt_question_catalog"], db["ubt_question_catalog_deleted"] = cached[1], cached[2]
     db["ubt_chat"] = chat
     assignments = _jload(db.get("ubt_assigned_tests", "[]"), list, [])
     db["ubt_assigned_tests"] = _jdump(assignments if sess["admin"] else [a for a in assignments if isinstance(a, dict) and a.get("uid") == sess["uid"]])
@@ -2402,6 +2354,10 @@ def _snapshot(tok="", claim=""):
                     db[k] = _jdump([r for r in data if isinstance(r, dict) and r.get("uid") == sess["uid"]] if isinstance(data, list) else {sess["uid"]: data.get(sess["uid"], 0)})
     return db
 
+def _snapshot_delta(current, previous):
+    changed = {k: v for k, v in current.items() if k not in previous or previous[k] != v}
+    deleted = [k for k in previous if k not in current]
+    return changed, deleted
 
 st.set_page_config(page_title="140 формат", page_icon="📘", layout="wide", initial_sidebar_state="collapsed")
 st.markdown("""<style>
@@ -2425,15 +2381,13 @@ html_code = r"""
 <!DOCTYPE html>
 <html lang="kk">
 <head>
-<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
-<meta http-equiv="Pragma" content="no-cache">
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ҰБТ+</title>
 <style>
-/* Админ, тіркелу және мұғалім панельдері қайта қосылды. */
 
-/* Compact application navigation; separate from test question navigation. */
+
+
 #app-menu-backdrop{position:fixed;inset:0;z-index:220;background:rgba(5,9,24,.5)}
 #app-menu-backdrop[hidden]{display:none}
 #app-menu{position:fixed;left:0;top:0;bottom:0;width:min(300px,86vw);height:100dvh;z-index:221;background:var(--c);color:var(--t);border-right:1px solid var(--b);box-shadow:12px 0 40px #0003;transform:translateX(-105%);visibility:hidden;transition:transform .22s ease,visibility .22s;display:flex;flex-direction:column;overflow:hidden;text-align:left}
@@ -2457,8 +2411,8 @@ body.app-menu-open{overflow:hidden!important}
 #s-home>.wrap>.hdr{margin-bottom:18px}
 @media(prefers-reduced-motion:reduce){#app-menu{transition:none}}
 </style>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<script defer src="https://cdn.jsdelivr.net/npm/mammoth@1.9.1/mammoth.browser.min.js"></script>
+
+
 <style>
 :root{--p:#2563eb;--pd:#1d4ed8;--ok:#16a34a;--err:#dc2626;--warn:#f59e0b;--bg:#f1f5f9;--c:#fff;--t:#0f172a;--m:#64748b;--b:#e2e8f0}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -2927,7 +2881,7 @@ body.dark{background:radial-gradient(ellipse at 12% 0%,#1e1b43 0%,transparent 34
 .ubt-cert-btn{background:linear-gradient(110deg,#047857,#0d9488);color:#fff}
 
 
-/* Shared network background, visible for every account and on entry. */
+
 body,body.dark{background:var(--bg);isolation:isolate}
 body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;background-color:#dce9fb;background-image:linear-gradient(135deg,rgba(242,247,255,.76),rgba(235,239,255,.60)),url("https://img.magnific.com/free-vector/network-connection-background-gradient_23-2148879893.jpg?semt=ais_incoming&w=740&q=80");background-position:center;background-size:cover;background-repeat:no-repeat}
 body.dark::before{background-color:#0c1429;background-image:linear-gradient(135deg,rgba(8,15,35,.56),rgba(14,12,40,.66)),url("https://img.magnific.com/free-vector/network-connection-background-gradient_23-2148879893.jpg?semt=ais_incoming&w=740&q=80")}
@@ -2944,9 +2898,9 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
 @media(max-width:480px){#s-login > .wrap{padding:36px 16px 50px}#s-login .card{padding:20px}.ubt-brand-label{letter-spacing:.15em}}
 
 </style>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" onload="window.mathScreen&&mathScreen()"></script>
+
+
+
 <script>
 (function(){
   var hidden=new WeakMap(),documents=[];
@@ -2974,7 +2928,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
 })();
 </script>
 <style>
-/* Dense menu rows, including actions revealed by account permissions. */
+
 #app-menu{width:min(310px,92vw)}
 #app-menu .app-menu-head{padding:8px 12px;min-height:42px}
 #app-menu .app-menu-head strong{font-size:15px}
@@ -3019,7 +2973,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
 }
 </style>
 <style>
-/* Question numbers above the test, flowing from left to right. */
+
 #s-test #sidebar{display:none!important}
 #s-test .tlay{display:block}
 #s-test .tmain{width:100%;max-width:1100px;margin:0 auto;box-sizing:border-box}
@@ -3160,12 +3114,25 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
   </div>
   <div class="wrap">
     <div class="hdr"><h2>Басты бет</h2><p class="sub">Тест тапсырыңыз немесе өз тестіңізді құрыңыз</p></div>
-    <button type="button" class="btn btn-p" onclick="openAppMenu()" style="margin-bottom:18px">☰ Бөлімдерді ашу</button>
     <div id="ubd-home" class="ubd" aria-label="Жеке статистика"></div>
     <div id="home-extras"></div>
   </div>
 </div>
 
+<nav id="ubt-icon-rail" aria-label="Жылдам мәзір" aria-hidden="true" inert>
+<button type="button" class="ubt-rail-brand" title="ҰБТ PLUS · Басты бет" aria-label="ҰБТ PLUS · Басты бет" onclick="goHome()">U<span style="color:#54dfba;font-size:12px">+</span></button>
+<div class="ubt-rail-links">
+<button type="button" class="ubt-rail-link" data-rail-group="home" title="Басты бет" aria-label="Басты бет" onclick="goHome()" ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z"/></svg><span class="ubt-rail-caption">Басты бет</span></button>
+<button type="button" class="ubt-rail-link" data-rail-group="analytics" title="Статистика" aria-label="Статистика" onclick="showAnalytics()" ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V11h4v9m2 0V7h4v13m2 0V3h4v17M3 21h18"/></svg><span class="ubt-rail-caption">Статистика</span></button>
+<button type="button" class="ubt-rail-link" data-rail-group="exam" title="140 формат" aria-label="140 формат" onclick="showUbt140()" ><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V2h6v2M9 9h6M9 13h6m-6 4h3"/></svg><span class="ubt-rail-caption">140 формат</span></button>
+<button type="button" class="ubt-rail-link" data-rail-group="subjects" title="Пәндер" aria-label="Пәндер" onclick="startQuickSubject()" ><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span class="ubt-rail-caption">Пәндер</span></button>
+<span class="ubt-rail-rule" aria-hidden="true"></span>
+<button type="button" class="ubt-rail-link ubt-rail-desktop" data-rail-group="bank" title="Сұрақтар базасы" aria-label="Сұрақтар базасы" onclick="showQuestionBank()" ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v16m0-16C8 2 4 3 2 4v15c4-1 7-1 10 2m0-16c4-3 8-2 10-1v15c-4-1-7-1-10 2"/></svg><span class="ubt-rail-caption">Сұрақтар базасы</span></button>
+<button type="button" class="ubt-rail-link ubt-rail-desktop" data-rail-group="flash" title="Флеш-карталар" aria-label="Флеш-карталар" onclick="showFlash()" ><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="15" height="16" rx="2"/><path d="M17 2H5a2 2 0 0 0-2 2v13m11-9-4 6h4l-2 4"/></svg><span class="ubt-rail-caption">Флеш-карталар</span></button>
+<button type="button" class="ubt-rail-link ubt-rail-desktop" data-rail-group="history" title="Тест тарихы" aria-label="Тест тарихы" onclick="showHistory()" ><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v6l4 2"/></svg><span class="ubt-rail-caption">Тест тарихы</span></button>
+<button type="button" class="ubt-rail-link ubt-rail-desktop" data-rail-group="create" title="Материал құру" aria-label="Материал құру" onclick="showCreate()" ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-5-5L4 14Z"/></svg><span class="ubt-rail-caption">Материал құру</span></button>
+<button type="button" class="ubt-rail-link" data-rail-group="more" title="Мәзір" aria-label="Мәзір" onclick="openAppMenu()" id="ubt-rail-more" aria-controls="app-menu" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg><span class="ubt-rail-caption">Мәзір</span></button></div>
+<div class="ubt-rail-footer"><button type="button" class="ubt-rail-link" data-rail-group="admin" title="Админ панелі" aria-label="Админ панелі" onclick="showAdmin()" id="ubt-rail-admin" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 3-1 3-3 1-2 5 2 5 3 1 1 3h6l1-3 3-1 2-5-2-5-3-1-1-3Z"/><circle cx="12" cy="12" r="3"/></svg><span class="ubt-rail-caption">Админ панелі</span></button><button type="button" class="ubt-rail-link" data-rail-group="profile" title="Профиль" aria-label="Профиль" onclick="showMyProfile()" id="ubt-rail-profile"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span class="ubt-rail-caption">Профиль</span></button></div></nav>
 <div id="app-menu-backdrop" hidden onclick="closeAppMenu()"></div>
 <aside id="app-menu" role="dialog" aria-modal="true" aria-labelledby="app-menu-title" aria-hidden="true" inert>
   <div class="app-menu-head"><strong id="app-menu-title">Мәзір</strong><button type="button" class="btn btn-s btn-sm" aria-label="Мәзірді жабу" onclick="closeAppMenu()">✕</button></div>
@@ -3953,8 +3920,59 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
   </div>
 </div>
 
+<style id="ubt-icon-rail-css">
+
+:root{--ubt-rail-width:68px}
+#ubt-icon-rail{display:none;position:fixed;inset:0 auto 0 0;width:var(--ubt-rail-width);height:100dvh;z-index:180;background:linear-gradient(180deg,#172130,#0d1725);border-right:1px solid #2a3748;color:#8d9aaf;flex-direction:column;align-items:center;padding:18px 9px 14px;gap:20px;box-shadow:8px 0 30px #0813210a}
+body.ubt-has-rail{padding-left:var(--ubt-rail-width)}
+body.ubt-has-rail #ubt-icon-rail{display:flex}
+body.ubt-has-rail .profile-bar.app-header{left:var(--ubt-rail-width);width:calc(100% - var(--ubt-rail-width))}
+#app-menu-toggle{display:none!important}
+.ubt-rail-brand{width:38px;height:38px;border:1px solid #407a70;border-radius:12px;background:linear-gradient(145deg,#29473f,#162b31);display:flex;align-items:center;justify-content:center;color:#9cf4d9;font-size:19px;font-weight:800;letter-spacing:-.08em;flex:none;cursor:pointer}
+.ubt-rail-links{display:flex;flex-direction:column;gap:9px;align-items:center;flex:1;width:100%;min-height:0;overflow-y:auto;scrollbar-width:none;padding:3px 0}
+.ubt-rail-links::-webkit-scrollbar{display:none}
+.ubt-rail-link{position:relative;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:3px;width:44px;min-height:42px;flex:none;border:1px solid transparent;border-radius:10px;background:transparent;color:#8996aa;cursor:pointer;transition:background .16s,color .16s,border-color .16s;box-shadow:none;font:inherit;padding:7px}
+.ubt-rail-link svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.ubt-rail-link:hover{color:#f0f6ff;background:#273548;border-color:#3a4b60}
+.ubt-rail-link.is-active{color:#f3fcff;border-color:#526074;background:linear-gradient(145deg,#3b4b60,#2a3648);box-shadow:inset 0 1px 0 #ffffff19,0 4px 10px #0002}
+.ubt-rail-link.is-active:before{content:'';position:absolute;left:-9px;top:12px;bottom:12px;width:3px;border-radius:4px;background:#71e7c6}
+.ubt-rail-link:focus-visible,.ubt-rail-brand:focus-visible{outline:2px solid #70e5c4;outline-offset:3px}
+.ubt-rail-link[hidden]{display:none!important}
+.ubt-rail-caption{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
+.ubt-rail-rule{width:25px;height:1px;min-height:1px;background:#2b394b;margin:6px 0;flex:none}
+.ubt-rail-footer{display:flex;flex-direction:column;gap:10px;flex:none;align-items:center}
+#ubt-rail-profile{border-radius:50%;width:34px;min-height:34px;background:#254038;border:1px solid #3f6c5f;color:#a8edda}
+body.ubt-has-rail #app-menu{left:var(--ubt-rail-width);background:#162131;color:#e5ecf7;border-color:#344154;--t:#e5ecf7;--m:#95a4ba;--b:#2e3c51;--c:#162131}
+body.ubt-has-rail #app-menu .app-menu-head{padding:16px 14px;min-height:64px}
+body.ubt-has-rail #app-menu nav{padding:10px 9px 20px}
+body.ubt-has-rail #app-menu .app-menu-home{padding:10px 12px;font-size:13px;border-radius:9px}
+body.ubt-has-rail #app-menu summary{padding:12px 9px;font-size:12px;color:#a8b9cb}
+body.ubt-has-rail #app-menu .mode{min-height:38px!important;padding:9px!important;border-radius:8px!important}
+body.ubt-has-rail #app-menu .mode h3{font-size:12px!important}
+body.ubt-has-rail #app-menu .btn-s{background:#263447;color:#e5ecf7;border-color:#41526b}
+body.ubt-has-rail #app-menu-backdrop{left:var(--ubt-rail-width);background:#06101c99;backdrop-filter:none}
+@media(max-height:650px) and (min-width:701px){#ubt-icon-rail{gap:12px;padding-top:12px}.ubt-rail-links{gap:5px}.ubt-rail-link{min-height:37px}}
+@media(max-width:700px){
+ body.ubt-has-rail{padding-left:0}
+ body.ubt-has-rail .profile-bar.app-header{left:0;width:100%}
+ body.ubt-has-rail #ubt-icon-rail{top:auto;right:0;bottom:0;width:100%;height:auto;min-height:66px;padding:6px 8px calc(6px + env(safe-area-inset-bottom,0px));border:0;border-top:1px solid #354257;border-radius:18px 18px 0 0;box-shadow:0 -8px 28px #08132116}
+ .ubt-rail-brand,.ubt-rail-footer,.ubt-rail-rule,.ubt-rail-desktop{display:none!important}
+ .ubt-rail-links{flex-direction:row;gap:4px;justify-content:space-around;overflow:visible;padding:0}
+ .ubt-rail-link{width:auto;flex:1;max-width:85px;min-height:50px;padding:7px 3px;border-radius:12px}
+ .ubt-rail-link svg{width:19px;height:19px}
+ .ubt-rail-caption{position:static;width:auto;height:auto;margin:0;clip-path:none;overflow:visible;font-size:8.5px;line-height:1.3;color:inherit;white-space:nowrap;letter-spacing:0}
+ .ubt-rail-link.is-active:before{left:calc(50% - 8px);top:auto;bottom:1px;width:16px;height:2px}
+ body.ubt-has-rail .screen>.wrap{padding-bottom:calc(110px + env(safe-area-inset-bottom,0px))}
+ body.ubt-has-rail #app-menu{left:0;width:min(320px,92vw)}
+ body.ubt-has-rail #app-menu-backdrop{left:0}
+ body.ubt-has-rail #sync-ind{bottom:calc(76px + env(safe-area-inset-bottom,0px))!important;max-width:calc(100% - 58px);font-size:9px}
+ body.ubt-has-rail #theme-btn{bottom:calc(76px + env(safe-area-inset-bottom,0px))!important}
+}
+@media(prefers-reduced-motion:reduce){.ubt-rail-link{transition:none}}
+
+</style>
 <style id="ubd-dashboard-css">
-/* Lightweight dashboard: SVG charts, no animation loops or chart libraries. */
+
 :root{--p:#087f79;--pd:#076863;--grad:linear-gradient(120deg,#087f79,#24aa95)}
 body.dark{--p:#59dfc0;--pd:#36b69d;--grad:linear-gradient(120deg,#087f79,#15998c)}
 #s-home>.wrap,#s-analytics>.wrap{max-width:1280px}
@@ -3983,10 +4001,69 @@ body.dark{--p:#59dfc0;--pd:#36b69d;--grad:linear-gradient(120deg,#087f79,#15998c
 @media(prefers-reduced-motion:reduce){.ubd *{animation:none!important;transition:none!important}}
 
 </style>
+
+<style id="ubt-fast-display">
+html{text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+.qimg{max-width:100%;height:auto}
+.ovl{backdrop-filter:none;-webkit-backdrop-filter:none}
+.card,.item,.mode,.qc,.rev,.stat,.fcard{box-shadow:0 2px 9px #1526390a}
+.mode,.item,.btn{transition:background-color .12s,border-color .12s,color .12s}
+.mode:hover,.item:hover,.btn:hover:not(:disabled){transform:none}
+@media(min-width:1800px){
+ #s-home>.wrap,#s-analytics>.wrap,.wrap.wide{max-width:1680px;padding-left:34px;padding-right:34px}
+ .ubd{padding:30px}.ubd-grid{gap:20px}.ubd-kpi b{font-size:34px}
+ .ubd-card{padding:24px}.ubd-table{font-size:14px}.ubd-muted{font-size:14px}
+}
+@media(min-width:2560px){
+ #s-home>.wrap,#s-analytics>.wrap,.wrap.wide{max-width:2100px}
+ .ubd-kpis{gap:20px}.ubd-grid{grid-template-columns:minmax(0,1.85fr) minmax(320px,1fr)}
+ .ubd-card h3{font-size:18px}.ubd-kpi>span,.ubd-bar-top,.ubd-total{font-size:15px}
+ .ubd-table th{font-size:12px}.ubd-btn{font-size:14px}
+}
+</style>
+
+<style id="ubt-polish">
+:root{--ease:cubic-bezier(.22,.8,.3,1)}
+body{background:radial-gradient(1200px 600px at 12% -8%,color-mix(in srgb,var(--p) 14%,transparent),transparent 60%),radial-gradient(900px 500px at 100% 0,color-mix(in srgb,#7c3aed 12%,transparent),transparent 55%),var(--bg);background-attachment:fixed}
+@keyframes ubtIn{from{opacity:0;transform:translate3d(0,14px,0)}to{opacity:1;transform:none}}
+@keyframes ubtLogo{from{opacity:0;transform:scale(.86) translate3d(0,8px,0)}to{opacity:1;transform:none}}
+.screen.active>.wrap,.screen.active>.ubd{animation:ubtIn .42s var(--ease) both}
+#s-login .logo,#s-login .ubt-brand-title{animation:ubtLogo .55s var(--ease) both}
+#s-login .card{animation:ubtIn .5s var(--ease) .08s both;box-shadow:0 18px 50px -18px color-mix(in srgb,var(--p) 38%,transparent);border-radius:26px}
+.card,.item,.mode{transition:box-shadow .18s var(--ease),border-color .18s var(--ease)}
+.mode:hover{box-shadow:0 10px 30px -12px color-mix(in srgb,var(--p) 45%,transparent)}
+.btn-p{background:linear-gradient(135deg,var(--p),#6d5dfc)}
+.btn-p:hover{background:linear-gradient(135deg,var(--pd),#5b4cf0)}
+.fg input:focus,.fg select:focus,.fg textarea:focus{outline:2px solid color-mix(in srgb,var(--p) 55%,transparent);outline-offset:1px;border-color:var(--p)}
+img,canvas,svg{image-rendering:auto}
+.qimg,.avatar,img{-webkit-backface-visibility:hidden}
+@media(min-width:1800px){html{font-size:18px}}
+@media(min-width:2560px){html{font-size:22px}.wrap{max-width:1500px}}
+@media(min-width:3400px){html{font-size:28px}.wrap{max-width:1900px}}
+@media(prefers-reduced-motion:reduce){.screen.active>.wrap,.screen.active>.ubd,#s-login .logo,#s-login .ubt-brand-title,#s-login .card{animation:none!important}}
+</style>
 <script type="text/plain" id="app-src">
+
+const ubtAssetPromises=new Map();
+function ubtLoadScript(url){
+  if(ubtAssetPromises.has(url))return ubtAssetPromises.get(url);
+  const promise=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src=url;script.async=true;script.onload=resolve;script.onerror=()=>{script.remove();ubtAssetPromises.delete(url);reject(new Error('Кітапхана жүктелмеді. Интернет байланысын тексеріңіз.'))};document.head.appendChild(script)});
+  ubtAssetPromises.set(url,promise);return promise;
+}
+function ubtLoadMammoth(){return window.mammoth?Promise.resolve():ubtLoadScript('https://cdn.jsdelivr.net/npm/mammoth@1.9.1/mammoth.browser.min.js')}
+let ubtMathPromise=null;
+function ubtLoadMath(){
+  if(window.renderMathInElement)return Promise.resolve();
+  if(!ubtMathPromise){
+    if(!document.getElementById('ubt-katex-style')){const link=document.createElement('link');link.id='ubt-katex-style';link.rel='stylesheet';link.href='https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css';document.head.appendChild(link)}
+    ubtMathPromise=ubtLoadScript('https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js').then(()=>ubtLoadScript('https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js')).catch(e=>{ubtMathPromise=null;throw e});
+  }
+  return ubtMathPromise;
+}
+
 function noSync(k){return k==='ubt_current'||k==='ubt_dark'||k.indexOf('ubt_cd_')===0||k.indexOf('ubt_')!==0}
 function syncPush(items){try{if(window.__bridge)window.__bridge.push(items)}catch(e){}}
-const LS={get(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}},set(k,v){try{const s=JSON.stringify(v);localStorage.setItem(k,s);if(!noSync(k))syncPush([{key:k,value:s}])}catch{}}};
+const LS={get(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}},set(k,v){try{const s=JSON.stringify(v);if(localStorage.getItem(k)===s)return;localStorage.setItem(k,s);if(!noSync(k))syncPush([{key:k,value:s}])}catch{}}};
 function setSyncInd(ok){
   const e=document.getElementById('sync-ind');if(!e)return;
   const sm=window.__store||'';
@@ -4002,8 +4079,10 @@ function syncRefresh(){
     updateAccessRequestCounts();syncMaintenance();
     const a=document.querySelector('.screen.active');if(!a)return;
     const id=a.id;
-    if(id==='s-ubt140'||id==='s-question-bank')renderUbt140();
-    else if(id==='s-subj')renderBankSubjectList();
+    const keys=window.__ubtChangedKeys||[];
+    const bankChanged=!keys.length||keys.some(k=>k==='ubt_tests'||k==='ubt_profiles'||k.startsWith('ubt_question_catalog')||k.startsWith('ubt_qbank_')||k.startsWith('ubt_ubt140_selection_'));
+    if(id==='s-ubt140'||id==='s-question-bank'){if(bankChanged)renderUbt140()}
+    else if(id==='s-subj'){if(bankChanged)renderBankSubjectList()}
     else if(id==='s-home')renderHomeExtras();
     else if(id==='s-registered'&&user&&user.isAdmin){renderAdminUsers();renderSiteControls()}
     else if(id==='s-admin-inbox')renderAdminInbox();
@@ -5153,7 +5232,6 @@ function updateBankSubjectCounts(){
     f.querySelector('.bs-folder-count').textContent=questions.length+' сұрақ · '+questions.filter(q=>picked.has(q.id)).length+' белгіленген';
   });
 }
-// Persist selections separately for each signed-in user and subject.
 const bankSubjectSelection={
   get(key){const split=key.lastIndexOf('|'),uid=key.slice(0,split),subject=key.slice(split+1);
     const saved=LS.get('ubt_subject_selection_'+uid,{});
@@ -5200,7 +5278,6 @@ function selectBankSubjectFile(folder,on=true){
   const subject=document.getElementById('bs-subject').value;
   const key=user.id+'|'+subject;
   const picked=bankSubjectSelection.get(key)||new Set();
-  // Select the entire file even when a search hides some questions.
   ubtQuestionBank().filter(q=>q.subject===subject&&(bankSubjectSource(q))===folder).forEach(q=>{if(on)picked.add(q.id);else picked.delete(q.id)});
   bankSubjectSelection.set(key,picked);
   const mode=document.querySelector('input[name="bs-mode"][value="manual"]');
@@ -5270,7 +5347,6 @@ function startBankSubject(random){
   st.subjectName=subjName(key)+' · пәндік жаттығу';
   st.timerSeconds=mins?mins*60:Math.max(st.questions.length*90,600);
   beginTest();
-  // The practice page already collected this preference; do not ask twice.
   document.getElementById('ubt-start-confirm').click();
 }
 function startBank(key){
@@ -5295,7 +5371,6 @@ function beginTest(){
     modal.remove();
     const prepared=st.questions.map(q=>st.secureExam?{...q,options:q.options.slice()}:shuffleOpts({...q,options:Array.isArray(q.options)?q.options.slice():[]}));
     if(st.is140){
-      // Shuffle only WITHIN each subject, never across subject boundaries.
       const order=[...new Set(prepared.map(q=>q.subjectName||'Басқа пән'))];
       st.questions=order.flatMap(name=>shuf(prepared.filter(q=>(q.subjectName||'Басқа пән')===name)));
     }else{st.questions=shuf(prepared)}
@@ -5460,7 +5535,7 @@ function renderQ(){
 function qMedia(q){
   if(!q)return '';
   let h='';
-  if(typeof q.img==='string'&&/^data:image\/(jpeg|png|webp);base64,/.test(q.img))h+='<img class="qimg" alt="" src="'+q.img+'">';
+  if(typeof q.img==='string'&&/^data:image\/(jpeg|png|webp);base64,/.test(q.img))h+='<img class="qimg" alt="" loading="lazy" decoding="async" src="'+q.img+'">';
   if(Array.isArray(q.tbl)&&q.tbl.length)h+='<div class="qtbl-w"><table class="qtbl">'+q.tbl.map(r=>'<tr>'+(Array.isArray(r)?r:[]).map(c=>'<td>'+esc(c)+'</td>').join('')+'</tr>').join('')+'</table></div>';
   return h;
 }
@@ -6964,6 +7039,7 @@ async function bulkFromFile(ctx,inp){
   try{
     let txt='';
     if(/\.docx$/i.test(f.name)){
+      await ubtLoadMammoth();
       if(typeof mammoth==='undefined'){alert('Word оқу кітапханасы жүктелмеді. Интернетті тексеріңіз.');return}
       const result=await mammoth.extractRawText({arrayBuffer:await f.arrayBuffer()});
       txt=result.value||'';
@@ -7402,7 +7478,6 @@ function chromeSync(){
 }
 setInterval(function(){if(!document.hidden)chromeSync()},10000);
 document.addEventListener('DOMContentLoaded',chromeSync);
-// Жеке пәндік графиктер: ескі нәтижелерді өшірмей көрсетеді.
 function resultSubject(p){
   const raw=String(p.topic||'Басқа').trim();
   const names=[['Қазақстан тарихы',/қазақстан тарих|history|тарих/i],['Математикалық сауаттылық',/математикалық сауат|матсау|mathlit/i],['Оқу сауаттылығы',/оқу сауат|reading/i],['Информатика',/информатик|informatics/i],['Математика',/математик|алгебр|геометр/i],['Физика',/физик/i],['Химия',/химия|хими/i],['Биология',/биолог/i],['География',/географ/i],['Ағылшын тілі',/ағылшын|english/i],['Қазақ тілі',/қазақ тілі/i],['Дүниежүзі тарихы',/дүниежүзі|worldhistory/i],['Құқық',/құқық|law/i]];
@@ -7465,7 +7540,6 @@ function deletePersonalResultIndexes(indexes){
   const valid=[...new Set(indexes)].filter(i=>Number.isInteger(i)&&i>=0&&i<hist.length).sort((a,b)=>b-a);
   if(!valid.length)return;
   if(!confirm(valid.length+' нәтижені тарих пен графиктен өшіресіз бе? Бұл әрекетті қайтару мүмкін емес.'))return;
-  // Іріктелген нәтижелердің графиктегі сәйкес жазбаларын бір рет қана алып тастаймыз.
   const used=new Set(),positions=[];
   for(const i of valid){
     const target=hist[i];
@@ -7996,19 +8070,25 @@ function applyTheme(){
 }
 function toggleTheme(){LS.set('ubt_dark',!LS.get('ubt_dark',false));applyTheme()}
 const MATH_DELIMS=[{left:'$$',right:'$$',display:true},{left:'\\[',right:'\\]',display:true},{left:'\\(',right:'\\)',display:false},{left:'$',right:'$',display:false}];
-function mathIn(el){try{if(el&&window.renderMathInElement)window.renderMathInElement(el,{delimiters:MATH_DELIMS,throwOnError:false})}catch(e){}}
+function mathIn(el){
+  if(!el||!/[\$]|\\\(|\\\[/.test(el.textContent||''))return;
+  const render=()=>{try{if(el.isConnected&&window.renderMathInElement)window.renderMathInElement(el,{delimiters:MATH_DELIMS,throwOnError:false})}catch(e){}};
+  if(window.renderMathInElement)render();else ubtLoadMath().then(render).catch(()=>{});
+}
 function mathScreen(){mathIn(document.querySelector('.screen.active'))}
 function confetti(n){
   const c=document.getElementById('confetti');if(!c)return;
-  c.width=window.innerWidth;c.height=parseInt(getComputedStyle(document.documentElement).getPropertyValue('--vh'))||window.innerHeight;
+  const logicalW=window.innerWidth,logicalH=parseInt(getComputedStyle(document.documentElement).getPropertyValue('--vh'))||window.innerHeight;
+  const ratio=Math.min(window.devicePixelRatio||1,1.5,Math.sqrt(2073600/(logicalW*logicalH)));c.width=Math.round(logicalW*ratio);c.height=Math.round(logicalH*ratio);c.style.width=logicalW+'px';c.style.height=logicalH+'px';
   const x=c.getContext('2d');
   const cols=['#ef4444','#f59e0b','#22c55e','#3b82f6','#a855f7','#ec4899'];
-  const P=Array.from({length:n||150},()=>({x:Math.random()*c.width,y:-20-Math.random()*c.height*.5,w:6+Math.random()*6,h:8+Math.random()*8,vy:2+Math.random()*4,vx:-2+Math.random()*4,r:Math.random()*6,vr:-.2+Math.random()*.4,c:cols[Math.floor(Math.random()*cols.length)]}));
+  const P=Array.from({length:Math.min(n||60,80)},()=>({x:Math.random()*logicalW,y:-20-Math.random()*logicalH*.5,w:6+Math.random()*6,h:8+Math.random()*8,vy:2+Math.random()*4,vx:-2+Math.random()*4,r:Math.random()*6,vr:-.2+Math.random()*.4,c:cols[Math.floor(Math.random()*cols.length)]}));
   let f=0;
   (function loop(){
-    x.clearRect(0,0,c.width,c.height);
+    x.setTransform(ratio,0,0,ratio,0,0);x.clearRect(0,0,logicalW,logicalH);
+    if(document.hidden)return;
     P.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.r+=p.vr;x.save();x.translate(p.x,p.y);x.rotate(p.r);x.fillStyle=p.c;x.fillRect(-p.w/2,-p.h/2,p.w,p.h);x.restore()});
-    if(++f<230)requestAnimationFrame(loop);else x.clearRect(0,0,c.width,c.height);
+    if(++f<100)requestAnimationFrame(loop);else x.clearRect(0,0,logicalW,logicalH);
   })();
 }
 let homeQuote=null;
@@ -9066,7 +9146,6 @@ function ubtQuestionBank(){
     seen.add(identity);out.push({...row,id:q.id&&String(q.id).startsWith('catalog:')?q.id:'local:'+identity,editable:!!user.isAdmin&&String(q.id||'').startsWith('catalog:')});
   }
   catalog.forEach(q=>{if(user.isAdmin||q.authorId===user.id||q.authorId==='system')add(q,q.subject,q.authorId,q.authorName,q.source)});
-  // Existing tests and banks remain usable while the new server catalogue loads.
   const profiles=Object.values(LS.get('ubt_profiles',{}));
   const uids=user.isAdmin?[...new Set([user.id,...profiles.map(p=>p.id)])]:[user.id];
   uids.forEach(uid=>LS.get('ubt_qbank_'+uid,[]).forEach(q=>add(q,q.subject,uid,(profiles.find(p=>p.id===uid)||{}).name||user.name,q.origin)));
@@ -9135,7 +9214,6 @@ async function importBankFiles10000(sourceInput,sourceSubject,statusTarget,butto
   }catch(e){status.textContent='Импорт қатесі: '+String(e.message||e).slice(0,150)}
   finally{button.disabled=false}
 }
-// Білім картасы мен болжам: тек нақты сақталған нәтижелер қолданылады.
 function kmHistory(){return user?LS.get('ubt_hist_'+user.id,[]):[]}
 function kmQuestionStats(){
   const groups=new Map();
@@ -9175,14 +9253,11 @@ function showScoreForecast(){showScr('s-score-forecast');renderScoreForecast()}
 function renderScoreForecast(){
   const el=document.getElementById('forecast-result');if(!el)return;
   const hist=kmHistory().filter(h=>Number.isFinite(h.score)&&Number.isFinite(h.max)&&h.max>0);
-  // Әдеттегі тесттер ҰБТ-ның пәндік салмақтарын қамтымайды.
-  // Сондықтан тек ҰБТ/140 атауы бар, 120 сұрақтық сынақтар қолданылады.
   const full=hist.filter(h=>h.is140===true&&h.questionCount===120&&h.max>0).slice(0,8);
   if(!full.length){el.innerHTML='<h3>Әзірге болжамға дерек жетіспейді</h3><p class="sub">140 балдық толық сынақ тестін тапсырыңыз. Басқа қысқа тесттердің пайызын 140 балға тікелей көбейту дұрыс емес.</p>';return}
   const percentages=full.map(h=>h.score/h.max);
   const mean=percentages.reduce((a,b)=>a+b,0)/percentages.length;
   const spread=Math.sqrt(percentages.reduce((a,b)=>a+(b-mean)**2,0)/percentages.length);
-  // Тек 120 сұрақтық тестте балл салмақтары белгісіз болғандықтан 140 ұпай нақты есептелмейді.
   const pct=Math.round(mean*100),low=Math.max(0,Math.round((mean-Math.max(.07,spread))*100)),high=Math.min(100,Math.round((mean+Math.max(.07,spread))*100));
   el.innerHTML=`<h3>Сынақтардағы күтілетін нәтиже</h3><div style="font-size:38px;font-weight:800;color:var(--p);margin:10px 0">${pct}%</div><p>Жуық аралық: <b>${low}%–${high}%</b></p><p class="sub" style="margin-top:12px">Есепке алынған толық тесттер: ${full.length}. Бұл 140 балдық ресми болжам емес: пәндер бойынша 1/2 балл салмағы сақталған нәтиже дерегі қажет.</p>`;
 }
@@ -9200,19 +9275,22 @@ function showAddQuestionFromBank(){
   ['c-topic-field','c-desc-field','c-request-field','c-save-test','c-cancel','c-teacher-opts','c-bank-create'].forEach(id=>document.getElementById(id).style.display='none');
   document.getElementById('c-manual-host').scrollIntoView({block:'start',behavior:'smooth'});
 }
-function renderUbt140(){
+function renderUbt140(refreshBank=true){
   const p1=document.getElementById('u-p1').value,p2=document.getElementById('u-p2').value;
   const bank=ubtQuestionBank(),valid=new Set(bank.map(q=>q.id));
   const selected=new Set(ubtSelectedIDs().filter(id=>valid.has(id)));
   const manual=ubtMode()==='manual',sections=ubtSections(p1,p2);
+  const totals=new Map(),chosenCounts=new Map();
+  bank.forEach(q=>{totals.set(q.subject,(totals.get(q.subject)||0)+1);if(selected.has(q.id))chosenCounts.set(q.subject,(chosenCounts.get(q.subject)||0)+1)});
   const rows=sections.map(s=>{
-    const have=bank.filter(q=>q.subject===s.key).length;
-    const chosen=bank.filter(q=>q.subject===s.key&&selected.has(q.id)).length;
+    const have=totals.get(s.key)||0;
+    const chosen=chosenCounts.get(s.key)||0;
     const ok=(manual?chosen:have)>=s.n;
     return `<tr><td>${esc(subjName(s.key))}</td><td>${s.n}</td><td>${have}</td><td style="color:${ok?'var(--ok)':'var(--warn)'};font-weight:700">${manual?chosen:(Math.min(have,s.n))}${ok?'':' ⚠'}</td></tr>`;
   }).join('');
   document.getElementById('u-info').innerHTML=`<div class="tscroll"><table class="ttable"><tr><th>Пән</th><th>Керек</th><th>Базада</th><th>${manual?'Таңдалған':'Алынатын'}</th></tr>${rows}</table></div><p class="sub" style="margin:8px 0 12px">${p1===p2?'⚠ Екі түрлі бейіндік пән таңдаңыз.':manual?'«Сұрақтар базасы» батырмасын басып, әр пәннен қажетті сұрақтарды белгілеңіз.':'Әр пәндегі тақырыптардан кезекпен кездейсоқ алынады: мүмкіндігінше барлық тақырып қамтылады.'}</p>`;
-  renderUbtBank();
+  if(refreshBank)renderUbtBank();
+  else document.querySelectorAll('#u-bank-list input[data-ubt-pick]').forEach(el=>el.checked=selected.has(el.dataset.ubtPick));
 }
 let questionBankFolders=[];
 function bankTestSources(){
@@ -9233,7 +9311,7 @@ function loadQuestionBankFolder(details){
   const from=Number(details.dataset.shown||0),end=Math.min(from+100,f.questions.length);
   const old=host.querySelector('.bank-more');if(old)old.remove();
   const selected=new Set(ubtSelectedIDs());
-  host.insertAdjacentHTML('beforeend',f.questions.slice(from,end).map((q,i)=>`<div class="ubt-bank-row"><input type="checkbox" aria-label="140 форматқа қосу" ${selected.has(q.id)?'checked':''} ${q.catalog?'':'disabled'} onchange="toggleUbtQuestion(${jsq(q.id)},this.checked)"><div class="info"><strong>${from+i+1}. ${esc(q.text)}</strong>${qMedia(q)}<p>Қосқан: ${esc(f.authorName)}</p></div>${user.isAdmin&&q.catalog?`<button class="btn btn-d btn-sm" onclick="deleteUbtBankQuestion(${jsq(q.id)})">Өшіру</button>`:''}</div>`).join(''));
+  host.insertAdjacentHTML('beforeend',f.questions.slice(from,end).map((q,i)=>`<div class="ubt-bank-row"><input type="checkbox" data-ubt-pick="${esc(q.id)}" aria-label="140 форматқа қосу" ${selected.has(q.id)?'checked':''} ${q.catalog?'':'disabled'} onchange="toggleUbtQuestion(${jsq(q.id)},this.checked)"><div class="info"><strong>${from+i+1}. ${esc(q.text)}</strong>${qMedia(q)}<p>Қосқан: ${esc(f.authorName)}</p></div>${user.isAdmin&&q.catalog?`<button class="btn btn-d btn-sm" onclick="deleteUbtBankQuestion(${jsq(q.id)})">Өшіру</button>`:''}</div>`).join(''));
   details.dataset.shown=String(end);
   if(end<f.questions.length)host.insertAdjacentHTML('beforeend',`<button class="btn btn-s bank-more" onclick="loadQuestionBankFolder(this.closest('details'))">Тағы көрсету (${f.questions.length-end})</button>`);
 }
@@ -9271,19 +9349,18 @@ function toggleUbtQuestion(id,on){
   const bank=ubtQuestionBank(),q=bank.find(x=>x.id===id);if(!q)return;
   const sections=ubtSections(document.getElementById('u-p1').value,document.getElementById('u-p2').value);
   const section=sections.find(s=>s.key===q.subject);
-  if(!section){renderUbt140();return}
+  if(!section){renderUbt140(false);return}
   const availableIDs=new Set(bank.map(q=>q.id));
   const selected=new Set(ubtSelectedIDs().filter(k=>availableIDs.has(k)));
-  if(on&&bank.filter(x=>x.subject===q.subject&&selected.has(x.id)).length>=section.n){alert('Бұл пәннен '+section.n+' сұрақ таңдалып қойған');renderUbt140();return}
+  if(on&&bank.filter(x=>x.subject===q.subject&&selected.has(x.id)).length>=section.n){alert('Бұл пәннен '+section.n+' сұрақ таңдалып қойған');renderUbt140(false);return}
   if(on)selected.add(id);else selected.delete(id);
-  LS.set('ubt_ubt140_selection_'+user.id,Array.from(selected));renderUbt140();
+  LS.set('ubt_ubt140_selection_'+user.id,Array.from(selected));renderUbt140(false);
 }
 async function deleteUbtBankQuestion(id){
   if(!user||!user.isAdmin||!document.getElementById('s-question-bank').classList.contains('active'))return;
   if(!confirm('Сұрақты базадан өшіру керек пе? Ол 140 форматқа алынбайды.'))return;
   const r=await authCall('bank_delete_question',{id});
   if(!r.ok){alert(r.msg||'Өшіру орындалмады');return}
-  // Server owns the catalogue; update this view without sending a generic write.
   const removed=ubtQuestionBank().find(q=>q.id===id);
   if(removed){const gone=LS.get('ubt_question_catalog_deleted',[]);gone.push(bankQuestionIdentity(removed));localStorage.setItem('ubt_question_catalog_deleted',JSON.stringify(gone))}
   const rows=LS.get('ubt_question_catalog',[]).filter(q=>q.id!==id);
@@ -9406,7 +9483,6 @@ function startUbt140(){
 })();
 try{if(user&&document.getElementById('s-home').classList.contains('active'))renderHomeExtras()}catch(e){}
 
-// Analytics only reads existing results; it never changes questions or scores.
 const ubdCache={uid:null,histRaw:null,progRaw:null,rows:[]};
 let ubdPage=0,ubdJob=0;
 const ubdNum=n=>Number.isFinite(Number(n))?Number(n):0;
@@ -9414,7 +9490,6 @@ const ubdPct=r=>r.max>0?Math.max(0,Math.min(100,r.score/r.max*100)):0;
 function ubdTime(r){
   const t=Number(r.t||r.at||0);if(t>0)return t<1e11?t*1000:t;
   const s=String(r.date||''),m=s.match(/^(\d{1,2})[.\/](\d{1,2})[.\/](\d{4})(?:[ ,]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
-  // All persisted app dates use Kazakhstan time, independent of browser location.
   if(m)return Date.UTC(+m[3],+m[2]-1,+m[1],+(m[4]||0)-5,+(m[5]||0),+(m[6]||0));
   return 0;
 }
@@ -9422,7 +9497,6 @@ function ubdSubject(q,h){
   const k=q&&(q.subject||q.subjectName);
   if(k){const name=subjName(k);return name&&name!==k?name:resultSubject({topic:k})}
   if(h.is140||/140|ҰБТ.*формат/i.test(h.topic||''))return 'ҰБТ · 140 формат';
-  // Check these before generic "тарих", preserving the actual subject.
   if(/дүниежүзі|worldhistory/i.test(h.topic||''))return 'Дүниежүзі тарихы';
   return resultSubject(h);
 }
@@ -9449,14 +9523,12 @@ function ubdRows(){
     rows.push(row);if(row.id)ids.add(row.id);
   }
   hist.slice().reverse().forEach((r,i)=>{add(r,i);if(r&&typeof r==='object'){const k=signature(r);legacy.set(k,(legacy.get(k)||0)+1)}});
-  // A result exists in both history and progress. Count it once, including old rows without IDs.
   prog.forEach((r,i)=>{
     if(!r||typeof r!=='object')return;
     const k=signature(r),n=legacy.get(k)||0;
     if(r.id&&ids.has(r.id)){if(n>0)legacy.set(k,n-1);return}
     if(n>0){legacy.set(k,n-1);return}add(r,hist.length+i);
   });
-  // Keep the known legacy order when a date is unavailable; dated rows remain chronological.
   rows.sort((a,b)=>(a.time||0)-(b.time||0)||a.index-b.index);
   Object.assign(ubdCache,{uid:user.id,histRaw:hr,progRaw:pr,rows});return rows;
 }
@@ -9500,6 +9572,8 @@ function ubdFilter(){ubdPage=0;ubdRender(false)}
 function ubdRender(home){
   const host=document.getElementById(home?'ubd-home':'ubd-detail');if(!host||!user)return;
   const all=ubdRows(),subject=home?'':document.getElementById('ubd-subject').value,period=home?'all':document.getElementById('ubd-period').value;
+  const signature=[user.id,ubdCache.histRaw,ubdCache.progRaw,subject,period,ubdPage,Math.floor(Date.now()/60000)];
+  if(host.__ubdSignature&&signature.every((v,i)=>v===host.__ubdSignature[i]))return;host.__ubdSignature=signature;
   const cutoff=period==='all'?0:Date.now()-Number(period)*86400000;
   const rows=cutoff?all.filter(r=>r.time>=cutoff):all,m=ubdModel(rows,subject);
   const latest=m.chart[m.chart.length-1],prev=m.chart[m.chart.length-2],delta=latest&&prev?latest.pct-prev.pct:null;
@@ -9532,6 +9606,34 @@ showScr=function(id){const r=ubdOriginalShowScr.apply(this,arguments);if(id==='s
 const ubdOriginalRefresh=syncRefresh;
 syncRefresh=function(){const r=ubdOriginalRefresh.apply(this,arguments);ubdSchedule();return r};
 ubdSchedule();
+
+
+function ubtRailSync(){
+  const rail=document.getElementById('ubt-icon-rail');if(!rail)return;
+  const screen=document.querySelector('.screen.active'),id=screen&&screen.id;
+  const visible=!!user&&!!id&&!['s-login','s-test'].includes(id);
+  document.body.classList.toggle('ubt-has-rail',visible);
+  rail.setAttribute('aria-hidden',String(!visible));rail.inert=!visible||document.body.classList.contains('app-menu-open');
+  const groups={home:['s-home'],analytics:['s-analytics','s-knowledge-map','s-score-forecast'],profile:['s-profile'],exam:['s-ubt140'],subjects:['s-subj'],bank:['s-question-bank'],flash:['s-flash'],history:['s-hist'],create:['s-create','s-addq','s-schemes'],admin:['s-admin','s-registered','s-access-requests']};
+  let matched=false;
+  rail.querySelectorAll('[data-rail-group]').forEach(button=>{
+    const on=visible&&!!groups[button.dataset.railGroup]&&groups[button.dataset.railGroup].includes(id);
+    button.classList.toggle('is-active',on);if(on){button.setAttribute('aria-current','page');if(!(window.matchMedia('(max-width:700px)').matches&&(button.classList.contains('ubt-rail-desktop')||button.closest('.ubt-rail-footer'))))matched=true}else button.removeAttribute('aria-current');
+  });
+  const more=document.getElementById('ubt-rail-more');
+  more.classList.toggle('is-active',visible&&!matched);if(visible&&!matched)more.setAttribute('aria-current','page');else more.removeAttribute('aria-current');
+  more.setAttribute('aria-expanded',String(document.body.classList.contains('app-menu-open')));
+  document.getElementById('ubt-rail-admin').hidden=!(user&&user.isAdmin);
+}
+const ubtRailShowScreen=showScr;
+showScr=function(){const r=ubtRailShowScreen.apply(this,arguments);ubtRailSync();return r};
+const ubtRailOpenMenu=openAppMenu;
+openAppMenu=function(){const r=ubtRailOpenMenu.apply(this,arguments);ubtRailSync();return r};
+const ubtRailCloseMenu=closeAppMenu;
+closeAppMenu=function(){const rail=document.getElementById('ubt-icon-rail');if(rail)rail.inert=false;const r=ubtRailCloseMenu.apply(this,arguments);ubtRailSync();return r};
+const ubtRailViewport=window.matchMedia('(max-width:700px)');
+if(ubtRailViewport.addEventListener)ubtRailViewport.addEventListener('change',ubtRailSync);
+ubtRailSync();
 
 </script>
 <script>
@@ -9587,7 +9689,7 @@ ubdSchedule();
   function post(m){m.isStreamlitMessage=true;try{window.parent.postMessage(m,hostOrigin||'*')}catch(e){}}
   var sendQueued=false;
   function send(){if(sendQueued)return;sendQueued=true;setTimeout(function(){sendQueued=false;sendNow()},0)}
-  function sendNow(){if(window.__mobileTransport)return;post({type:'streamlit:setComponentValue',dataType:'json',value:{sid:sid,ops:unacked,reqs:reqs,token:window.__token||'',chat:(window.getChatClaim?window.getChatClaim():''),poll:++pollN}})}
+  function sendNow(){if(window.__mobileTransport)return;post({type:'streamlit:setComponentValue',dataType:'json',value:{sid:sid,ops:unacked,reqs:reqs,token:window.__token||'',chat:(window.getChatClaim?window.getChatClaim():''),deltaProtocol:1,fullSync:first,poll:++pollN}})}
   function call(type,data){
     return new Promise(function(resolve){
       var id=++reqN,done=false;
@@ -9664,7 +9766,7 @@ ubdSchedule();
   }catch(e){}
   window.addEventListener('resize',height);
   try{new ResizeObserver(height).observe(document.body)}catch(e){}
-  setInterval(height,2500);
+  setInterval(height,6000);
   window.addEventListener('message',function(ev){
     if(ev.source!==window.parent||(hostOrigin&&ev.origin!==hostOrigin))return;
     var d=ev.data;if(!d||d.type!=='streamlit:render')return;
@@ -9674,18 +9776,19 @@ ubdSchedule();
       if(args.mobileSid===transport.sid)window.top.postMessage({type:'ubt:mobileResponse',channel:transport.channel,args:args},'https://appassets.androidplatform.net');
       return;
     }
-    var db=args.db||{},ack=(args.ack||{})[sid]||0,changed=0;
+    var db=args.db||{},ack=(args.ack||{})[sid]||0,changed=0,changedKeys=[];
     window.__store=args.store||'';window.__err=args.err||'';
     unacked=unacked.filter(function(o){return o.n>ack});
     Object.keys(pend).forEach(function(k){if(pend[k]<=ack)delete pend[k]});
     if(!args.dbUnchanged){
       Object.keys(db).forEach(function(k){
         if(noSync(k)||pend[k]!==undefined)return;
-        try{if(localStorage.getItem(k)!==db[k]){localStorage.setItem(k,db[k]);changed++}}catch(e){}
+        try{if(localStorage.getItem(k)!==db[k]){localStorage.setItem(k,db[k]);changed++;changedKeys.push(k)}}catch(e){}
       });
-      if(window.__token && args.tk===window.__token){
+      if(args.dbDelta){(args.dbDeleted||[]).forEach(function(k){if(!noSync(k)&&pend[k]===undefined){try{localStorage.removeItem(k);changed++;changedKeys.push(k)}catch(e){}}})}
+      if(!args.dbDelta && window.__token && args.tk===window.__token){
         try{var stale=[];for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(!noSync(k)&&!(k in db)&&pend[k]===undefined)stale.push(k)}
-        stale.forEach(function(k){localStorage.removeItem(k);changed++})}catch(e){}
+        stale.forEach(function(k){localStorage.removeItem(k);changed++;changedKeys.push(k)})}catch(e){}
       }
     }
     var ar=(args.authres||{})[sid]||{};
@@ -9695,9 +9798,8 @@ ubdSchedule();
     if(args.dead&&window.__token){try{if(window.__kicked)window.__kicked()}catch(e){}}
     if(renderWaiters.length&&(args.tk||'')===(window.__token||'')){var rw=renderWaiters;renderWaiters=[];rw.forEach(function(f){try{f()}catch(e){}})}
     if(!booted)boot();
-    else{try{setSyncInd(true);if(changed)syncRefresh();if(window.syncMaintenance)syncMaintenance()}catch(e){}}
+    else{try{setSyncInd(true);if(changed){window.__ubtChangedKeys=changedKeys;syncRefresh()}if(window.syncMaintenance)syncMaintenance()}catch(e){}}
   });
-  // Native app's trusted bundled origin only; relay does not bypass _session/_authorize.
   window.addEventListener('message',function(ev){
     var d=ev.data;
     if(ev.source!==window.top||ev.origin!=='https://appassets.androidplatform.net'||!d||d.type!=='ubt:mobileRequest')return;
@@ -9721,8 +9823,6 @@ ubdSchedule();
 </html>
 """
 
-
-
 @st.cache_resource
 def _write_frontend(digest):
     os.makedirs(FRONT_DIR, exist_ok=True)
@@ -9735,7 +9835,6 @@ def _write_frontend(digest):
     if old != html_code:
         with open(path, "w", encoding="utf-8") as f:
             f.write(html_code)
-
 
 _write_frontend(hashlib.sha256(html_code.encode("utf-8")).hexdigest())
 _ubt_comp = components.declare_component("ubt_plus_zheke", path=FRONT_DIR)
@@ -9753,10 +9852,21 @@ with _st["lock"]:
     _catalog_sync(_st)
     _rev = _st["rev"]
 _sent = (_sid, _tok, _claim, _tk, _rev)
-_unchanged = st.session_state.get("_ubt_sent") == _sent
+_previous_sent = st.session_state.get("_ubt_sent")
+_force_full = _cur.get("fullSync") is True
+_unchanged = _previous_sent == _sent and not _force_full
+_delta, _db_deleted = False, []
 _db = {} if _unchanged else _snapshot(_tok, _claim)
+if not _unchanged:
+    _previous_db = st.session_state.get("_ubt_snapshot")
+    _same_scope = _previous_sent is not None and _previous_sent[:4] == _sent[:4]
+    _full_db = _db
+    if _cur.get("deltaProtocol") == 1 and not _cur.get("mobile") and not _force_full and _same_scope and isinstance(_previous_db, dict):
+        _db, _db_deleted = _snapshot_delta(_full_db, _previous_db)
+        _delta = True
+    st.session_state["_ubt_snapshot"] = _full_db
 st.session_state["_ubt_sent"] = _sent
-_res = _ubt_comp(mobileSid=_sid, db=_db, dbUnchanged=_unchanged, heartbeat=_cur.get("poll"), ack=dict(st.session_state.get("_ubt_ack", {})),
+_res = _ubt_comp(mobileSid=_sid, db=_db, dbDeleted=_db_deleted, dbDelta=_delta, dbUnchanged=_unchanged, heartbeat=_cur.get("poll"), ack=dict(st.session_state.get("_ubt_ack", {})),
                  authres=dict(st.session_state.get("_ubt_authres", {})), tk=_tk, dead=bool(_tok and not _tk),
                  store=_store_mode(_st), err=str(_st.get("err") or "")[:160], key="ubt_comp", default=None)
 if _apply_ops(_res):
