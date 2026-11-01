@@ -711,6 +711,9 @@ def _finish_exam(state, sess, d):
         score = sum(weights[i] for i, q in enumerate(qs) if answers.get("examq" + str(i)) == q["correct"])
         maximum = sum(weights)
         pct = score / maximum
+        # Сынып тесті: барлығы тапсырып, админ рұқсат бермейінше қателер мен дұрыс жауаптар жабық
+        held = bool(exam["classId"] and not exam["owner"] and
+                    exam["testId"] not in _jload(state["db"].get("ubt_class_release", "{}"), dict, {}))
         done_key = "ubt_exam_done_" + sess["uid"]
         done = _jload(state["db"].get(done_key, "[]"), list, [])
         gained = (score * 10 + (50 if pct == 1 else 25 if pct >= .8 else 10 if pct >= .5 else 0)
@@ -757,11 +760,14 @@ def _finish_exam(state, sess, d):
             hist = _jload(state["db"].get(hist_key, "[]"), list, [])
             hist.insert(0, {"id": result_id, "date": datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5))).strftime("%d.%m.%Y %H:%M"),
                             "score": score, "max": maximum, "topic": exam["topic"], "answers": answers, "serverVerified": True,
+                            "classTestId": exam["testId"] if exam["classId"] else None,
                             "questions": [{**q, "id": "examq" + str(i)} for i, q in enumerate(qs)]})
             _put(state, hist_key, _jdump(hist))
         review = [{**q, "id": "examq" + str(i)} for i, q in enumerate(qs)]
+        if held:
+            review = [{k: v for k, v in q.items() if k != "correct"} for q in review]
         result = {"ok": True, "score": score, "max": maximum, "gained": gained, "owner": exam["owner"],
-                  "reward": exam["reward"], "questions": review}
+                  "reward": exam["reward"], "questions": review, "held": held}
         exam["completed"] = result
         exam["expires"] = time.time() + 86400
         _save_exam(state, token)
@@ -848,7 +854,9 @@ def _explain_review(state, sess, d):
     opts, correct = q.get("options"), q.get("correct")
     if not isinstance(opts, list) or not 2 <= len(opts) <= 10 or any(not isinstance(x, str) or len(x) > 2000 for x in opts) or type(correct) is not int or not 0 <= correct < len(opts):
         return {"ok": False, "msg": "Жауаптар жарамсыз"}
-    history = _jload(state["db"].get("ubt_hist_" + uid, "[]"), list, [])
+    released = _jload(state["db"].get("ubt_class_release", "{}"), dict, {})
+    history = [h for h in _jload(state["db"].get("ubt_hist_" + uid, "[]"), list, [])
+               if not (isinstance(h, dict) and h.get("classTestId") and h["classTestId"] not in released)]
     if not any(isinstance(h, dict) and any(isinstance(x, dict) and x.get("text") == q["text"] and x.get("options") == opts and x.get("correct") == correct for x in (h.get("questions") or []) if isinstance(h.get("questions"), list)) for h in history):
         return {"ok": False, "msg": "Аяқталған тест тарихы сақталған соң қайта басыңыз"}
     api_key = (_secret("GEMINI_API_KEY") or _secret("GOOGLE_API_KEY") or "").strip()
@@ -1215,6 +1223,39 @@ def _handle_req(state, sid, rq):
             _put(state, "ubt_assigned_tests", _jdump(assignments))
             _commit(state)
         return {"ok": True, "assignment": assignment}
+
+    if typ == "admin_release_class_results":
+        if not (sess and sess["admin"]):
+            return {"ok": False, "msg": "Рұқсат жоқ"}
+        tid = str(d.get("testId") or "")
+        release = d.get("release") is not False
+        force = d.get("force") is True
+        with state["lock"]:
+            tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
+            test = next((t for t in tests if isinstance(t, dict) and t.get("id") == tid and t.get("classId")), None)
+            if not test:
+                return {"ok": False, "msg": "Сынып тесті табылмады"}
+            classes = _jload(state["db"].get("ubt_classes", "[]"), list, [])
+            cls = next((c for c in classes if isinstance(c, dict) and c.get("id") == test["classId"]), None)
+            if not cls:
+                return {"ok": False, "msg": "Сынып табылмады"}
+            students = [u for u in (cls.get("students") or []) if isinstance(u, str)]
+            results = _jload(state["db"].get("ubt_tres_" + tid, "[]"), list, [])
+            finished = {r.get("uid") for r in results if isinstance(r, dict)}
+            missing = [u for u in students if u not in finished]
+            if release and missing and not force:
+                names = {p.get("id"): p.get("name") for p in _profiles(state).values() if isinstance(p, dict)}
+                return {"ok": False, "missing": len(missing),
+                        "names": [str(names.get(u) or u) for u in missing[:20]],
+                        "msg": "Әлі тапсырмаған оқушы: " + str(len(missing)) + " / " + str(len(students)) + "."}
+            rel = _jload(state["db"].get("ubt_class_release", "{}"), dict, {})
+            if release:
+                rel[tid] = {"at": int(time.time()), "by": sess["name"], "forced": bool(missing)}
+            else:
+                rel.pop(tid, None)
+            _put(state, "ubt_class_release", _jdump(rel))
+            _commit(state)
+        return {"ok": True, "released": release}
 
     if typ == "admin_remove_assignment":
         if not (sess and sess["admin"]):
@@ -2373,6 +2414,18 @@ def _snapshot(tok="", claim=""):
                 elif relevant.get("classId") not in managed:
                     data = _jload(db[k], list if k.startswith("ubt_tres_") else dict, [] if k.startswith("ubt_tres_") else {})
                     db[k] = _jdump([r for r in data if isinstance(r, dict) and r.get("uid") == sess["uid"]] if isinstance(data, list) else {sess["uid"]: data.get(sess["uid"], 0)})
+        released = _jload(db.get("ubt_class_release", "{}"), dict, {})
+        hist_key = "ubt_hist_" + sess["uid"]
+        if hist_key in db:
+            rows, changed = _jload(db[hist_key], list, []), False
+            for i, r in enumerate(rows):
+                if isinstance(r, dict) and r.get("classTestId") and r["classTestId"] not in released:
+                    rows[i] = {**{k: v for k, v in r.items() if k not in ("answers", "questions")},
+                               "questions": [], "held": True}
+                    changed = True
+            if changed:
+                db[hist_key] = _jdump(rows)
+        db.pop("ubt_class_release", None)
     return db
 
 def _snapshot_delta(current, previous):
@@ -4994,9 +5047,7 @@ function adminViewUser(id){
   document.getElementById('uv-login').value=p.name||'';
   document.getElementById('uv-curpass').value='🔒 хэштелген (көрсетілмейді)';
   const hist=LS.get('ubt_hist_'+id,[]);
-  document.getElementById('uv-hist').innerHTML=hist.length?hist.map(h=>`
-    <div class="item"><div class="info"><h4>${esc(h.topic||'Тест')}</h4><p>${h.date}</p></div>
-    <div style="font-weight:700;color:var(--p)">${h.score}/${h.max}</div></div>`).join(''):'<p class="sub">Тест тапсырмаған</p>';
+  document.getElementById('uv-hist').innerHTML=hist.length?hist.map(adminHistRowHTML).join(''):'<p class="sub">Тест тапсырмаған</p>';
   const vl=LS.get('ubt_viol_'+id,[]);
   document.getElementById('uv-hist').innerHTML+=`<h4 style="margin:14px 0 6px">⚠ Бұзушылықтар (${vl.length})</h4>`+(vl.length?vl.slice(0,40).map(v=>`<div class="item"><div class="info"><h4 style="font-size:13px">${esc(v.k)}</h4><p>${esc(v.t)}${v.test?' · '+esc(v.test):''}</p></div></div>`).join(''):'<p class="sub">Бұзушылық жоқ</p>');
   const mist=LS.get('ubt_mistakes_'+id,[]);
@@ -6742,7 +6793,8 @@ function finishTest(force){
   if(st.secureExam){submitSecureResult();return;}
   stopTimer();lockEnd();
   let score=0,max=(st.isSubjectPractice||st.is140)?st.questions.reduce((sum,q)=>sum+practicePoints(q),0):st.questions.length,wrong=[];
-  st.questions.forEach(q=>{if(st.answers[q.id]===q.correct)score+=(st.isSubjectPractice||st.is140)?practicePoints(q):1;else wrong.push({...q,userAnswer:st.answers[q.id]})});
+  const heldRes=!!(st.verifiedExam&&st.verifiedExam.held);
+  if(!heldRes)st.questions.forEach(q=>{if(st.answers[q.id]===q.correct)score+=(st.isSubjectPractice||st.is140)?practicePoints(q):1;else wrong.push({...q,userAnswer:st.answers[q.id]})});
   if(st.verifiedExam){score=st.verifiedExam.score;max=st.verifiedExam.max}
   if(!st.verifiedExam){
     if(!st.isMistakes&&wrong.length){let m=LS.get('ubt_mistakes_'+user.id,[]);const ids=new Set(m.map(x=>x.id));wrong.forEach(q=>{if(!ids.has(q.id))m.push(q)});LS.set('ubt_mistakes_'+user.id,m)}
@@ -6754,14 +6806,15 @@ function finishTest(force){
   const pct=max?score/max:0;
   if(pct>=1) gained+=50; else if(pct>=0.8) gained+=25; else if(pct>=0.5) gained+=10;
   gained=st.verifiedExam?st.verifiedExam.gained:0;
-  if(user&&st.questions.length){
+  if(user&&st.questions.length&&!heldRes){
     try{sessionStorage.setItem('ubt_last_review_'+user.id,JSON.stringify({questions:st.questions,answers:st.answers,topic:st.subjectName}))}catch(e){}
   }
   st.lastWrong=wrong;st.lastScore={score,max,gained};
   document.getElementById('sc').textContent=score;document.getElementById('sm').textContent=max;
   document.getElementById('res-break').innerHTML=`<div class="res-row"><span>${esc(st.subjectName||'Тест')}</span><span style="font-weight:700;color:var(--p)">${score} / ${max}</span></div>
     ${st.verifiedExam&&!st.verifiedExam.owner?`<div class="res-row"><span>Сервер растаған ұпай</span><span style="font-weight:700;color:var(--ok)">+${gained} ⭐</span></div>`:''}
-    ${lock.viol?`<div class="res-row"><span>Ереже бұзу ескертулері</span><span style="font-weight:700;color:var(--err)">${lock.viol} / ${MAX_VIOL}</span></div>`:''}`;
+    ${lock.viol?`<div class="res-row"><span>Ереже бұзу ескертулері</span><span style="font-weight:700;color:var(--err)">${lock.viol} / ${MAX_VIOL}</span></div>`:''}
+    ${heldRes?'<div class="res-row"><span>🔒 Қателер мен дұрыс жауаптар</span><span style="font-weight:700;color:var(--warn)">Сынып бойынша барлығы тапсырған соң, админ рұқсат бергенде ашылады</span></div>':''}`;
   const certArea=document.getElementById('ubt-cert-area');
   const eligible=!!st.verifiedExam&&max>0&&score/max>=.8&&!st.isMistakes&&lock.viol===0;
   st.certificate=eligible?{name:user.name,topic:st.subjectName||'ҰБТ тесті',score,max,date:new Date().toLocaleDateString('kk-KZ')}:null;
@@ -6788,6 +6841,9 @@ async function explainReviewQuestion(i,button){
 }
 function reviewAns(){
   const L=['A','B','C','D'];
+  const latestH=user?LS.get('ubt_hist_'+user.id,[])[0]:null;
+  const heldNow=!!(latestH&&latestH.held)||!!(st.verifiedExam&&st.verifiedExam.held&&(!latestH||!latestH.classTestId));
+  if(heldNow){document.getElementById('rev-list').innerHTML='<div class="card">🔒 Қателер мен дұрыс жауаптар әзірге жабық. Сынып бойынша барлығы тапсырып болған соң, админ рұқсат береді — сонда осы жерден көре аласыз.</div>';showScr('s-rev');return}
   let review=null;
   if(st.lastScore&&st.questions.length&&!st.secureExam)review={questions:st.questions,answers:st.answers};
   if(!review&&user){try{review=JSON.parse(sessionStorage.getItem('ubt_last_review_'+user.id)||'null')}catch(e){}}
@@ -6820,7 +6876,7 @@ function showMistakes(){
 }
 function clearMist(){if(confirm('Тазалау?')){LS.set('ubt_mistakes_'+user.id,[]);showMistakes()}}
 function startMistakes(){const m=LS.get('ubt_mistakes_'+user.id,[]);if(!m.length)return;st=baseState();st.questions=m.map(q=>({...q}));st.subjectName='Қателер';st.isMistakes=true;st.timerSeconds=Math.max(m.length*90,600);beginTest()}
-function startMistakesFromLast(){if(!st.lastWrong||!st.lastWrong.length){alert('Қате жоқ!');return}st.questions=st.lastWrong.map(q=>({...q}));st.currentIndex=0;st.answers={};st.flags={};st.subjectName='Қателер';st.isMistakes=true;st.timerSeconds=Math.max(st.questions.length*90,600);beginTest()}
+function startMistakesFromLast(){if(st.verifiedExam&&st.verifiedExam.held){alert('Қателер әзірге жабық. Сынып бойынша барлығы тапсырып болған соң, админ рұқсат береді.');return}if(!st.lastWrong||!st.lastWrong.length){alert('Қате жоқ!');return}st.questions=st.lastWrong.map(q=>({...q}));st.currentIndex=0;st.answers={};st.flags={};st.subjectName='Қателер';st.isMistakes=true;st.timerSeconds=Math.max(st.questions.length*90,600);beginTest()}
 const MAX_Q=500;
 const SAMPLE_TXT=`Тақырып: Қазақ хандығы
 Пән: Қазақстан тарихы
@@ -9101,9 +9157,48 @@ function classTestsHTML(c,mode){
     }
     const n=new Set(LS.get('ubt_tres_'+t.id,[]).map(r=>r.uid)).size;
     const own=user.isAdmin||t.authorId===user.id;
-    return `<div class="item" style="margin-top:6px"><div class="info"><h4>${esc(t.topic)}</h4><p>${meta} · тапсырған: ${n}/${c.students.length}</p></div><div class="acts"><button class="btn btn-s btn-sm" onclick="showTestResults(${jsq(t.id)})">📊 Нәтиже</button>${own?`<button class="btn btn-s btn-sm" onclick="editTest(${jsq(t.id)})">⚙ Баптау</button>`:''}</div></div>`;
+    return `<div class="item" style="margin-top:6px"><div class="info"><h4>${esc(t.topic)}</h4><p>${meta} · тапсырған: ${n}/${c.students.length}${user.isAdmin?((LS.get('ubt_class_release',{})||{})[t.id]?' · 🔓 ашық':' · 🔒 жабық'):''}</p></div><div class="acts"><button class="btn btn-s btn-sm" onclick="showTestResults(${jsq(t.id)})">📊 Нәтиже</button>${own?`<button class="btn btn-s btn-sm" onclick="editTest(${jsq(t.id)})">⚙ Баптау</button>`:''}</div></div>`;
   }).join('');
 }
+
+function adminHistRowHTML(h){
+  const L=['A','B','C','D','E','F'];
+  const qs=Array.isArray(h.questions)?h.questions:[],ans=(h.answers&&typeof h.answers==='object')?h.answers:null;
+  let det='';
+  if(qs.length&&ans){
+    const bad=[];
+    qs.forEach((q,i)=>{if(q&&Array.isArray(q.options)&&Number.isInteger(q.correct)&&ans[q.id]!==q.correct)bad.push({i,q,ua:ans[q.id]})});
+    det=`<details style="margin-top:6px"><summary>❌ Қателері (${bad.length} / ${qs.length})</summary>${bad.length?bad.map(b=>`<div class="ea-q"><b>${b.i+1}. ${esc(String(b.q.text||'').replace(/\s+/g,' ').slice(0,200))}</b><div>${b.ua===undefined||b.ua===null?'⏭ Жауап берілмеген':'✗ Оқушы: '+(L[b.ua]||(b.ua+1))+') '+esc(b.q.options[b.ua]||'')}</div><div style="color:var(--ok)">✓ Дұрыс: ${L[b.q.correct]||(b.q.correct+1)}) ${esc(b.q.options[b.q.correct]||'')}</div></div>`).join(''):'<p class="sub">🎉 Қате жоқ</p>'}</details>`;
+  }
+  return `<div class="item"><div class="info"><h4>${esc(h.topic||'Тест')}${h.classTestId?' · 🏫 сынып тесті':''}</h4><p>${esc(h.date||'')}</p>${det}</div><div style="font-weight:700;color:var(--p)">${h.score}/${h.max}</div></div>`;
+}
+function adminStudentTestMistakes(tid,uid){
+  if(!user||!user.isAdmin)return;
+  const box=document.getElementById('tres-mist');if(!box)return;
+  const rows=LS.get('ubt_hist_'+uid,[]).filter(h=>h.classTestId===tid),p=profileById(uid);
+  box.innerHTML=`<h4 style="margin:12px 0 6px">❌ ${esc(p?p.name:'?')} — қателері</h4>`+(rows.length?rows.map(adminHistRowHTML).join(''):'<p class="sub">Бұл тест бойынша мәлімет жоқ</p>');
+  box.querySelectorAll('details').forEach(x=>{x.open=true});
+  box.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function releaseBarHTML(t,c){
+  const rel=(LS.get('ubt_class_release',{})||{})[t.id];
+  const n=new Set(LS.get('ubt_tres_'+t.id,[]).map(r=>r.uid)).size,total=c.students.length;
+  return rel
+    ?`<div class="sub" style="margin:8px 0">🔓 Қателер мен дұрыс жауаптар сыныпқа ашық</div><button class="btn btn-s btn-sm" onclick="adminReleaseResults(${jsq(t.id)},false)">🔒 Қайта жабу</button>`
+    :`<div class="sub" style="margin:8px 0">🔒 Оқушыларға қателер жабық · тапсырған: ${n} / ${total}</div><button class="btn btn-p btn-sm" onclick="adminReleaseResults(${jsq(t.id)},true)">🔓 Сыныпқа рұқсат беру</button>`;
+}
+function adminReleaseResults(tid,release){return guarded(async()=>{
+  if(!user||!user.isAdmin)return;
+  if(!confirm(release?'Осы тест бойынша сынып оқушыларына қателері мен дұрыс жауаптарын ашу керек пе?':'Қателерді сыныпқа қайта жабу керек пе?'))return;
+  let r=await authCall('admin_release_class_results',{testId:tid,release:release});
+  if(!r.ok&&r.missing){
+    if(!confirm((r.msg||'')+' '+(r.names||[]).join(', ')+'\nБәрібір рұқсат беру керек пе?'))return;
+    r=await authCall('admin_release_class_results',{testId:tid,release:release,force:true});
+  }
+  if(!r.ok){alert(r.msg||'Қате');return}
+  try{await window.__bridge.refresh()}catch(e){}
+  showTestResults(tid);
+})}
 function showTestResults(tid){
   const t=allTests().find(x=>x.id===tid);if(!t)return;
   const c=getClasses().find(x=>x.id===t.classId);if(!c||!canManageClass(c))return;
@@ -9113,9 +9208,9 @@ function showTestResults(tid){
     const p=profileById(id),l=by[id]||[];
     const best=l.length?Math.max.apply(null,l.map(r=>r.max?Math.round(r.score/r.max*100):0)):null;
     const last=l.length?l[l.length-1]:null;
-    return `<tr><td><b>${esc(p?p.name:'?')}</b></td><td>${attemptsOf(tid,id)}</td><td>${best===null?'—':best+'%'}</td><td>${last?last.score+'/'+last.max:'—'}</td></tr>`;
+    return `<tr><td><b>${esc(p?p.name:'?')}</b></td><td>${attemptsOf(tid,id)}</td><td>${best===null?'—':best+'%'}</td><td>${last?last.score+'/'+last.max:'—'}</td>${user.isAdmin?`<td><button class="btn btn-s btn-sm" onclick="adminStudentTestMistakes(${jsq(tid)},${jsq(id)})">❌ Қателері</button></td>`:''}</tr>`;
   }).join('');
-  document.getElementById('tch-detail').innerHTML=`<div class="card" style="border-color:var(--p)"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h3>📊 ${esc(t.topic)} · ${esc(c.name)}</h3><button class="btn btn-s btn-sm" onclick="document.getElementById('tch-detail').innerHTML=''">Жабу</button></div><div class="sub" style="margin-bottom:8px">⏱ ${t.timerMin?t.timerMin+' мин':'авто'} · лимит: ${t.limit?t.limit:'шексіз'}</div>${c.students.length?`<div class="tscroll"><table class="ttable"><tr><th>Оқушы</th><th>Әрекет</th><th>Үздік</th><th>Соңғы</th></tr>${rows}</table></div>`:'<div class="sub">Сыныпта оқушы жоқ</div>'}</div>`;
+  document.getElementById('tch-detail').innerHTML=`<div class="card" style="border-color:var(--p)"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h3>📊 ${esc(t.topic)} · ${esc(c.name)}</h3><button class="btn btn-s btn-sm" onclick="document.getElementById('tch-detail').innerHTML=''">Жабу</button></div><div class="sub" style="margin-bottom:8px">⏱ ${t.timerMin?t.timerMin+' мин':'авто'} · лимит: ${t.limit?t.limit:'шексіз'}</div>${c.students.length?`<div class="tscroll"><table class="ttable"><tr><th>Оқушы</th><th>Әрекет</th><th>Үздік</th><th>Соңғы</th>${user.isAdmin?'<th></th>':''}</tr>${rows}</table></div>`:'<div class="sub">Сыныпта оқушы жоқ</div>'}${user.isAdmin?releaseBarHTML(t,c)+'<div id="tres-mist"></div>':''}</div>`;
   if(user.isAdmin)showScr('s-teacher');
   document.getElementById('tch-detail').scrollIntoView({behavior:'smooth',block:'start'});
 }
