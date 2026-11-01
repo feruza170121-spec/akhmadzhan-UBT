@@ -1,5 +1,4 @@
 
-import atexit
 import base64
 import binascii
 import hashlib
@@ -314,53 +313,13 @@ def _store_mode(state):
         return "local"
     return "remote" if state["ok"] and not state["dirty"] else ("pending" if state["ok"] else "error")
 
-_SAVE = {"db": None, "pending": False, "lock": threading.Lock(), "io": threading.Lock()}
-
-def _db_write_now():
-    db = _SAVE["db"]
-    if db is None:
-        return
-    for _ in range(5):
-        try:
-            snap = dict(db)
-            break
-        except RuntimeError:
-            time.sleep(0.01)
-    else:
-        return
-    with _SAVE["io"]:
-        tmp = DATA_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(snap, f, ensure_ascii=False, separators=(",", ":"))
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, DATA_FILE)
-
-def _db_save_worker():
-    time.sleep(0.8)
-    with _SAVE["lock"]:
-        _SAVE["pending"] = False
-    try:
-        _db_write_now()
-    except Exception:
-        pass
-
 def _db_save(db):
-    """Дискіге жазуды фондық ағынға шығарады: бірнеше өзгеріс бір жазуға біріктіріледі."""
-    _SAVE["db"] = db
-    with _SAVE["lock"]:
-        if _SAVE["pending"]:
-            return
-        _SAVE["pending"] = True
-    threading.Thread(target=_db_save_worker, daemon=True).start()
-
-def _db_save_on_exit():
-    try:
-        _db_write_now()
-    except Exception:
-        pass
-
-atexit.register(_db_save_on_exit)
+    tmp = DATA_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(db, f, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, DATA_FILE)
 
 def _migrate_once(state):
     """Ашық мәтінді парольдерді хэшке айналдырады. Ескі ubt_admin_pass кілтін өшіреді."""
@@ -711,9 +670,6 @@ def _finish_exam(state, sess, d):
         score = sum(weights[i] for i, q in enumerate(qs) if answers.get("examq" + str(i)) == q["correct"])
         maximum = sum(weights)
         pct = score / maximum
-        # Сынып тесті: барлығы тапсырып, админ рұқсат бермейінше қателер мен дұрыс жауаптар жабық
-        held = bool(exam["classId"] and not exam["owner"] and
-                    exam["testId"] not in _jload(state["db"].get("ubt_class_release", "{}"), dict, {}))
         done_key = "ubt_exam_done_" + sess["uid"]
         done = _jload(state["db"].get(done_key, "[]"), list, [])
         gained = (score * 10 + (50 if pct == 1 else 25 if pct >= .8 else 10 if pct >= .5 else 0)
@@ -760,14 +716,11 @@ def _finish_exam(state, sess, d):
             hist = _jload(state["db"].get(hist_key, "[]"), list, [])
             hist.insert(0, {"id": result_id, "date": datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5))).strftime("%d.%m.%Y %H:%M"),
                             "score": score, "max": maximum, "topic": exam["topic"], "answers": answers, "serverVerified": True,
-                            "classTestId": exam["testId"] if exam["classId"] else None,
                             "questions": [{**q, "id": "examq" + str(i)} for i, q in enumerate(qs)]})
             _put(state, hist_key, _jdump(hist))
         review = [{**q, "id": "examq" + str(i)} for i, q in enumerate(qs)]
-        if held:
-            review = [{k: v for k, v in q.items() if k != "correct"} for q in review]
         result = {"ok": True, "score": score, "max": maximum, "gained": gained, "owner": exam["owner"],
-                  "reward": exam["reward"], "questions": review, "held": held}
+                  "reward": exam["reward"], "questions": review}
         exam["completed"] = result
         exam["expires"] = time.time() + 86400
         _save_exam(state, token)
@@ -854,9 +807,7 @@ def _explain_review(state, sess, d):
     opts, correct = q.get("options"), q.get("correct")
     if not isinstance(opts, list) or not 2 <= len(opts) <= 10 or any(not isinstance(x, str) or len(x) > 2000 for x in opts) or type(correct) is not int or not 0 <= correct < len(opts):
         return {"ok": False, "msg": "Жауаптар жарамсыз"}
-    released = _jload(state["db"].get("ubt_class_release", "{}"), dict, {})
-    history = [h for h in _jload(state["db"].get("ubt_hist_" + uid, "[]"), list, [])
-               if not (isinstance(h, dict) and h.get("classTestId") and h["classTestId"] not in released)]
+    history = _jload(state["db"].get("ubt_hist_" + uid, "[]"), list, [])
     if not any(isinstance(h, dict) and any(isinstance(x, dict) and x.get("text") == q["text"] and x.get("options") == opts and x.get("correct") == correct for x in (h.get("questions") or []) if isinstance(h.get("questions"), list)) for h in history):
         return {"ok": False, "msg": "Аяқталған тест тарихы сақталған соң қайта басыңыз"}
     api_key = (_secret("GEMINI_API_KEY") or _secret("GOOGLE_API_KEY") or "").strip()
@@ -946,11 +897,9 @@ _BUILTIN_BANK_TESTS = json.loads('[{"id": "ubt_read_01", "subject": "reading", "
 def _catalog_sync(state):
     """Persistent question catalogue. Legacy banks/tests are import sources only."""
     db = state["db"]
-    cached = state.get("catalog_cache")
-    if cached and state.get("catalog_rev") == state.get("rev"):
-        return cached[2]
     sources = {k: v for k, v in db.items() if k in ("ubt_tests", "ubt_profiles") or k.startswith("ubt_qbank_")}
     raw = db.get("ubt_question_catalog", "[]")
+    cached = state.get("catalog_cache")
     if cached and cached[0] == raw and cached[1] == sources:
         return cached[2]
     catalog = _jload(raw, list, [])
@@ -990,25 +939,174 @@ def _catalog_sync(state):
     state["catalog_cache"] = (state["db"].get("ubt_question_catalog", "[]"), sources, catalog)
     return catalog
 
-def _replace_prior_assignments(assignments, tests, uids, src_id, title, class_id=None):
-    """Бір тест қайта жіберілсе, сол адамдарға бұрын жіберілген ескі нұсқасы өшіріледі."""
-    uids = set(uids)
-    def same(a):
-        if not isinstance(a, dict) or a.get("uid") not in uids:
-            return False
-        if a.get("srcId"):
-            return a.get("srcId") == src_id
-        return a.get("title") == title and (a.get("classId") or None) == (class_id or None)
-    removed = [a for a in assignments if same(a)]
-    if not removed:
-        return assignments, tests
-    kept = [a for a in assignments if not same(a)]
-    gone = {a.get("testId") for a in removed}
-    live = {a.get("testId") for a in kept if isinstance(a, dict)}
-    orphan = gone - live
-    if orphan:
-        tests = [t for t in tests if not (isinstance(t, dict) and t.get("id") in orphan and t.get("assignmentId"))]
-    return kept, tests
+def _school_test_payload(items):
+    if not isinstance(items, list) or not 1 <= len(items) <= 20:
+        raise ValueError("Бір жіберуде 1–20 тест болуы керек")
+    out = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("Тест пішімі қате")
+        questions = item.get("questions")
+        if not isinstance(questions, list) or not 1 <= len(questions) <= 500:
+            raise ValueError("Әр тестте 1–500 сұрақ болуы керек")
+        clean = []
+        for q in questions:
+            if not isinstance(q, dict) or not isinstance(q.get("text"), str) or not 1 <= len(q["text"].strip()) <= 12000:
+                raise ValueError("Сұрақ мәтіні бос немесе тым ұзын")
+            opts, answer = q.get("options"), q.get("correct")
+            if not isinstance(opts, list) or not 2 <= len(opts) <= 8 or any(not isinstance(x, str) or not 1 <= len(x.strip()) <= 4000 for x in opts):
+                raise ValueError("Сұрақтың 2–8 жауап нұсқасын тексеріңіз")
+            if type(answer) is not int or not 0 <= answer < len(opts):
+                raise ValueError("Сұрақтың дұрыс жауабы көрсетілмеген")
+            points = q.get("points", 1)
+            if type(points) not in (int, float) or not math.isfinite(points) or not 0 < points <= 100:
+                raise ValueError("Сұрақ балын тексеріңіз")
+            row = {"id": "sq_" + secrets.token_hex(10), "text": q["text"].strip(), "options": [x.strip() for x in opts], "correct": answer, "points": points}
+            if q.get("img"):
+                img = q["img"]
+                if not isinstance(img, str) or len(img) > 150000 or not re.fullmatch(r"data:image/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=]+", img):
+                    raise ValueError("Сұрақ суретінің пішімі немесе көлемі қате")
+                row["img"] = img
+            if q.get("tbl"):
+                tbl = q["tbl"]
+                if not isinstance(tbl, list) or len(tbl) > 40 or any(not isinstance(r, list) or len(r) > 15 or any(not isinstance(c, str) or len(c) > 2000 for c in r) for r in tbl):
+                    raise ValueError("Сұрақ кестесін тексеріңіз")
+                row["tbl"] = tbl
+            for field, limit in (("subjectName", 100), ("difficulty", 80), ("explanation", 8000)):
+                if field in q:
+                    if not isinstance(q[field], str) or len(q[field]) > limit:
+                        raise ValueError("Сұрақтың қосымша мәліметтерін тексеріңіз")
+                    row[field] = q[field]
+            clean.append(row)
+        subject = str(item.get("subject") or "other")
+        if subject not in ("history", "reading", "mathlit", "math", "physics", "chemistry", "biology", "geography", "informatics", "english", "kazakh", "worldhistory", "law", "other"):
+            subject = "other"
+        test = {"topic": str(item.get("topic") or "Файлдан тест")[:150], "subject": subject, "questions": clean}
+        for field, limit in (("desc", 4000), ("subjectName", 100)):
+            if isinstance(item.get(field), str):
+                test[field] = item[field][:limit]
+        if type(item.get("timerMin")) is int and 1 <= item["timerMin"] <= 300:
+            test["timerMin"] = item["timerMin"]
+        if type(item.get("limit")) is int and 1 <= item["limit"] <= 100:
+            test["limit"] = item["limit"]
+        if type(item.get("allowInstantFeedback")) is bool:
+            test["allowInstantFeedback"] = item["allowInstantFeedback"]
+        out.append(test)
+    return out
+
+
+def _school_request(state, sess, typ, d):
+    if not sess or not sess["admin"]:
+        return {"ok": False, "msg": "Бұл әрекетті тек админ орындай алады"}
+    if typ == "school_create_person":
+        name, password, role = _clean_name(d.get("name")), str(d.get("pass") or ""), d.get("role")
+        if not name or role not in ("teacher", "student") or not _MIN_PASS <= len(password) <= 200:
+            return {"ok": False, "msg": "Аты 2–40, пароль 10–200 таңба болуы керек"}
+        subject = str(d.get("subject") or "other")
+        if subject not in ("history", "reading", "mathlit", "math", "physics", "chemistry", "biology", "geography", "informatics", "english", "kazakh", "worldhistory", "law", "other"):
+            return {"ok": False, "msg": "Пәнді дұрыс таңдаңыз"}
+        ph = _hash_pw(password)
+        with state["lock"]:
+            profiles = _profiles(state)
+            if name.lower() in profiles or name.lower() in _ADMIN_NAMES or len(profiles) >= 20000:
+                return {"ok": False, "msg": "Бұл логин бос емес немесе тіркелу шегі толды"}
+            uid = _new_uid(state, name.lower())
+            p = {"id": uid, "name": name, "ph": ph, "isAdmin": False, "accessApproved": True, "registeredAt": int(time.time())}
+            if role == "teacher":
+                p.update(role="teacher", teacherApproved=True, teacherSubject=subject)
+            profiles[name.lower()] = p
+            _put(state, "ubt_profiles", _jdump(profiles))
+            stats = _jload(state["db"].get("ubt_user_stats", "{}"), dict, {})
+            stats[uid] = {"points": 0, "title": "", "stars": 0, "verified": False}
+            _put(state, "ubt_user_stats", _jdump(stats))
+            _commit(state)
+        return {"ok": True, "uid": uid}
+    if typ == "school_move_student":
+        uid, cid = str(d.get("uid") or ""), str(d.get("classId") or "")
+        with state["lock"]:
+            person = next((p for p in _profiles(state).values() if p.get("id") == uid), None)
+            classes = _jload(state["db"].get("ubt_classes", "[]"), list, [])
+            target = next((c for c in classes if c.get("id") == cid), None) if cid else None
+            if not person or person.get("role") == "teacher" or person.get("accessApproved") is not True:
+                return {"ok": False, "msg": "Бекітілген оқушыны таңдаңыз"}
+            if cid and not target:
+                return {"ok": False, "msg": "Сынып табылмады"}
+            if target and len(set(target.get("students", [])) - {uid}) >= 100:
+                return {"ok": False, "msg": "Бұл сыныпта 100 оқушы бар"}
+            for c in classes:
+                c["students"] = [x for x in c.get("students", []) if x != uid]
+            if target:
+                target["students"].append(uid)
+            _put(state, "ubt_classes", _jdump(classes))
+            _commit(state)
+        return {"ok": True}
+    if typ == "school_save_class":
+        cid, name, tid = str(d.get("id") or ""), str(d.get("name") or "").strip(), str(d.get("teacherId") or "")
+        if not 1 <= len(name) <= 80:
+            return {"ok": False, "msg": "Сынып атауы 1–80 таңба болуы керек"}
+        with state["lock"]:
+            teacher = next((p for p in _profiles(state).values() if p.get("id") == tid and p.get("accessApproved") is True and p.get("role") == "teacher" and p.get("teacherApproved")), None)
+            if not teacher and tid != "admin":
+                return {"ok": False, "msg": "Бекітілген мұғалімді таңдаңыз"}
+            classes = _jload(state["db"].get("ubt_classes", "[]"), list, [])
+            current = next((c for c in classes if c.get("id") == cid), None) if cid else None
+            if cid and not current:
+                return {"ok": False, "msg": "Сынып табылмады"}
+            if any(c.get("id") != cid and c.get("name", "").lower() == name.lower() and c.get("teacherId") == tid for c in classes):
+                return {"ok": False, "msg": "Бұл мұғалімде осындай сынып бар"}
+            if current is None:
+                if len(classes) >= 1000:
+                    return {"ok": False, "msg": "Сынып санының шегі толды"}
+                current = {"id": "c_" + secrets.token_hex(10), "code": secrets.token_hex(4).upper(), "students": []}
+                classes.append(current)
+            current.update(name=name, teacherId=tid, teacherName=teacher["name"] if teacher else sess["name"])
+            _put(state, "ubt_classes", _jdump(classes))
+            _commit(state)
+        return {"ok": True, "classId": current["id"]}
+    if typ == "school_delete_class":
+        cid = str(d.get("classId") or "")
+        with state["lock"]:
+            classes = _jload(state["db"].get("ubt_classes", "[]"), list, [])
+            kept = [c for c in classes if c.get("id") != cid]
+            if len(kept) == len(classes):
+                return {"ok": False, "msg": "Сынып табылмады"}
+            _put(state, "ubt_classes", _jdump(kept))
+            _commit(state)
+        return {"ok": True}
+    if typ == "school_send_teacher":
+        uid, tid = str(d.get("uid") or ""), str(d.get("testId") or "")
+        with state["lock"]:
+            person = next((p for p in _profiles(state).values() if p.get("id") == uid and p.get("role") == "teacher" and p.get("teacherApproved") and p.get("accessApproved") is True), None)
+            if not person:
+                return {"ok": False, "msg": "Бекітілген мұғалім табылмады"}
+            tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
+            if tid:
+                source = next((t for t in tests if t.get("id") == tid and not t.get("assignmentId")), None)
+                if not source:
+                    return {"ok": False, "msg": "Тест табылмады"}
+                incoming = [source]
+            else:
+                incoming = d.get("tests")
+            try:
+                clean = _school_test_payload(incoming)
+            except ValueError as exc:
+                return {"ok": False, "msg": str(exc)}
+            deliveries = _jload(state["db"].get("ubt_teacher_deliveries", "[]"), list, [])
+            created, now = [], int(time.time())
+            for t in clean:
+                new_id = "teacher_test_" + secrets.token_hex(12)
+                t.update(id=new_id, authorId=uid, authorName=person["name"], status="private", isPublic=False, adminApproved=False, receivedFromAdmin=True, createdAt=datetime.datetime.now(datetime.timezone.utc).isoformat())
+                tests.append(t)
+                deliveries.append({"id": "delivery_" + secrets.token_hex(12), "uid": uid, "testId": new_id, "title": t["topic"], "fileName": str(d.get("fileName") or "")[:200], "created": now, "fromName": sess["name"]})
+                created.append(new_id)
+            if len(_jdump(tests)) >= 7_800_000:
+                return {"ok": False, "msg": "Тесттер қоймасының көлемі толды. Файлды кішірек бөліктерге бөліңіз"}
+            _put(state, "ubt_tests", _jdump(tests))
+            _put(state, "ubt_teacher_deliveries", _jdump(deliveries))
+            _commit(state)
+        return {"ok": True, "count": len(created), "testIds": created}
+    return {"ok": False, "msg": "Әрекет табылмады"}
+
 
 def _handle_req(state, sid, rq):
     typ = rq.get("type")
@@ -1027,6 +1125,9 @@ def _handle_req(state, sid, rq):
         rates[identity] = recent
         if len(rates) > 5000:
             state["request_rates"] = {k: ts for k, ts in rates.items() if ts and now-ts[-1] < 60}
+
+    if typ.startswith("school_"):
+        return _school_request(state, sess, typ, d)
 
     if typ in ("bank_delete_question", "bank_delete_file"):
         if not sess or not sess["admin"]:
@@ -1215,47 +1316,13 @@ def _handle_req(state, sid, rq):
             private_test.pop("className", None)
             assignment = {"id": aid, "uid": person["id"],
                           "login": login, "testId": private_id, "title": str(test.get("topic") or "Тест")[:150],
-                          "limit": limit, "used": 0, "created": int(time.time()), "srcId": tid}
-            assignments, tests = _replace_prior_assignments(assignments, tests, [person["id"]], tid, assignment["title"], None)
+                          "limit": limit, "used": 0, "created": int(time.time())}
             assignments.append(assignment)
             tests.append(private_test)
             _put(state, "ubt_tests", _jdump(tests))
             _put(state, "ubt_assigned_tests", _jdump(assignments))
             _commit(state)
         return {"ok": True, "assignment": assignment}
-
-    if typ == "admin_release_class_results":
-        if not (sess and sess["admin"]):
-            return {"ok": False, "msg": "Рұқсат жоқ"}
-        tid = str(d.get("testId") or "")
-        release = d.get("release") is not False
-        force = d.get("force") is True
-        with state["lock"]:
-            tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
-            test = next((t for t in tests if isinstance(t, dict) and t.get("id") == tid and t.get("classId")), None)
-            if not test:
-                return {"ok": False, "msg": "Сынып тесті табылмады"}
-            classes = _jload(state["db"].get("ubt_classes", "[]"), list, [])
-            cls = next((c for c in classes if isinstance(c, dict) and c.get("id") == test["classId"]), None)
-            if not cls:
-                return {"ok": False, "msg": "Сынып табылмады"}
-            students = [u for u in (cls.get("students") or []) if isinstance(u, str)]
-            results = _jload(state["db"].get("ubt_tres_" + tid, "[]"), list, [])
-            finished = {r.get("uid") for r in results if isinstance(r, dict)}
-            missing = [u for u in students if u not in finished]
-            if release and missing and not force:
-                names = {p.get("id"): p.get("name") for p in _profiles(state).values() if isinstance(p, dict)}
-                return {"ok": False, "missing": len(missing),
-                        "names": [str(names.get(u) or u) for u in missing[:20]],
-                        "msg": "Әлі тапсырмаған оқушы: " + str(len(missing)) + " / " + str(len(students)) + "."}
-            rel = _jload(state["db"].get("ubt_class_release", "{}"), dict, {})
-            if release:
-                rel[tid] = {"at": int(time.time()), "by": sess["name"], "forced": bool(missing)}
-            else:
-                rel.pop(tid, None)
-            _put(state, "ubt_class_release", _jdump(rel))
-            _commit(state)
-        return {"ok": True, "released": release}
 
     if typ == "admin_remove_assignment":
         if not (sess and sess["admin"]):
@@ -1292,7 +1359,7 @@ def _handle_req(state, sid, rq):
             if not cls or not source or not isinstance(source.get("questions"), list) or not source["questions"]:
                 return {"ok": False, "msg": "Сынып немесе өз тестіңіз табылмады"}
             members = list(dict.fromkeys(x for x in cls.get("students", []) if isinstance(x, str) and x != sess["uid"]))
-            registered = {p.get("id") for p in _profiles(state).values() if isinstance(p, dict)}
+            registered = {p.get("id") for p in _profiles(state).values() if isinstance(p, dict) and p.get("role") != "teacher" and p.get("accessApproved") is True}
             members = [x for x in members if x in registered]
             if not members or len(members) > 100:
                 return {"ok": False, "msg": "Сыныпта 1–100 тіркелген адам болуы керек"}
@@ -1305,9 +1372,7 @@ def _handle_req(state, sid, rq):
             clone.pop("className", None)
             assignments = _jload(state["db"].get("ubt_assigned_tests", "[]"), list, [])
             names = {p.get("id"): key for key, p in _profiles(state).items() if isinstance(p, dict)}
-            assignments, tests = _replace_prior_assignments(assignments, tests, members, tid,
-                                                            str(source.get("topic") or "Тест")[:150], cid)
-            assignments.extend({"id": "as_" + secrets.token_hex(12), "batchId": batch, "srcId": tid,
+            assignments.extend({"id": "as_" + secrets.token_hex(12), "batchId": batch,
                                 "classId": cid, "uid": uid, "login": names.get(uid, ""),
                                 "testId": private_id, "title": str(source.get("topic") or "Тест")[:150],
                                 "limit": limit, "used": 0, "created": int(time.time())} for uid in members)
@@ -1497,27 +1562,7 @@ def _handle_req(state, sid, rq):
         return {"ok": False, "msg": "Алдымен аккаунтыңызға кіріңіз"}
 
     if typ == "join_class":
-        if not sess or sess["admin"]:
-            return {"ok": False, "msg": "Алдымен аккаунтыңызға кіріңіз"}
-        code = str(d.get("code") or "").strip().upper()
-        with state["lock"]:
-            key = "class-code:" + sess["uid"]
-            if _locked(state, key):
-                return {"ok": False, "msg": "Көп қате код. 10 минуттан кейін қайталаңыз"}
-            classes = _jload(state["db"].get("ubt_classes", "[]"), list, [])
-            cls = next((c for c in classes if isinstance(c, dict) and c.get("code") == code), None)
-            if not cls:
-                _fail(state, key)
-                return {"ok": False, "msg": "Мұндай код табылмады"}
-            state["fails"].pop(key, None)
-            if cls.get("teacherId") == sess["uid"]:
-                return {"ok": False, "msg": "Бұл — сіздің сыныбыңыз"}
-            if sess["uid"] in cls.get("students", []):
-                return {"ok": False, "msg": "Сіз бұл сыныптасыз"}
-            cls.setdefault("students", []).append(sess["uid"])
-            _put(state, "ubt_classes", _jdump(classes))
-            _commit(state)
-        return {"ok": True, "name": cls.get("name", "")}
+        return {"ok": False, "msg": "Оқушыны сыныпқа тек админ қосады немесе ауыстырады"}
 
     if typ == "admin_setpass":
         if not (sess and sess["admin"]):
@@ -1872,41 +1917,13 @@ def _class_manager(state, sess, cid):
                for c in _jload(state["db"].get("ubt_classes", "[]"), list, [])) and _is_teacher(state, sess["uid"])
 
 def _merge_classes(state, sess, v):
+    if not sess or not sess["admin"]:
+        return None
     incoming = _jload(v, list, None)
     if incoming is None or len(incoming) > 1000:
         return None
-    if sess["admin"]:
-        return _jdump(incoming)
-    stored = _jload(state["db"].get("ubt_classes", "[]"), list, [])
-    inc = {c.get("id"): c for c in incoming if isinstance(c, dict) and isinstance(c.get("id"), str)}
-    out = []
-    for c in stored:
-        if not isinstance(c, dict):
-            continue
-        proposal = inc.get(c.get("id"))
-        if not proposal:
-            out.append(c)
-            continue
-        if _is_teacher(state, sess["uid"]) and c.get("teacherId") == sess["uid"]:
-            updated = dict(proposal)
-            updated["id"] = c["id"]
-            updated["teacherId"] = c["teacherId"]
-            updated["teacherName"] = c.get("teacherName")
-            updated["reqId"] = c.get("reqId")
-            registered = {p.get("id") for p in _profiles(state).values() if isinstance(p, dict)}
-            members = updated.get("students", [])
-            if not isinstance(members, list) or len(members) > 100 or any(
-                    not isinstance(member, str) or member not in registered for member in members):
-                return None
-            updated["students"] = list(dict.fromkeys(members))
-            out.append(updated)
-        elif sess["uid"] in c.get("students", []):
-            updated = dict(c)
-            updated["students"] = [x for x in c["students"] if x != sess["uid"]] if sess["uid"] not in proposal.get("students", []) else c["students"]
-            out.append(updated)
-        else:
-            out.append(c)
-    return _jdump(out)
+    return _jdump(incoming)
+
 
 def _merge_class_reqs(state, sess, v):
     inc = _jload(v, list, None)
@@ -1914,7 +1931,6 @@ def _merge_class_reqs(state, sess, v):
         return None
     if sess["admin"]:
         return _jdump(inc)
-    return None  # сыныпты тек админ ашады
     stored = _jload(state["db"].get("ubt_class_reqs", "[]"), list, [])
     if sum(isinstance(r, dict) and r.get("teacherId") == sess["uid"] and r.get("status") == "pending" for r in stored) >= 5:
         return None
@@ -2076,7 +2092,7 @@ def _authorize(state, sess, k, v, chat_token=""):
     if k == "ubt_tests":
         _catalog_sync(state)  
         return _merge_tests(state, sess, v)
-    if k == "ubt_assigned_tests":
+    if k in ("ubt_assigned_tests", "ubt_teacher_deliveries"):
         return None  
     if k == "ubt_schemes":
         return _merge_schemes(state, sess, v)
@@ -2358,6 +2374,8 @@ def _snapshot(tok="", claim=""):
             cache[scope] = cached
         db["ubt_question_catalog"], db["ubt_question_catalog_deleted"] = cached[1], cached[2]
     db["ubt_chat"] = chat
+    deliveries = _jload(db.get("ubt_teacher_deliveries", "[]"), list, [])
+    db["ubt_teacher_deliveries"] = _jdump(deliveries if sess["admin"] else [x for x in deliveries if isinstance(x, dict) and x.get("uid") == sess["uid"]])
     assignments = _jload(db.get("ubt_assigned_tests", "[]"), list, [])
     db["ubt_assigned_tests"] = _jdump(assignments if sess["admin"] else [a for a in assignments if isinstance(a, dict) and a.get("uid") == sess["uid"]])
     letters = _jload(db.get("ubt_admin_letters", "[]"), list, [])
@@ -2414,18 +2432,6 @@ def _snapshot(tok="", claim=""):
                 elif relevant.get("classId") not in managed:
                     data = _jload(db[k], list if k.startswith("ubt_tres_") else dict, [] if k.startswith("ubt_tres_") else {})
                     db[k] = _jdump([r for r in data if isinstance(r, dict) and r.get("uid") == sess["uid"]] if isinstance(data, list) else {sess["uid"]: data.get(sess["uid"], 0)})
-        released = _jload(db.get("ubt_class_release", "{}"), dict, {})
-        hist_key = "ubt_hist_" + sess["uid"]
-        if hist_key in db:
-            rows, changed = _jload(db[hist_key], list, []), False
-            for i, r in enumerate(rows):
-                if isinstance(r, dict) and r.get("classTestId") and r["classTestId"] not in released:
-                    rows[i] = {**{k: v for k, v in r.items() if k not in ("answers", "questions")},
-                               "questions": [], "held": True}
-                    changed = True
-            if changed:
-                db[hist_key] = _jdump(rows)
-        db.pop("ubt_class_release", None)
     return db
 
 def _snapshot_delta(current, previous):
@@ -2449,14 +2455,14 @@ html,body,.stApp,[data-testid="stAppViewContainer"],[data-testid="stMain"],secti
 [data-testid="stElementContainer"]{margin:0!important}
 [data-testid="stVerticalBlock"]{gap:0!important}
 iframe{border:none!important;display:block!important;width:100%!important}
-.stale-element,[data-stale="true"],[data-stale="true"] *,[data-testid="stAppViewContainer"] [data-stale]{opacity:1!important;filter:none!important;transition:none!important}
-[data-testid="stApp"]>*{transition:none!important}
 </style>""", unsafe_allow_html=True)
 
 html_code = r"""
 <!DOCTYPE html>
 <html lang="kk">
 <head>
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ҰБТ+</title>
@@ -3190,7 +3196,6 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
   </div>
   <div class="wrap">
     <div class="hdr"><h2>Басты бет</h2><p class="sub">Тест тапсырыңыз немесе өз тестіңізді құрыңыз</p></div>
-    <div id="home-assigned"></div>
     <div id="ubd-home" class="ubd" aria-label="Жеке статистика"></div>
     <div id="home-extras"></div>
   </div>
@@ -3208,15 +3213,21 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
 <button type="button" class="ubt-rail-link ubt-rail-desktop" data-rail-group="flash" title="Флеш-карталар" aria-label="Флеш-карталар" onclick="showFlash()" ><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="15" height="16" rx="2"/><path d="M17 2H5a2 2 0 0 0-2 2v13m11-9-4 6h4l-2 4"/></svg><span class="ubt-rail-caption">Флеш-карталар</span></button>
 <button type="button" class="ubt-rail-link ubt-rail-desktop" data-rail-group="history" title="Тест тарихы" aria-label="Тест тарихы" onclick="showHistory()" ><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v6l4 2"/></svg><span class="ubt-rail-caption">Тест тарихы</span></button>
 <button type="button" class="ubt-rail-link ubt-rail-desktop" data-rail-group="create" title="Материал құру" aria-label="Материал құру" onclick="showCreate()" ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-5-5L4 14Z"/></svg><span class="ubt-rail-caption">Материал құру</span></button>
+<button type="button" class="ubt-rail-link ubt-rail-desktop" data-rail-group="teachers" title="Мұғалімдер" aria-label="Мұғалімдер" onclick="showSchoolPeople('teachers')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h14v10H3zM10 4v10m0 0v4m-4 3 4-3 4 3"/><circle cx="20" cy="8" r="2"/><path d="M18 20v-7h4v7"/></svg><span class="ubt-rail-caption">Мұғалімдер</span></button>
+<button type="button" class="ubt-rail-link ubt-rail-desktop" data-rail-group="students" title="Оқушылар" aria-label="Оқушылар" onclick="showSchoolPeople('students')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="7" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M17 4a3 3 0 0 1 0 6m1 4a5 5 0 0 1 3 5v2"/></svg><span class="ubt-rail-caption">Оқушылар</span></button>
+<button type="button" class="ubt-rail-link ubt-rail-desktop" data-rail-group="classes" title="Сыныптар тізімі" aria-label="Сыныптар тізімі" onclick="showSchoolClasses()"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h2m4 0h2M8 11h2m4 0h2M9 21v-6h6v6"/></svg><span class="ubt-rail-caption">Сыныптар тізімі</span></button>
 <button type="button" class="ubt-rail-link" data-rail-group="more" title="Мәзір" aria-label="Мәзір" onclick="openAppMenu()" id="ubt-rail-more" aria-controls="app-menu" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg><span class="ubt-rail-caption">Мәзір</span></button></div>
-<div class="ubt-rail-footer"><button type="button" class="ubt-rail-link" data-rail-group="admin" title="Админ панелі" aria-label="Админ панелі" onclick="showAdmin()" id="ubt-rail-admin" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 3-1 3-3 1-2 5 2 5 3 1 1 3h6l1-3 3-1 2-5-2-5-3-1-1-3Z"/><circle cx="12" cy="12" r="3"/></svg><span class="ubt-rail-caption">Админ панелі</span></button><button type="button" class="ubt-rail-link" data-rail-group="profile" title="Профиль" aria-label="Профиль" onclick="showMyProfile()" id="ubt-rail-profile"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span class="ubt-rail-caption">Профиль</span></button></div></nav>
+<div class="ubt-rail-footer"><button type="button" class="ubt-rail-link" data-rail-group="admin" title="Админ панелі" aria-label="Админ панелі" onclick="showAdmin()" id="ubt-rail-admin" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 3-1 3-3 1-2 5 2 5 3 1 1 3h6l1-3 3-1 2-5-2-5-3-1-1-3Z"/><circle cx="12" cy="12" r="3"/></svg><span class="ubt-rail-caption">Админ панелі</span></button><button type="button" class="ubt-rail-link" data-rail-group="profile" title="Профиль" aria-label="Профиль" onclick="schoolOwnProfile()" id="ubt-rail-profile"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span class="ubt-rail-caption">Профиль</span></button></div></nav>
 <div id="app-menu-backdrop" hidden onclick="closeAppMenu()"></div>
 <aside id="app-menu" role="dialog" aria-modal="true" aria-labelledby="app-menu-title" aria-hidden="true" inert>
   <div class="app-menu-head"><strong id="app-menu-title">Мәзір</strong><button type="button" class="btn btn-s btn-sm" aria-label="Мәзірді жабу" onclick="closeAppMenu()">✕</button></div>
   <nav aria-label="Негізгі мәзір">
     <button type="button" class="app-menu-home" onclick="goHome()">⌂ Басты бет</button>
     <button type="button" class="app-menu-home" onclick="showAnalytics()">▥ Статистика</button>
-    <button type="button" class="app-menu-home" id="assigned-menu-btn" style="display:none" onclick="showAssignedTests()">📨 Тапсырмалар</button>
+    <button type="button" class="app-menu-home" onclick="showSchoolPeople('teachers')">Мұғалімдер</button>
+    <button type="button" class="app-menu-home" onclick="showSchoolPeople('students')">Оқушылар</button>
+    <button type="button" class="app-menu-home" onclick="showSchoolClasses()">Сыныптар тізімі</button>
+    <button type="button" class="app-menu-home" onclick="showAssignedTests()">Маған жіберілген тесттер</button>
     <button class="mode" onclick="showUbt140()"><span class="ic">🎓</span><h3>140 формат</h3><p>Сұрақтарды базадан таңдаңыз немесе кездейсоқ алыңыз</p></button>
     <button class="mode" onclick="startQuickSubject()"><span class="ic">📘</span><h3>Пән тесттерім</h3><p>Әр пән бөлек · базадан өзім таңдау немесе кездейсоқ бастау</p></button>
     <details class="app-menu-group" open><summary>Сабақ</summary><div class="app-menu-items">      <div class="mode" onclick="showLessons()"><div class="ic">🎬</div><h3>Анимация сабақтар</h3><p>Анимация + код</p></div></div></details>
@@ -3276,6 +3287,44 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
   <div id="ubd-detail" class="ubd" aria-live="polite"></div>
   <button type="button" class="btn btn-s" onclick="goHome()">← Басты бет</button>
 </div></div>
+
+
+<div id="s-school-people" class="screen" data-kind="teachers"><div class="wrap wide">
+ <div class="hdr"><h2 id="school-people-title">Мұғалімдер</h2><p class="sub" id="school-people-sub"></p></div>
+ <div id="school-people-tabs"></div><div class="school-tools"><input id="school-people-search" type="search" placeholder="Аты немесе пәні бойынша іздеу" oninput="schoolSearchPeople()"><span id="school-people-count" class="school-count"></span><button type="button" id="school-add-person-button" class="btn btn-p btn-sm" onclick="schoolCreatePersonDialog()" hidden>+ Мұғалім қосу</button></div>
+ <div id="school-people-list" class="school-grid"></div><div id="school-people-pager" class="school-pager"></div>
+</div></div>
+<div id="s-school-person" class="screen" data-kind="teachers"><div class="wrap wide"><div id="school-person-body"></div><div class="row"><button class="btn btn-s" onclick="showSchoolPeople(schoolState.kind)">← Тізімге оралу</button></div></div></div>
+<div id="s-school-classes" class="screen"><div class="wrap wide">
+ <div class="hdr"><h2>Сыныптар тізімі</h2><p class="sub">Мұғалім, оқушылар және сыныпқа жіберілген тесттер</p></div><div id="school-classes-tabs"></div>
+ <div class="school-tools"><input id="school-class-search" type="search" placeholder="Сынып немесе мұғалімді іздеу" oninput="schoolSearchClasses()"><button class="btn btn-p btn-sm" id="school-add-class-button" onclick="schoolClassDialog()" hidden>+ Сынып қосу</button></div><div id="school-classes-list" class="school-grid"></div><div id="school-class-pager" class="school-pager"></div>
+ <details id="school-admin-class-tools" ontoggle="schoolRenderTools()" class="card school-admin-tools school-request-tools" style="padding:0;margin-top:24px" hidden><summary>Сынып ашу өтініштері және сынып чаттары</summary><div style="padding:0 16px 16px"><div id="admin-classes" hidden></div>
+    <div class="card" style="padding:20px">
+      <h3 style="margin-bottom:12px">🏫 Сынып ашу өтініштері</h3>
+      <div id="admin-class-req" class="list"></div>
+    </div>
+    <div class="card" style="padding:20px">
+      <h3 style="margin-bottom:12px">💬 Сынып чаттары</h3>
+      <div id="admin-class-threads" class="list"></div>
+      <div id="admin-class-chat"></div>
+    </div>
+</div></details>
+ <div id="school-teacher-class-tools" class="school-request-tools" style="margin-top:24px" hidden><div class="card" id="tch-req-card">
+      <h3 style="margin-bottom:6px">📨 Сынып ашуға өтініш</h3>
+      <p class="sub" style="margin-bottom:10px">Өтінішті админ қарайды. Админ 12 сағат ішінде жауап береді. Келесі өтінішті немесе хабарламаны 1 минуттан кейін жібере аласыз.</p>
+      <div class="fg"><input id="tch-req-name" placeholder="Сынып атауы (мыс: 11 «А»)" maxlength="40"></div>
+      <div class="fg"><textarea id="tch-req-note" placeholder="Қосымша ақпарат (міндетті емес): пән, оқушылар саны..." maxlength="300"></textarea></div>
+      <button class="btn btn-p btn-sm" id="tch-req-btn" onclick="submitClassRequest()">📨 Өтініш жіберу</button>
+      <span class="sub" id="tch-req-cd" style="margin-left:8px"></span>
+    </div><div id="tch-reqs"></div><div id="tch-chat"></div></div>
+</div></div>
+<div id="s-school-class" class="screen"><div class="wrap wide"><div id="school-class-heading" class="school-class-head"></div><div id="school-class-teacher-card"></div><div id="school-class-students" class="school-roster"></div><div id="school-class-tests" style="margin-top:24px"></div><div id="tch-detail"></div><div class="row"><button class="btn btn-s" onclick="showSchoolClasses()">← Сыныптар тізімі</button></div></div></div>
+<dialog id="school-person-dialog" class="school-dialog"><form onsubmit="return false">
+ <h3 id="school-new-person-title">Мұғалім қосу</h3><div class="fg"><label>Аты / кіру логині</label><input id="school-new-person-name" maxlength="40" autocomplete="off" required></div><div class="fg"><label>Бастапқы пароль — кемінде 10 таңба</label><input id="school-new-person-pass" type="password" minlength="10" maxlength="200" autocomplete="new-password" required></div><div class="fg" id="school-new-person-subject-wrap"><label>Пәні</label><select id="school-new-person-subject"></select></div><p class="sub">Админ қосқан аккаунт бірден расталған болады.</p><div id="school-new-person-status" class="school-status" role="status"></div><div class="row"><button type="button" class="btn btn-s" onclick="document.getElementById('school-person-dialog').close()">Жабу</button><button type="button" class="btn btn-p" onclick="schoolCreatePerson(this)">Қосу</button></div>
+</form></dialog>
+<dialog id="school-move-dialog" class="school-dialog"><form onsubmit="return false"><h3>Оқушының сыныбын өзгерту</h3><p id="school-move-person" style="margin-bottom:14px;font-weight:700"></p><div class="fg"><label>Жаңа сынып</label><select id="school-move-class"></select></div><p class="school-note">Оқушы бұрынғы сыныптарынан алынып, таңдалған сыныпқа ауысады. Оның тесттері мен нәтижелері сақталады. Бұл әрекетті тек админ орындайды.</p><div class="row"><button class="btn btn-s" onclick="document.getElementById('school-move-dialog').close()">Жабу</button><button class="btn btn-p" onclick="schoolMoveStudent(this)">Сақтау</button></div></form></dialog>
+<dialog id="school-class-dialog" class="school-dialog"><form onsubmit="return false"><h3>Сынып пен мұғалім</h3><div class="fg"><label>Сынып атауы</label><input id="school-class-name" maxlength="80" placeholder="11 «А»"></div><div class="fg"><label>Сынып мұғалімі</label><select id="school-class-teacher"></select></div><div class="row"><button class="btn btn-s" onclick="document.getElementById('school-class-dialog').close()">Жабу</button><button class="btn btn-p" onclick="schoolSaveClass(this)">Сақтау</button></div></form></dialog>
+<dialog id="school-send-dialog" class="school-dialog"><form onsubmit="return false"><h3>Сыныпқа тест жіберу</h3><div class="fg"><label>Сынып</label><select id="school-send-class" onchange="schoolClassSendInfo()"></select></div><p id="school-send-info" class="school-note"></p><div class="fg"><label>Жіберілетін тест</label><select id="school-send-test"></select></div><div class="fg"><label>Әр оқушыға тапсыру лимиті</label><input id="school-send-limit" type="number" min="1" max="100" value="1"></div><div class="row"><button class="btn btn-s" onclick="document.getElementById('school-send-dialog').close()">Жабу</button><button class="btn btn-p" onclick="schoolSendClass(this)">Оқушыларға жіберу →</button></div></form></dialog>
 
 <div id="s-profile" class="screen">
   <div class="wrap">
@@ -3365,7 +3414,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
 
 <div id="s-assigned" class="screen">
   <div class="wrap">
-    <div class="hdr"><h2>📨 Маған жіберілген тесттер</h2><p class="sub">Мұғалім немесе админ жіберген тесттер осында тұрады</p></div>
+    <div class="hdr"><h2>📨 Маған жіберілген тесттер</h2><p class="sub">Админ сізге арнайы жіберген тесттер</p></div>
     <div id="assigned-list" class="list"></div>
     <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
@@ -3682,7 +3731,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
         <div class="timer" id="timer">00:30:00</div>
         <div class="prog-t" id="viol" style="display:none;background:#fef2f2;color:var(--err)"></div>
       </div>
-      <div class="test-tools"><button class="btn btn-s btn-sm" onclick="openChemTable()">⚗️ Менделеев кестесі</button><button class="btn btn-s btn-sm" onclick="openCalculator()">🧮 Калькулятор</button></div>
+      <div class="test-tools"><button class="btn btn-s btn-sm" onclick="openChemTable()">⚗️ Менделеев кестесі</button><button class="btn btn-s btn-sm" onclick="openTestResultsDialog()">🗂️ Нәтижелер</button><button class="btn btn-s btn-sm" onclick="openCalculator()">🧮 Калькулятор</button></div>
       <div class="qnav" id="qnav" role="navigation" aria-label="Сұрақтар"></div>
       <div class="qc">
         <div class="qh"><span class="qnum" id="qnum">Сұрақ 1</span><span style="display:flex;gap:6px"><button class="flag" id="bm" onclick="togBm()" title="Таңдаулыға сақтау">☆</button><button class="flag" id="flag" onclick="togFlag()">🚩</button></span></div>
@@ -3723,7 +3772,6 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
       <div class="score-c"><span id="sc">0</span><small>/ <span id="sm">0</span></small></div>
     </div>
     <div class="card" id="res-break"></div>
-    <div class="card" id="res-analysis" style="display:none"></div>
     <div id="ubt-cert-area" style="text-align:center;margin:12px 0"></div>
     <div class="row">
       <button class="btn btn-p" onclick="reviewAns()">Жауаптарды қарау</button>
@@ -3751,8 +3799,6 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
 <div id="s-mist" class="screen">
   <div class="wrap">
     <div class="hdr"><h2>❌ Қатемен жұмыс</h2></div>
-    <div id="mist-analysis"></div>
-    <div id="mist-tests"></div>
     <div id="mist-list" class="list"></div>
     <div class="row" style="margin-top:16px">
       <button class="btn btn-p" id="mist-start" style="display:none" onclick="startMistakes()">Қателерді шешу</button>
@@ -3853,22 +3899,14 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
     <div class="card" id="tch-create-card">
       <h3 style="margin-bottom:10px">➕ Жаңа сынып</h3>
       <div class="fg"><input id="tch-name" placeholder="Сынып атауы (мыс: 11 «А»)" maxlength="40"></div>
-      <div class="fg"><label>Мұғалім (міндетті емес)</label><select id="tch-teacher"></select></div>
       <button class="btn btn-ok btn-sm" onclick="createClass()">Сынып құру</button>
     </div>
-    <div class="card" id="tch-req-card">
-      <h3 style="margin-bottom:6px">📨 Сынып ашуға өтініш</h3>
-      <p class="sub" style="margin-bottom:10px">Өтінішті админ қарайды. Админ 12 сағат ішінде жауап береді. Келесі өтінішті немесе хабарламаны 1 минуттан кейін жібере аласыз.</p>
-      <div class="fg"><input id="tch-req-name" placeholder="Сынып атауы (мыс: 11 «А»)" maxlength="40"></div>
-      <div class="fg"><textarea id="tch-req-note" placeholder="Қосымша ақпарат (міндетті емес): пән, оқушылар саны..." maxlength="300"></textarea></div>
-      <button class="btn btn-p btn-sm" id="tch-req-btn" onclick="submitClassRequest()">📨 Өтініш жіберу</button>
-      <span class="sub" id="tch-req-cd" style="margin-left:8px"></span>
-    </div>
-    <div id="tch-reqs"></div>
+    
+    
     <div id="tch-classes"></div>
     <div id="tch-ctests"></div>
-    <div id="tch-chat"></div>
-    <div id="tch-detail"></div>
+    
+    
     <div class="card">
       <h3 style="margin-bottom:6px">🔑 Оқушы: сыныпқа қосылу</h3>
       <p class="sub" style="margin-bottom:10px">Мұғалім берген кодты енгізіңіз</p>
@@ -3960,19 +3998,6 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
     <div class="card" style="padding:20px">
       <h3 style="margin-bottom:12px">⏳ Жариялау күтіп тұрған тесттер</h3>
       <div id="admin-pending" class="list"></div>
-    </div>
-    <div class="card" style="padding:20px">
-      <h3 style="margin-bottom:12px">🏫 Барлық сыныптар</h3>
-      <div id="admin-classes"></div>
-    </div>
-    <div class="card" style="padding:20px">
-      <h3 style="margin-bottom:12px">🏫 Сынып ашу өтініштері</h3>
-      <div id="admin-class-req" class="list"></div>
-    </div>
-    <div class="card" style="padding:20px">
-      <h3 style="margin-bottom:12px">💬 Сынып чаттары</h3>
-      <div id="admin-class-threads" class="list"></div>
-      <div id="admin-class-chat"></div>
     </div>
     <div id="admin-teacher-req" style="display:none"></div>
     <div class="card" style="padding:20px">
@@ -4085,7 +4110,7 @@ body.dark{--p:#59dfc0;--pd:#36b69d;--grad:linear-gradient(120deg,#087f79,#15998c
 </style>
 
 <style id="ubt-fast-display">
-html{text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+html{text-rendering:optimizeSpeed}
 .qimg{max-width:100%;height:auto}
 .ovl{backdrop-filter:none;-webkit-backdrop-filter:none}
 .card,.item,.mode,.qc,.rev,.stat,.fcard{box-shadow:0 2px 9px #1526390a}
@@ -4103,36 +4128,12 @@ html{text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased;-moz-o
  .ubd-table th{font-size:12px}.ubd-btn{font-size:14px}
 }
 </style>
+<style id="school-hub-css">.school-tabs,.school-tools,.school-person-head,.school-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.school-tabs{margin-bottom:24px;padding:6px;border:1px solid var(--b);border-radius:14px;background:var(--c);width:fit-content}.school-tabs .btn{box-shadow:none}.school-tools{justify-content:space-between;margin-bottom:20px}.school-tools input{min-width:180px;flex:1;max-width:420px;border:1px solid var(--b);border-radius:11px;padding:12px 14px;color:var(--t);background:var(--c);font:inherit}.school-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.school-person-card{border:1px solid var(--b);border-radius:18px;background:var(--c);padding:21px;min-width:0}.school-person-card h3{font-size:16px;margin:14px 0 5px;overflow-wrap:anywhere}.school-person-card .sub{line-height:1.7}.school-person-card .btn{margin-top:16px}.school-mark{display:grid;place-items:center;width:44px;height:44px;border:1px solid #43867555;border-radius:13px;background:#159a8015;color:var(--p);font-weight:750;font-size:19px}.school-tag{display:inline-block;padding:4px 8px;border-radius:6px;background:#159a8018;color:var(--p);font-size:10px;font-weight:700;letter-spacing:.04em}.school-person-head{align-items:flex-start;margin-bottom:24px}.school-person-head .school-mark{width:70px;height:70px;font-size:28px;border-radius:20px}.school-person-head h2{font-size:28px;margin:3px 0 6px}.school-subhead{font-size:11px;letter-spacing:.14em;color:var(--m);font-weight:750;margin:22px 0 12px}.school-class-head{background:linear-gradient(125deg,#163d3d,#172336);color:#ecf9f5;border:1px solid #35625a;border-radius:20px;padding:24px;margin-bottom:18px}.school-class-head .sub{color:#a6c8c0}.school-class-head .school-mark{color:#a0f1d8;background:#ffffff0a;border-color:#638b8055}.school-roster .item{margin-bottom:8px}.school-roster .info{min-width:0}.school-pager{display:flex;gap:12px;align-items:center;justify-content:flex-end;margin-top:20px}.school-dialog{border:1px solid var(--b);border-radius:22px;padding:24px;background:var(--c);color:var(--t);width:min(560px,94vw);max-height:90dvh;overflow-y:auto;margin:auto;box-shadow:0 24px 70px #0003}.school-dialog::backdrop{background:#07121dbb}.school-dialog h3{font-size:21px;margin-bottom:18px}.school-dialog .row{justify-content:flex-end}.school-dialog .fg input,.school-dialog .fg select{width:100%}.school-note{padding:12px 14px;background:#159a8010;border:1px solid #159a802c;border-radius:11px;font-size:12px;line-height:1.7;margin:12px 0}.school-status{font-size:12px;line-height:1.6;white-space:pre-wrap}.school-admin-tools>summary{cursor:pointer;padding:16px;font-weight:700}.school-count{font-size:12px;color:var(--m)}.school-person-compose .grid2{gap:14px}.school-request-tools[hidden]{display:none!important}
+@media(min-width:1800px){.school-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(max-width:980px){.school-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:560px){.school-grid{grid-template-columns:minmax(0,1fr)}.school-person-card{padding:17px}.school-tabs{gap:3px;padding:4px;width:100%}.school-tabs .btn{padding:8px 9px;font-size:11px;flex:1}.school-class-head{padding:18px}.school-person-head h2{font-size:23px}.school-tools input{max-width:none;width:100%}.school-tools{align-items:stretch}.school-dialog{padding:19px}.school-actions .btn{font-size:12px}}
 
-<style id="ubt-polish">
-:root{--ease:cubic-bezier(.22,.8,.3,1)}
-@keyframes ubtIn{from{opacity:0;transform:translate3d(0,14px,0)}to{opacity:1;transform:none}}
-@keyframes ubtLogo{from{opacity:0;transform:scale(.86) translate3d(0,8px,0)}to{opacity:1;transform:none}}
-.screen.active>.wrap,.screen.active>.ubd{animation:ubtIn .42s var(--ease) both}
-#s-login .logo,#s-login .ubt-brand-title{animation:ubtLogo .55s var(--ease) both}
-#s-login .card{animation:ubtIn .5s var(--ease) .08s both;box-shadow:0 18px 50px -18px color-mix(in srgb,var(--p) 38%,transparent);border-radius:26px}
-.card,.item,.mode{transition:box-shadow .18s var(--ease),border-color .18s var(--ease)}
-.mode:hover{box-shadow:0 10px 30px -12px color-mix(in srgb,var(--p) 45%,transparent)}
-.btn-p{background:linear-gradient(135deg,var(--p),#6d5dfc)}
-.btn-p:hover{background:linear-gradient(135deg,var(--pd),#5b4cf0)}
-.fg input:focus,.fg select:focus,.fg textarea:focus{outline:2px solid color-mix(in srgb,var(--p) 55%,transparent);outline-offset:1px;border-color:var(--p)}
-img,canvas,svg{image-rendering:auto}
-.qimg,.avatar,img{-webkit-backface-visibility:hidden}
-.asg-card{border-color:color-mix(in srgb,var(--p) 40%,var(--b));margin-bottom:16px}
-.asg-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px}
-.asg-item.asg-done{opacity:.6}
-.ea-chips{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 14px}
-.ea-chip{padding:6px 12px;border-radius:24px;font-size:12px;font-weight:700;background:var(--bg);border:1px solid var(--b)}
-.ea-chip.ok{color:var(--ok)}.ea-chip.bad{color:var(--err)}.ea-chip.skip{color:var(--warn)}
-.ea-row{margin:10px 0}.ea-top{display:flex;justify-content:space-between;gap:8px;font-size:13px;margin-bottom:4px}
-.ea-bar{height:9px;border-radius:9px;background:var(--b);overflow:hidden}.ea-bar>i{display:block;height:100%;border-radius:9px}
-.ea-tip{margin:12px 0;padding:10px 12px;border-radius:14px;background:color-mix(in srgb,var(--warn) 14%,transparent);font-size:13px}
-.ea-more{margin-top:8px}.ea-more summary{cursor:pointer;font-weight:700;font-size:13px}
-.ea-q{padding:10px 0;border-top:1px solid var(--b);font-size:13px;line-height:1.5}
-@media(min-width:1800px){html{font-size:18px}}
-@media(min-width:2560px){html{font-size:22px}.wrap{max-width:1500px}}
-@media(min-width:3400px){html{font-size:28px}.wrap{max-width:1900px}}
-@media(prefers-reduced-motion:reduce){.screen.active>.wrap,.screen.active>.ubd,#s-login .logo,#s-login .ubt-brand-title,#s-login .card{animation:none!important}}
+.school-dialog [hidden],.school-tools>[hidden]{display:none!important}
 </style>
 <script type="text/plain" id="app-src">
 
@@ -5048,7 +5049,9 @@ function adminViewUser(id){
   document.getElementById('uv-login').value=p.name||'';
   document.getElementById('uv-curpass').value='🔒 хэштелген (көрсетілмейді)';
   const hist=LS.get('ubt_hist_'+id,[]);
-  document.getElementById('uv-hist').innerHTML=hist.length?hist.map(adminHistRowHTML).join(''):'<p class="sub">Тест тапсырмаған</p>';
+  document.getElementById('uv-hist').innerHTML=hist.length?hist.map(h=>`
+    <div class="item"><div class="info"><h4>${esc(h.topic||'Тест')}</h4><p>${h.date}</p></div>
+    <div style="font-weight:700;color:var(--p)">${h.score}/${h.max}</div></div>`).join(''):'<p class="sub">Тест тапсырмаған</p>';
   const vl=LS.get('ubt_viol_'+id,[]);
   document.getElementById('uv-hist').innerHTML+=`<h4 style="margin:14px 0 6px">⚠ Бұзушылықтар (${vl.length})</h4>`+(vl.length?vl.slice(0,40).map(v=>`<div class="item"><div class="info"><h4 style="font-size:13px">${esc(v.k)}</h4><p>${esc(v.t)}${v.test?' · '+esc(v.test):''}</p></div></div>`).join(''):'<p class="sub">Бұзушылық жоқ</p>');
   const mist=LS.get('ubt_mistakes_'+id,[]);
@@ -5191,9 +5194,10 @@ function createFromFile(){
 
 const UBT_EXTRA_CONTENT = {"reading": [{"id": "ubt_read_01", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 01 — Қала кітапханасы", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_01_1", "text": "Мәтін: «Қала кітапханасы»\nҚала кітапханасы дүйсенбіден сенбіге дейін ашық. Оқырмандар саны көбейген соң кітапхана кешкі сағат сегізге дейін жұмыс істейтін болды. Жексенбіде қызметкерлер кітап қорын реттейді. Жаңа кесте емтиханға дайындалатын оқушыларға ыңғайлы болды.\n\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["оқырмандар саны көбейгендіктен", "ешқандай өзгеріс болмағандықтан", "кездейсоқ мереке болғандықтан", "барлығы алдын ала шешілгендіктен"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_01_2", "text": "Мәтін: «Қала кітапханасы»\nҚала кітапханасы дүйсенбіден сенбіге дейін ашық. Оқырмандар саны көбейген соң кітапхана кешкі сағат сегізге дейін жұмыс істейтін болды. Жексенбіде қызметкерлер кітап қорын реттейді. Жаңа кесте емтиханға дайындалатын оқушыларға ыңғайлы болды.\n\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["кешкі сағат сегізге дейін", "қатысушылар саны нөлге түсті", "барлық жұмыс тоқтады", "мәселе күрделене түсті"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_01_3", "text": "Мәтін: «Қала кітапханасы»\nҚала кітапханасы дүйсенбіден сенбіге дейін ашық. Оқырмандар саны көбейген соң кітапхана кешкі сағат сегізге дейін жұмыс істейтін болды. Жексенбіде қызметкерлер кітап қорын реттейді. Жаңа кесте емтиханға дайындалатын оқушыларға ыңғайлы болды.\n\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["мәтінде айтылмаған алыс болашақта", "жексенбіде", "жоба басталмай тұрып", "әрқашан бір мезгілде"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "read_01_4", "text": "Мәтін: «Қала кітапханасы»\nҚала кітапханасы дүйсенбіден сенбіге дейін ашық. Оқырмандар саны көбейген соң кітапхана кешкі сағат сегізге дейін жұмыс істейтін болды. Жексенбіде қызметкерлер кітап қорын реттейді. Жаңа кесте емтиханға дайындалатын оқушыларға ыңғайлы болды.\n\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ештеңені өзгертпеу қажет", "ортақ жұмыс әрқашан зиян", "деректерді тексерудің қажеті жоқ", "емтиханға дайындалатын оқушыларға"], "correct": 3, "points": 2, "difficulty": "қиын"}, {"id": "read_01_5", "text": "Мәтін: «Қала кітапханасы»\nҚала кітапханасы дүйсенбіден сенбіге дейін ашық. Оқырмандар саны көбейген соң кітапхана кешкі сағат сегізге дейін жұмыс істейтін болды. Жексенбіде қызметкерлер кітап қорын реттейді. Жаңа кесте емтиханға дайындалатын оқушыларға ыңғайлы болды.\n\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Мәселені елемеу ең тиімді жол.", "Шешім қабылдау үшін дерек қажет емес."], "correct": 1, "points": 2, "difficulty": "қиын"}]}, {"id": "ubt_read_02", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 02 — Суды үнемдеу", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_02_1", "text": "Мәтін: «Суды үнемдеу»\nМектеп оқушылары бір апта бойы су шығынын бақылап, крандардың кейбірі толық жабылмайтынын анықтады. Олар ақаулы крандарды жөндетіп, әр сыныпқа ескерту ілді. Келесі аптада су тұтыну азайды. Жоба шағын әрекеттердің ортақ нәтижеге әсерін көрсетті.\n\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["ешқандай өзгеріс болмағандықтан", "барлығы алдын ала шешілгендіктен", "кездейсоқ мереке болғандықтан", "су шығынын бақылау барысында ақау табылғандықтан"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_02_2", "text": "Мәтін: «Суды үнемдеу»\nМектеп оқушылары бір апта бойы су шығынын бақылап, крандардың кейбірі толық жабылмайтынын анықтады. Олар ақаулы крандарды жөндетіп, әр сыныпқа ескерту ілді. Келесі аптада су тұтыну азайды. Жоба шағын әрекеттердің ортақ нәтижеге әсерін көрсетті.\n\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["су тұтыну азайды", "мәселе күрделене түсті", "барлық жұмыс тоқтады", "қатысушылар саны нөлге түсті"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_02_3", "text": "Мәтін: «Суды үнемдеу»\nМектеп оқушылары бір апта бойы су шығынын бақылап, крандардың кейбірі толық жабылмайтынын анықтады. Олар ақаулы крандарды жөндетіп, әр сыныпқа ескерту ілді. Келесі аптада су тұтыну азайды. Жоба шағын әрекеттердің ортақ нәтижеге әсерін көрсетті.\n\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["жоба басталмай тұрып", "мәтінде айтылмаған алыс болашақта", "әрқашан бір мезгілде", "бір апта бойы"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_02_4", "text": "Мәтін: «Суды үнемдеу»\nМектеп оқушылары бір апта бойы су шығынын бақылап, крандардың кейбірі толық жабылмайтынын анықтады. Олар ақаулы крандарды жөндетіп, әр сыныпқа ескерту ілді. Келесі аптада су тұтыну азайды. Жоба шағын әрекеттердің ортақ нәтижеге әсерін көрсетті.\n\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ештеңені өзгертпеу қажет", "ортақ жұмыс әрқашан зиян", "шағын әрекеттердің нәтижесін көрсетуге", "деректерді тексерудің қажеті жоқ"], "correct": 2, "points": 2, "difficulty": "қиын"}, {"id": "read_02_5", "text": "Мәтін: «Суды үнемдеу»\nМектеп оқушылары бір апта бойы су шығынын бақылап, крандардың кейбірі толық жабылмайтынын анықтады. Олар ақаулы крандарды жөндетіп, әр сыныпқа ескерту ілді. Келесі аптада су тұтыну азайды. Жоба шағын әрекеттердің ортақ нәтижеге әсерін көрсетті.\n\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Шешім қабылдау үшін дерек қажет емес.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Мәселені елемеу ең тиімді жол."], "correct": 1, "points": 2, "difficulty": "қиын"}]}, {"id": "ubt_read_03", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 03 — Ауыл бағы", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_03_1", "text": "Мәтін: «Ауыл бағы»\nАуыл тұрғындары бос жатқан жерге жеміс ағаштарын отырғызды. Алғашқы жылы көшеттердің біразы қурады, өйткені суару жүйесі тұрақты болмады. Келесі жылы тұрғындар кезекшілік кестесін жасап, ағаштарды жүйелі суарды. Соның арқасында көшеттер жақсы өсті.\n\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["суару жүйесі тұрақты болмағандықтан", "барлығы алдын ала шешілгендіктен", "кездейсоқ мереке болғандықтан", "ешқандай өзгеріс болмағандықтан"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_03_2", "text": "Мәтін: «Ауыл бағы»\nАуыл тұрғындары бос жатқан жерге жеміс ағаштарын отырғызды. Алғашқы жылы көшеттердің біразы қурады, өйткені суару жүйесі тұрақты болмады. Келесі жылы тұрғындар кезекшілік кестесін жасап, ағаштарды жүйелі суарды. Соның арқасында көшеттер жақсы өсті.\n\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["барлық жұмыс тоқтады", "көшеттер жақсы өсті", "мәселе күрделене түсті", "қатысушылар саны нөлге түсті"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "read_03_3", "text": "Мәтін: «Ауыл бағы»\nАуыл тұрғындары бос жатқан жерге жеміс ағаштарын отырғызды. Алғашқы жылы көшеттердің біразы қурады, өйткені суару жүйесі тұрақты болмады. Келесі жылы тұрғындар кезекшілік кестесін жасап, ағаштарды жүйелі суарды. Соның арқасында көшеттер жақсы өсті.\n\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["мәтінде айтылмаған алыс болашақта", "жоба басталмай тұрып", "әрқашан бір мезгілде", "келесі жылы"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_03_4", "text": "Мәтін: «Ауыл бағы»\nАуыл тұрғындары бос жатқан жерге жеміс ағаштарын отырғызды. Алғашқы жылы көшеттердің біразы қурады, өйткені суару жүйесі тұрақты болмады. Келесі жылы тұрғындар кезекшілік кестесін жасап, ағаштарды жүйелі суарды. Соның арқасында көшеттер жақсы өсті.\n\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ортақ жұмыс әрқашан зиян", "деректерді тексерудің қажеті жоқ", "ортақ жауапкершілікті күшейтуге", "ештеңені өзгертпеу қажет"], "correct": 2, "points": 2, "difficulty": "қиын"}, {"id": "read_03_5", "text": "Мәтін: «Ауыл бағы»\nАуыл тұрғындары бос жатқан жерге жеміс ағаштарын отырғызды. Алғашқы жылы көшеттердің біразы қурады, өйткені суару жүйесі тұрақты болмады. Келесі жылы тұрғындар кезекшілік кестесін жасап, ағаштарды жүйелі суарды. Соның арқасында көшеттер жақсы өсті.\n\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Мәселені елемеу ең тиімді жол.", "Шешім қабылдау үшін дерек қажет емес.", "Кез келген өзгеріс міндетті түрде сәтсіз болады."], "correct": 0, "points": 2, "difficulty": "қиын"}]}, {"id": "ubt_read_04", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 04 — Күн энергиясы", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_04_1", "text": "Мәтін: «Күн энергиясы»\nМектеп шатырына шағын күн панельдері орнатылды. Ашық күндері панельдер зертханадағы шамдарды қуаттандыруға жеткілікті энергия өндірді. Бұлтты күндері қосымша электр желісі қажет болды. Оқушылар жаңартылатын энергияның мүмкіндігімен бірге шектеулерін де зерттеді.\n\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["кездейсоқ мереке болғандықтан", "барлығы алдын ала шешілгендіктен", "күн сәулесі тұрақты түспегендіктен", "ешқандай өзгеріс болмағандықтан"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_04_2", "text": "Мәтін: «Күн энергиясы»\nМектеп шатырына шағын күн панельдері орнатылды. Ашық күндері панельдер зертханадағы шамдарды қуаттандыруға жеткілікті энергия өндірді. Бұлтты күндері қосымша электр желісі қажет болды. Оқушылар жаңартылатын энергияның мүмкіндігімен бірге шектеулерін де зерттеді.\n\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["барлық жұмыс тоқтады", "мәселе күрделене түсті", "зертхана шамдары қуаттандырылды", "қатысушылар саны нөлге түсті"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_04_3", "text": "Мәтін: «Күн энергиясы»\nМектеп шатырына шағын күн панельдері орнатылды. Ашық күндері панельдер зертханадағы шамдарды қуаттандыруға жеткілікті энергия өндірді. Бұлтты күндері қосымша электр желісі қажет болды. Оқушылар жаңартылатын энергияның мүмкіндігімен бірге шектеулерін де зерттеді.\n\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["бұлтты күндері", "әрқашан бір мезгілде", "жоба басталмай тұрып", "мәтінде айтылмаған алыс болашақта"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_04_4", "text": "Мәтін: «Күн энергиясы»\nМектеп шатырына шағын күн панельдері орнатылды. Ашық күндері панельдер зертханадағы шамдарды қуаттандыруға жеткілікті энергия өндірді. Бұлтты күндері қосымша электр желісі қажет болды. Оқушылар жаңартылатын энергияның мүмкіндігімен бірге шектеулерін де зерттеді.\n\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ортақ жұмыс әрқашан зиян", "деректерді тексерудің қажеті жоқ", "ештеңені өзгертпеу қажет", "энергия көздерінің шектеулерін түсінуге"], "correct": 3, "points": 2, "difficulty": "қиын"}, {"id": "read_04_5", "text": "Мәтін: «Күн энергиясы»\nМектеп шатырына шағын күн панельдері орнатылды. Ашық күндері панельдер зертханадағы шамдарды қуаттандыруға жеткілікті энергия өндірді. Бұлтты күндері қосымша электр желісі қажет болды. Оқушылар жаңартылатын энергияның мүмкіндігімен бірге шектеулерін де зерттеді.\n\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Шешім қабылдау үшін дерек қажет емес.", "Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Мәселені елемеу ең тиімді жол.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады."], "correct": 3, "points": 2, "difficulty": "қиын"}]}, {"id": "ubt_read_05", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 05 — Қоғамдық көлік", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_05_1", "text": "Мәтін: «Қоғамдық көлік»\nҚалада автобустарға арналған жеке жолақ ашылды. Алғашында кейбір жүргізушілер жаңа тәртіпке үйрене алмады. Бір айдан кейін автобустардың кешігуі азайып, жолаушылар саны өсті. Қала әкімдігі өзгерістің нәтижесін бақылауды жалғастырды.\n\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["жаңа тәртіпке бейімделу қажет болғандықтан", "барлығы алдын ала шешілгендіктен", "ешқандай өзгеріс болмағандықтан", "кездейсоқ мереке болғандықтан"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_05_2", "text": "Мәтін: «Қоғамдық көлік»\nҚалада автобустарға арналған жеке жолақ ашылды. Алғашында кейбір жүргізушілер жаңа тәртіпке үйрене алмады. Бір айдан кейін автобустардың кешігуі азайып, жолаушылар саны өсті. Қала әкімдігі өзгерістің нәтижесін бақылауды жалғастырды.\n\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["қатысушылар саны нөлге түсті", "мәселе күрделене түсті", "автобустардың кешігуі азайды", "барлық жұмыс тоқтады"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_05_3", "text": "Мәтін: «Қоғамдық көлік»\nҚалада автобустарға арналған жеке жолақ ашылды. Алғашында кейбір жүргізушілер жаңа тәртіпке үйрене алмады. Бір айдан кейін автобустардың кешігуі азайып, жолаушылар саны өсті. Қала әкімдігі өзгерістің нәтижесін бақылауды жалғастырды.\n\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["жоба басталмай тұрып", "әрқашан бір мезгілде", "бір айдан кейін", "мәтінде айтылмаған алыс болашақта"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_05_4", "text": "Мәтін: «Қоғамдық көлік»\nҚалада автобустарға арналған жеке жолақ ашылды. Алғашында кейбір жүргізушілер жаңа тәртіпке үйрене алмады. Бір айдан кейін автобустардың кешігуі азайып, жолаушылар саны өсті. Қала әкімдігі өзгерістің нәтижесін бақылауды жалғастырды.\n\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["жолаушылар тасымалын жақсартуға", "ештеңені өзгертпеу қажет", "ортақ жұмыс әрқашан зиян", "деректерді тексерудің қажеті жоқ"], "correct": 0, "points": 2, "difficulty": "қиын"}, {"id": "read_05_5", "text": "Мәтін: «Қоғамдық көлік»\nҚалада автобустарға арналған жеке жолақ ашылды. Алғашында кейбір жүргізушілер жаңа тәртіпке үйрене алмады. Бір айдан кейін автобустардың кешігуі азайып, жолаушылар саны өсті. Қала әкімдігі өзгерістің нәтижесін бақылауды жалғастырды.\n\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Шешім қабылдау үшін дерек қажет емес.", "Мәселені елемеу ең тиімді жол.", "Кез келген өзгеріс міндетті түрде сәтсіз болады."], "correct": 0, "points": 2, "difficulty": "қиын"}]}, {"id": "ubt_read_06", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 06 — Мектеп газеті", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_06_1", "text": "Мәтін: «Мектеп газеті»\nОқушылар ай сайын электронды газет шығара бастады. Алғашқы шығарылымда жаңалықтар аз болды. Редакция сыныптардан тілшілер тағайындап, ақпарат жинау жолын өзгертті. Келесі шығарылымдарда мектеп өмірі кеңірек қамтылды.\n\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["ешқандай өзгеріс болмағандықтан", "ақпарат жинау жеткіліксіз болғандықтан", "кездейсоқ мереке болғандықтан", "барлығы алдын ала шешілгендіктен"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "read_06_2", "text": "Мәтін: «Мектеп газеті»\nОқушылар ай сайын электронды газет шығара бастады. Алғашқы шығарылымда жаңалықтар аз болды. Редакция сыныптардан тілшілер тағайындап, ақпарат жинау жолын өзгертті. Келесі шығарылымдарда мектеп өмірі кеңірек қамтылды.\n\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["барлық жұмыс тоқтады", "мәселе күрделене түсті", "мектеп өмірі кеңірек қамтылды", "қатысушылар саны нөлге түсті"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_06_3", "text": "Мәтін: «Мектеп газеті»\nОқушылар ай сайын электронды газет шығара бастады. Алғашқы шығарылымда жаңалықтар аз болды. Редакция сыныптардан тілшілер тағайындап, ақпарат жинау жолын өзгертті. Келесі шығарылымдарда мектеп өмірі кеңірек қамтылды.\n\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["келесі шығарылымдарда", "әрқашан бір мезгілде", "жоба басталмай тұрып", "мәтінде айтылмаған алыс болашақта"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_06_4", "text": "Мәтін: «Мектеп газеті»\nОқушылар ай сайын электронды газет шығара бастады. Алғашқы шығарылымда жаңалықтар аз болды. Редакция сыныптардан тілшілер тағайындап, ақпарат жинау жолын өзгертті. Келесі шығарылымдарда мектеп өмірі кеңірек қамтылды.\n\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ортақ жұмыс әрқашан зиян", "ештеңені өзгертпеу қажет", "деректерді тексерудің қажеті жоқ", "ақпарат алмасуды жақсартуға"], "correct": 3, "points": 2, "difficulty": "қиын"}, {"id": "read_06_5", "text": "Мәтін: «Мектеп газеті»\nОқушылар ай сайын электронды газет шығара бастады. Алғашқы шығарылымда жаңалықтар аз болды. Редакция сыныптардан тілшілер тағайындап, ақпарат жинау жолын өзгертті. Келесі шығарылымдарда мектеп өмірі кеңірек қамтылды.\n\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Мәселені елемеу ең тиімді жол.", "Шешім қабылдау үшін дерек қажет емес.", "Кез келген өзгеріс міндетті түрде сәтсіз болады."], "correct": 0, "points": 2, "difficulty": "қиын"}]}, {"id": "ubt_read_07", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 07 — Орман соқпағы", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_07_1", "text": "Мәтін: «Орман соқпағы»\nТуристер орманда белгіленген соқпақтан жиі шығып кететін. Нәтижесінде жас өсімдіктер тапталды. Еріктілер бағыттаушы белгілер қойып, түсіндіру жұмыстарын жүргізді. Біраз уақыттан кейін өсімдіктердің зақымдануы азайды.\n\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["ешқандай өзгеріс болмағандықтан", "туристер соқпақтан шығып кеткендіктен", "барлығы алдын ала шешілгендіктен", "кездейсоқ мереке болғандықтан"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "read_07_2", "text": "Мәтін: «Орман соқпағы»\nТуристер орманда белгіленген соқпақтан жиі шығып кететін. Нәтижесінде жас өсімдіктер тапталды. Еріктілер бағыттаушы белгілер қойып, түсіндіру жұмыстарын жүргізді. Біраз уақыттан кейін өсімдіктердің зақымдануы азайды.\n\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["мәселе күрделене түсті", "барлық жұмыс тоқтады", "қатысушылар саны нөлге түсті", "өсімдіктердің зақымдануы азайды"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_07_3", "text": "Мәтін: «Орман соқпағы»\nТуристер орманда белгіленген соқпақтан жиі шығып кететін. Нәтижесінде жас өсімдіктер тапталды. Еріктілер бағыттаушы белгілер қойып, түсіндіру жұмыстарын жүргізді. Біраз уақыттан кейін өсімдіктердің зақымдануы азайды.\n\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["жоба басталмай тұрып", "әрқашан бір мезгілде", "мәтінде айтылмаған алыс болашақта", "біраз уақыттан кейін"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_07_4", "text": "Мәтін: «Орман соқпағы»\nТуристер орманда белгіленген соқпақтан жиі шығып кететін. Нәтижесінде жас өсімдіктер тапталды. Еріктілер бағыттаушы белгілер қойып, түсіндіру жұмыстарын жүргізді. Біраз уақыттан кейін өсімдіктердің зақымдануы азайды.\n\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["табиғатты қорғауға", "ештеңені өзгертпеу қажет", "деректерді тексерудің қажеті жоқ", "ортақ жұмыс әрқашан зиян"], "correct": 0, "points": 2, "difficulty": "қиын"}, {"id": "read_07_5", "text": "Мәтін: «Орман соқпағы»\nТуристер орманда белгіленген соқпақтан жиі шығып кететін. Нәтижесінде жас өсімдіктер тапталды. Еріктілер бағыттаушы белгілер қойып, түсіндіру жұмыстарын жүргізді. Біраз уақыттан кейін өсімдіктердің зақымдануы азайды.\n\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Мәселені елемеу ең тиімді жол.", "Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Шешім қабылдау үшін дерек қажет емес."], "correct": 2, "points": 2, "difficulty": "қиын"}]}, {"id": "ubt_read_08", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 08 — Ғылыми үйірме", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_08_1", "text": "Мәтін: «Ғылыми үйірме»\nҮйірме мүшелері роботты жарысқа дайындады. Алғашқы сынақта робот бұрылыстардан өте алмады. Балалар бағдарламаны түзетіп, бірнеше рет тәжірибе жасады. Соңғы сынақта робот жолды қатесіз жүріп өтті.\n\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["кездейсоқ мереке болғандықтан", "барлығы алдын ала шешілгендіктен", "ешқандай өзгеріс болмағандықтан", "бағдарлама бұрылыстарды дұрыс өңдемегендіктен"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_08_2", "text": "Мәтін: «Ғылыми үйірме»\nҮйірме мүшелері роботты жарысқа дайындады. Алғашқы сынақта робот бұрылыстардан өте алмады. Балалар бағдарламаны түзетіп, бірнеше рет тәжірибе жасады. Соңғы сынақта робот жолды қатесіз жүріп өтті.\n\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["робот жолды қатесіз жүріп өтті", "қатысушылар саны нөлге түсті", "барлық жұмыс тоқтады", "мәселе күрделене түсті"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_08_3", "text": "Мәтін: «Ғылыми үйірме»\nҮйірме мүшелері роботты жарысқа дайындады. Алғашқы сынақта робот бұрылыстардан өте алмады. Балалар бағдарламаны түзетіп, бірнеше рет тәжірибе жасады. Соңғы сынақта робот жолды қатесіз жүріп өтті.\n\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["жоба басталмай тұрып", "мәтінде айтылмаған алыс болашақта", "әрқашан бір мезгілде", "соңғы сынақта"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_08_4", "text": "Мәтін: «Ғылыми үйірме»\nҮйірме мүшелері роботты жарысқа дайындады. Алғашқы сынақта робот бұрылыстардан өте алмады. Балалар бағдарламаны түзетіп, бірнеше рет тәжірибе жасады. Соңғы сынақта робот жолды қатесіз жүріп өтті.\n\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["тәжірибе арқылы үйренуге", "ештеңені өзгертпеу қажет", "ортақ жұмыс әрқашан зиян", "деректерді тексерудің қажеті жоқ"], "correct": 0, "points": 2, "difficulty": "қиын"}, {"id": "read_08_5", "text": "Мәтін: «Ғылыми үйірме»\nҮйірме мүшелері роботты жарысқа дайындады. Алғашқы сынақта робот бұрылыстардан өте алмады. Балалар бағдарламаны түзетіп, бірнеше рет тәжірибе жасады. Соңғы сынақта робот жолды қатесіз жүріп өтті.\n\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Шешім қабылдау үшін дерек қажет емес.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Мәселені елемеу ең тиімді жол."], "correct": 2, "points": 2, "difficulty": "қиын"}]}, {"id": "ubt_read_09", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 09 — Ескі көпір", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_09_1", "text": "Мәтін: «Ескі көпір»\nӨзен үстіндегі ескі көпірге жөндеу қажет болды. Мамандар қауіпсіздік үшін көліктердің қозғалысын уақытша тоқтатты. Тұрғындар балама жолды пайдаланды. Жөндеу аяқталғаннан кейін көпір қайта ашылды.\n\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["көпірді қауіпсіз жөндеу қажет болғандықтан", "барлығы алдын ала шешілгендіктен", "кездейсоқ мереке болғандықтан", "ешқандай өзгеріс болмағандықтан"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_09_2", "text": "Мәтін: «Ескі көпір»\nӨзен үстіндегі ескі көпірге жөндеу қажет болды. Мамандар қауіпсіздік үшін көліктердің қозғалысын уақытша тоқтатты. Тұрғындар балама жолды пайдаланды. Жөндеу аяқталғаннан кейін көпір қайта ашылды.\n\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["көпір қайта ашылды", "мәселе күрделене түсті", "қатысушылар саны нөлге түсті", "барлық жұмыс тоқтады"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_09_3", "text": "Мәтін: «Ескі көпір»\nӨзен үстіндегі ескі көпірге жөндеу қажет болды. Мамандар қауіпсіздік үшін көліктердің қозғалысын уақытша тоқтатты. Тұрғындар балама жолды пайдаланды. Жөндеу аяқталғаннан кейін көпір қайта ашылды.\n\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["мәтінде айтылмаған алыс болашақта", "әрқашан бір мезгілде", "жоба басталмай тұрып", "жөндеу аяқталғаннан кейін"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_09_4", "text": "Мәтін: «Ескі көпір»\nӨзен үстіндегі ескі көпірге жөндеу қажет болды. Мамандар қауіпсіздік үшін көліктердің қозғалысын уақытша тоқтатты. Тұрғындар балама жолды пайдаланды. Жөндеу аяқталғаннан кейін көпір қайта ашылды.\n\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["жол қауіпсіздігін қамтамасыз етуге", "ештеңені өзгертпеу қажет", "деректерді тексерудің қажеті жоқ", "ортақ жұмыс әрқашан зиян"], "correct": 0, "points": 2, "difficulty": "қиын"}, {"id": "read_09_5", "text": "Мәтін: «Ескі көпір»\nӨзен үстіндегі ескі көпірге жөндеу қажет болды. Мамандар қауіпсіздік үшін көліктердің қозғалысын уақытша тоқтатты. Тұрғындар балама жолды пайдаланды. Жөндеу аяқталғаннан кейін көпір қайта ашылды.\n\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Мәселені елемеу ең тиімді жол.", "Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Шешім қабылдау үшін дерек қажет емес."], "correct": 0, "points": 2, "difficulty": "қиын"}]}, {"id": "ubt_read_10", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 10 — Қалдықтарды сұрыптау", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_10_1", "text": "Мәтін: «Қалдықтарды сұрыптау»\nМектепте қағаз бен пластикке бөлек жәшіктер қойылды. Алғашқы күндері оқушылар қалдықтарды шатастырып салды. Мұғалімдер түсіндірме сабақ өткізді. Бірнеше аптадан кейін сұрыптау сапасы жақсарды.\n\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["барлығы алдын ала шешілгендіктен", "кездейсоқ мереке болғандықтан", "ешқандай өзгеріс болмағандықтан", "сұрыптау ережелері түсініксіз болғандықтан"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_10_2", "text": "Мәтін: «Қалдықтарды сұрыптау»\nМектепте қағаз бен пластикке бөлек жәшіктер қойылды. Алғашқы күндері оқушылар қалдықтарды шатастырып салды. Мұғалімдер түсіндірме сабақ өткізді. Бірнеше аптадан кейін сұрыптау сапасы жақсарды.\n\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["мәселе күрделене түсті", "барлық жұмыс тоқтады", "сұрыптау сапасы жақсарды", "қатысушылар саны нөлге түсті"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_10_3", "text": "Мәтін: «Қалдықтарды сұрыптау»\nМектепте қағаз бен пластикке бөлек жәшіктер қойылды. Алғашқы күндері оқушылар қалдықтарды шатастырып салды. Мұғалімдер түсіндірме сабақ өткізді. Бірнеше аптадан кейін сұрыптау сапасы жақсарды.\n\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["бірнеше аптадан кейін", "мәтінде айтылмаған алыс болашақта", "жоба басталмай тұрып", "әрқашан бір мезгілде"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_10_4", "text": "Мәтін: «Қалдықтарды сұрыптау»\nМектепте қағаз бен пластикке бөлек жәшіктер қойылды. Алғашқы күндері оқушылар қалдықтарды шатастырып салды. Мұғалімдер түсіндірме сабақ өткізді. Бірнеше аптадан кейін сұрыптау сапасы жақсарды.\n\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ештеңені өзгертпеу қажет", "ортақ жұмыс әрқашан зиян", "қайта өңдеуді жеңілдетуге", "деректерді тексерудің қажеті жоқ"], "correct": 2, "points": 2, "difficulty": "қиын"}, {"id": "read_10_5", "text": "Мәтін: «Қалдықтарды сұрыптау»\nМектепте қағаз бен пластикке бөлек жәшіктер қойылды. Алғашқы күндері оқушылар қалдықтарды шатастырып салды. Мұғалімдер түсіндірме сабақ өткізді. Бірнеше аптадан кейін сұрыптау сапасы жақсарды.\n\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Шешім қабылдау үшін дерек қажет емес.", "Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Мәселені елемеу ең тиімді жол."], "correct": 0, "points": 2, "difficulty": "қиын"}]}, {"id": "ubt_read_11", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 11 — Спорт алаңы", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_11_1", "text": "Мәтін: «Спорт алаңы»\nАуладағы спорт алаңы кешке қараңғы болатын. Тұрғындар жарық орнатуға қаражат жинады. Жарық қосылған соң балалар жаттығуды қауіпсіз жалғастыра алды. Дегенмен тұрғындар тыныштық уақытын сақтауға келісті.\n\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["кешкі жарық жеткіліксіз болғандықтан", "ешқандай өзгеріс болмағандықтан", "барлығы алдын ала шешілгендіктен", "кездейсоқ мереке болғандықтан"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_11_2", "text": "Мәтін: «Спорт алаңы»\nАуладағы спорт алаңы кешке қараңғы болатын. Тұрғындар жарық орнатуға қаражат жинады. Жарық қосылған соң балалар жаттығуды қауіпсіз жалғастыра алды. Дегенмен тұрғындар тыныштық уақытын сақтауға келісті.\n\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["қатысушылар саны нөлге түсті", "мәселе күрделене түсті", "балалар қауіпсіз жаттыға алды", "барлық жұмыс тоқтады"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_11_3", "text": "Мәтін: «Спорт алаңы»\nАуладағы спорт алаңы кешке қараңғы болатын. Тұрғындар жарық орнатуға қаражат жинады. Жарық қосылған соң балалар жаттығуды қауіпсіз жалғастыра алды. Дегенмен тұрғындар тыныштық уақытын сақтауға келісті.\n\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["жарық қосылған соң", "мәтінде айтылмаған алыс болашақта", "жоба басталмай тұрып", "әрқашан бір мезгілде"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_11_4", "text": "Мәтін: «Спорт алаңы»\nАуладағы спорт алаңы кешке қараңғы болатын. Тұрғындар жарық орнатуға қаражат жинады. Жарық қосылған соң балалар жаттығуды қауіпсіз жалғастыра алды. Дегенмен тұрғындар тыныштық уақытын сақтауға келісті.\n\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["қауіпсіздік пен тыныштықты үйлестіруге", "деректерді тексерудің қажеті жоқ", "ештеңені өзгертпеу қажет", "ортақ жұмыс әрқашан зиян"], "correct": 0, "points": 2, "difficulty": "қиын"}, {"id": "read_11_5", "text": "Мәтін: «Спорт алаңы»\nАуладағы спорт алаңы кешке қараңғы болатын. Тұрғындар жарық орнатуға қаражат жинады. Жарық қосылған соң балалар жаттығуды қауіпсіз жалғастыра алды. Дегенмен тұрғындар тыныштық уақытын сақтауға келісті.\n\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Шешім қабылдау үшін дерек қажет емес.", "Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Мәселені елемеу ең тиімді жол.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады."], "correct": 3, "points": 2, "difficulty": "қиын"}]}, {"id": "ubt_read_12", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 12 — Ауа райын бақылау", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_12_1", "text": "Мәтін: «Ауа райын бақылау»\nОқушылар күн сайын температураны бір мезгілде өлшеді. Бір күні құрал көлеңкеге, келесі күні күн астына қойылғандықтан деректер салыстыруға келмеді. Олар өлшеу орнын тұрақтандырды. Осыдан кейін нәтижелер сенімді бола түсті.\n\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["кездейсоқ мереке болғандықтан", "ешқандай өзгеріс болмағандықтан", "өлшеу шарттары бірдей болмағандықтан", "барлығы алдын ала шешілгендіктен"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_12_2", "text": "Мәтін: «Ауа райын бақылау»\nОқушылар күн сайын температураны бір мезгілде өлшеді. Бір күні құрал көлеңкеге, келесі күні күн астына қойылғандықтан деректер салыстыруға келмеді. Олар өлшеу орнын тұрақтандырды. Осыдан кейін нәтижелер сенімді бола түсті.\n\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["нәтижелер сенімді бола түсті", "қатысушылар саны нөлге түсті", "мәселе күрделене түсті", "барлық жұмыс тоқтады"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_12_3", "text": "Мәтін: «Ауа райын бақылау»\nОқушылар күн сайын температураны бір мезгілде өлшеді. Бір күні құрал көлеңкеге, келесі күні күн астына қойылғандықтан деректер салыстыруға келмеді. Олар өлшеу орнын тұрақтандырды. Осыдан кейін нәтижелер сенімді бола түсті.\n\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["жоба басталмай тұрып", "өлшеу орнын тұрақтандырғаннан кейін", "әрқашан бір мезгілде", "мәтінде айтылмаған алыс болашақта"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "read_12_4", "text": "Мәтін: «Ауа райын бақылау»\nОқушылар күн сайын температураны бір мезгілде өлшеді. Бір күні құрал көлеңкеге, келесі күні күн астына қойылғандықтан деректер салыстыруға келмеді. Олар өлшеу орнын тұрақтандырды. Осыдан кейін нәтижелер сенімді бола түсті.\n\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["әділ салыстыру жасауға", "ештеңені өзгертпеу қажет", "ортақ жұмыс әрқашан зиян", "деректерді тексерудің қажеті жоқ"], "correct": 0, "points": 2, "difficulty": "қиын"}, {"id": "read_12_5", "text": "Мәтін: «Ауа райын бақылау»\nОқушылар күн сайын температураны бір мезгілде өлшеді. Бір күні құрал көлеңкеге, келесі күні күн астына қойылғандықтан деректер салыстыруға келмеді. Олар өлшеу орнын тұрақтандырды. Осыдан кейін нәтижелер сенімді бола түсті.\n\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Шешім қабылдау үшін дерек қажет емес.", "Мәселені елемеу ең тиімді жол."], "correct": 0, "points": 2, "difficulty": "қиын"}]}, {"id": "ubt_read_13", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 13 — Тіл үйрену", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_13_1", "text": "Мәтін: «Тіл үйрену»\nАйдана күн сайын он жаңа сөз жаттайтын, бірақ сөйлескенде оларды қолдана алмады. Мұғалімі сөздерді сөйлем ішінде пайдалануды ұсынды. Айдана қысқа әңгімелер құра бастады. Бір айдан соң еркін сөйлеуі жақсарды.\n\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["сөздерді тәжірибеде қолданбағандықтан", "кездейсоқ мереке болғандықтан", "барлығы алдын ала шешілгендіктен", "ешқандай өзгеріс болмағандықтан"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_13_2", "text": "Мәтін: «Тіл үйрену»\nАйдана күн сайын он жаңа сөз жаттайтын, бірақ сөйлескенде оларды қолдана алмады. Мұғалімі сөздерді сөйлем ішінде пайдалануды ұсынды. Айдана қысқа әңгімелер құра бастады. Бір айдан соң еркін сөйлеуі жақсарды.\n\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["барлық жұмыс тоқтады", "мәселе күрделене түсті", "еркін сөйлеуі жақсарды", "қатысушылар саны нөлге түсті"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_13_3", "text": "Мәтін: «Тіл үйрену»\nАйдана күн сайын он жаңа сөз жаттайтын, бірақ сөйлескенде оларды қолдана алмады. Мұғалімі сөздерді сөйлем ішінде пайдалануды ұсынды. Айдана қысқа әңгімелер құра бастады. Бір айдан соң еркін сөйлеуі жақсарды.\n\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["бір айдан соң", "әрқашан бір мезгілде", "мәтінде айтылмаған алыс болашақта", "жоба басталмай тұрып"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_13_4", "text": "Мәтін: «Тіл үйрену»\nАйдана күн сайын он жаңа сөз жаттайтын, бірақ сөйлескенде оларды қолдана алмады. Мұғалімі сөздерді сөйлем ішінде пайдалануды ұсынды. Айдана қысқа әңгімелер құра бастады. Бір айдан соң еркін сөйлеуі жақсарды.\n\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ортақ жұмыс әрқашан зиян", "сөзді контексте қолдануға", "ештеңені өзгертпеу қажет", "деректерді тексерудің қажеті жоқ"], "correct": 1, "points": 2, "difficulty": "қиын"}, {"id": "read_13_5", "text": "Мәтін: «Тіл үйрену»\nАйдана күн сайын он жаңа сөз жаттайтын, бірақ сөйлескенде оларды қолдана алмады. Мұғалімі сөздерді сөйлем ішінде пайдалануды ұсынды. Айдана қысқа әңгімелер құра бастады. Бір айдан соң еркін сөйлеуі жақсарды.\n\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Шешім қабылдау үшін дерек қажет емес.", "Мәселені елемеу ең тиімді жол.", "Кез келген өзгеріс міндетті түрде сәтсіз болады."], "correct": 0, "points": 2, "difficulty": "қиын"}]}, {"id": "ubt_read_14", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 14 — Көрме дайындау", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_14_1", "text": "Мәтін: «Көрме дайындау»\nМұражай қызметкерлері тарихи көрме ұйымдастырды. Экспонаттардың жанына қысқа түсіндірмелер орналастырылды. Келушілер заттардың қолданылуын жақсырақ түсіне бастады. Қызметкерлер кейін аудиогид қосуды жоспарлады.\n\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["барлығы алдын ала шешілгендіктен", "кездейсоқ мереке болғандықтан", "экспонаттар туралы түсіндірме қажет болғандықтан", "ешқандай өзгеріс болмағандықтан"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_14_2", "text": "Мәтін: «Көрме дайындау»\nМұражай қызметкерлері тарихи көрме ұйымдастырды. Экспонаттардың жанына қысқа түсіндірмелер орналастырылды. Келушілер заттардың қолданылуын жақсырақ түсіне бастады. Қызметкерлер кейін аудиогид қосуды жоспарлады.\n\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["мәселе күрделене түсті", "қатысушылар саны нөлге түсті", "барлық жұмыс тоқтады", "келушілердің түсінуі жақсарды"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_14_3", "text": "Мәтін: «Көрме дайындау»\nМұражай қызметкерлері тарихи көрме ұйымдастырды. Экспонаттардың жанына қысқа түсіндірмелер орналастырылды. Келушілер заттардың қолданылуын жақсырақ түсіне бастады. Қызметкерлер кейін аудиогид қосуды жоспарлады.\n\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["әрқашан бір мезгілде", "түсіндірмелер қойылғаннан кейін", "мәтінде айтылмаған алыс болашақта", "жоба басталмай тұрып"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "read_14_4", "text": "Мәтін: «Көрме дайындау»\nМұражай қызметкерлері тарихи көрме ұйымдастырды. Экспонаттардың жанына қысқа түсіндірмелер орналастырылды. Келушілер заттардың қолданылуын жақсырақ түсіне бастады. Қызметкерлер кейін аудиогид қосуды жоспарлады.\n\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ештеңені өзгертпеу қажет", "ортақ жұмыс әрқашан зиян", "деректерді тексерудің қажеті жоқ", "тарихи ақпаратты қолжетімді етуге"], "correct": 3, "points": 2, "difficulty": "қиын"}, {"id": "read_14_5", "text": "Мәтін: «Көрме дайындау»\nМұражай қызметкерлері тарихи көрме ұйымдастырды. Экспонаттардың жанына қысқа түсіндірмелер орналастырылды. Келушілер заттардың қолданылуын жақсырақ түсіне бастады. Қызметкерлер кейін аудиогид қосуды жоспарлады.\n\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Шешім қабылдау үшін дерек қажет емес.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Мәселені елемеу ең тиімді жол."], "correct": 2, "points": 2, "difficulty": "қиын"}]}, {"id": "ubt_read_15", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 15 — Еріктілер тобы", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_15_1", "text": "Мәтін: «Еріктілер тобы»\nЕріктілер қарттарға азық-түлік жеткізді. Алғашында тапсырыстар телефон арқылы ретсіз қабылданды. Кейін ортақ тізім жасалды. Соның нәтижесінде жеткізу уақыты қысқарды және қателер азайды.\n\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["кездейсоқ мереке болғандықтан", "тапсырыстар жүйесіз қабылданғандықтан", "ешқандай өзгеріс болмағандықтан", "барлығы алдын ала шешілгендіктен"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "read_15_2", "text": "Мәтін: «Еріктілер тобы»\nЕріктілер қарттарға азық-түлік жеткізді. Алғашында тапсырыстар телефон арқылы ретсіз қабылданды. Кейін ортақ тізім жасалды. Соның нәтижесінде жеткізу уақыты қысқарды және қателер азайды.\n\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["жеткізу уақыты қысқарды", "қатысушылар саны нөлге түсті", "барлық жұмыс тоқтады", "мәселе күрделене түсті"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_15_3", "text": "Мәтін: «Еріктілер тобы»\nЕріктілер қарттарға азық-түлік жеткізді. Алғашында тапсырыстар телефон арқылы ретсіз қабылданды. Кейін ортақ тізім жасалды. Соның нәтижесінде жеткізу уақыты қысқарды және қателер азайды.\n\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["мәтінде айтылмаған алыс болашақта", "жоба басталмай тұрып", "ортақ тізім жасалғаннан кейін", "әрқашан бір мезгілде"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_15_4", "text": "Мәтін: «Еріктілер тобы»\nЕріктілер қарттарға азық-түлік жеткізді. Алғашында тапсырыстар телефон арқылы ретсіз қабылданды. Кейін ортақ тізім жасалды. Соның нәтижесінде жеткізу уақыты қысқарды және қателер азайды.\n\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ештеңені өзгертпеу қажет", "жұмысты ұйымдастыруға", "ортақ жұмыс әрқашан зиян", "деректерді тексерудің қажеті жоқ"], "correct": 1, "points": 2, "difficulty": "қиын"}, {"id": "read_15_5", "text": "Мәтін: «Еріктілер тобы»\nЕріктілер қарттарға азық-түлік жеткізді. Алғашында тапсырыстар телефон арқылы ретсіз қабылданды. Кейін ортақ тізім жасалды. Соның нәтижесінде жеткізу уақыты қысқарды және қателер азайды.\n\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Мәселені елемеу ең тиімді жол.", "Шешім қабылдау үшін дерек қажет емес.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады."], "correct": 3, "points": 2, "difficulty": "қиын"}]}, {"id": "ubt_read_16", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 16 — Мектеп асханасы", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_16_1", "text": "Мәтін: «Мектеп асханасы»\nАсханада үзіліс кезінде ұзын кезек пайда болатын. Әкімшілік алдын ала тапсырыс беру жүйесін енгізді. Оқушылар тағамды ертерек таңдайтын болды. Нәтижесінде кезек қысқарды, бірақ тапсырысты уақытында беру маңызды болып қалды.\n\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["тапсырыстар бір мезгілде жиналғандықтан", "кездейсоқ мереке болғандықтан", "барлығы алдын ала шешілгендіктен", "ешқандай өзгеріс болмағандықтан"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_16_2", "text": "Мәтін: «Мектеп асханасы»\nАсханада үзіліс кезінде ұзын кезек пайда болатын. Әкімшілік алдын ала тапсырыс беру жүйесін енгізді. Оқушылар тағамды ертерек таңдайтын болды. Нәтижесінде кезек қысқарды, бірақ тапсырысты уақытында беру маңызды болып қалды.\n\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["кезек қысқарды", "қатысушылар саны нөлге түсті", "мәселе күрделене түсті", "барлық жұмыс тоқтады"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_16_3", "text": "Мәтін: «Мектеп асханасы»\nАсханада үзіліс кезінде ұзын кезек пайда болатын. Әкімшілік алдын ала тапсырыс беру жүйесін енгізді. Оқушылар тағамды ертерек таңдайтын болды. Нәтижесінде кезек қысқарды, бірақ тапсырысты уақытында беру маңызды болып қалды.\n\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["әрқашан бір мезгілде", "мәтінде айтылмаған алыс болашақта", "жоба басталмай тұрып", "алдын ала тапсырыс енгізілгеннен кейін"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_16_4", "text": "Мәтін: «Мектеп асханасы»\nАсханада үзіліс кезінде ұзын кезек пайда болатын. Әкімшілік алдын ала тапсырыс беру жүйесін енгізді. Оқушылар тағамды ертерек таңдайтын болды. Нәтижесінде кезек қысқарды, бірақ тапсырысты уақытында беру маңызды болып қалды.\n\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["деректерді тексерудің қажеті жоқ", "ортақ жұмыс әрқашан зиян", "ештеңені өзгертпеу қажет", "уақытты үнемдеуге"], "correct": 3, "points": 2, "difficulty": "қиын"}, {"id": "read_16_5", "text": "Мәтін: «Мектеп асханасы»\nАсханада үзіліс кезінде ұзын кезек пайда болатын. Әкімшілік алдын ала тапсырыс беру жүйесін енгізді. Оқушылар тағамды ертерек таңдайтын болды. Нәтижесінде кезек қысқарды, бірақ тапсырысты уақытында беру маңызды болып қалды.\n\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Шешім қабылдау үшін дерек қажет емес.", "Мәселені елемеу ең тиімді жол.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Кез келген өзгеріс міндетті түрде сәтсіз болады."], "correct": 2, "points": 2, "difficulty": "қиын"}]}, {"id": "ubt_read_17", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 17 — Құс ұялары", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_17_1", "text": "Мәтін: «Құс ұялары»\nБалалар көктемде аулаға құс ұяларын орнатты. Бірнеше ұя тым төмен ілінгендіктен құстар оларды пайдаланбады. Биология мұғалімі қауіпсіз биіктікті түсіндірді. Ұялар қайта орналастырылған соң құстар келе бастады.\n\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["ұялар қолайсыз биіктікте болғандықтан", "кездейсоқ мереке болғандықтан", "барлығы алдын ала шешілгендіктен", "ешқандай өзгеріс болмағандықтан"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_17_2", "text": "Мәтін: «Құс ұялары»\nБалалар көктемде аулаға құс ұяларын орнатты. Бірнеше ұя тым төмен ілінгендіктен құстар оларды пайдаланбады. Биология мұғалімі қауіпсіз биіктікті түсіндірді. Ұялар қайта орналастырылған соң құстар келе бастады.\n\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["барлық жұмыс тоқтады", "мәселе күрделене түсті", "құстар келе бастады", "қатысушылар саны нөлге түсті"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "read_17_3", "text": "Мәтін: «Құс ұялары»\nБалалар көктемде аулаға құс ұяларын орнатты. Бірнеше ұя тым төмен ілінгендіктен құстар оларды пайдаланбады. Биология мұғалімі қауіпсіз биіктікті түсіндірді. Ұялар қайта орналастырылған соң құстар келе бастады.\n\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["жоба басталмай тұрып", "ұялар қайта орналастырылған соң", "мәтінде айтылмаған алыс болашақта", "әрқашан бір мезгілде"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "read_17_4", "text": "Мәтін: «Құс ұялары»\nБалалар көктемде аулаға құс ұяларын орнатты. Бірнеше ұя тым төмен ілінгендіктен құстар оларды пайдаланбады. Биология мұғалімі қауіпсіз биіктікті түсіндірді. Ұялар қайта орналастырылған соң құстар келе бастады.\n\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["деректерді тексерудің қажеті жоқ", "жануарлар тіршілігін ескеруге", "ортақ жұмыс әрқашан зиян", "ештеңені өзгертпеу қажет"], "correct": 1, "points": 2, "difficulty": "қиын"}, {"id": "read_17_5", "text": "Мәтін: «Құс ұялары»\nБалалар көктемде аулаға құс ұяларын орнатты. Бірнеше ұя тым төмен ілінгендіктен құстар оларды пайдаланбады. Биология мұғалімі қауіпсіз биіктікті түсіндірді. Ұялар қайта орналастырылған соң құстар келе бастады.\n\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Шешім қабылдау үшін дерек қажет емес.", "Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Мәселені елемеу ең тиімді жол.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады."], "correct": 3, "points": 2, "difficulty": "қиын"}]}, {"id": "ubt_read_18", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 18 — Шағын кәсіп", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_18_1", "text": "Мәтін: «Шағын кәсіп»\nЕкі дос үйде жасалған дәптерлер сатты. Алғашқыда бағасы шығынды өтемеді. Олар материал құнын есептеп, бағаны қайта белгіледі. Сатылым саны сәл азайса да, әр дәптерден түсетін пайда артты.\n\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["ешқандай өзгеріс болмағандықтан", "барлығы алдын ала шешілгендіктен", "кездейсоқ мереке болғандықтан", "материал шығыны есептелмегендіктен"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_18_2", "text": "Мәтін: «Шағын кәсіп»\nЕкі дос үйде жасалған дәптерлер сатты. Алғашқыда бағасы шығынды өтемеді. Олар материал құнын есептеп, бағаны қайта белгіледі. Сатылым саны сәл азайса да, әр дәптерден түсетін пайда артты.\n\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["әр дәптерден пайда артты", "барлық жұмыс тоқтады", "мәселе күрделене түсті", "қатысушылар саны нөлге түсті"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_18_3", "text": "Мәтін: «Шағын кәсіп»\nЕкі дос үйде жасалған дәптерлер сатты. Алғашқыда бағасы шығынды өтемеді. Олар материал құнын есептеп, бағаны қайта белгіледі. Сатылым саны сәл азайса да, әр дәптерден түсетін пайда артты.\n\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["баға өзгергеннен кейін", "мәтінде айтылмаған алыс болашақта", "әрқашан бір мезгілде", "жоба басталмай тұрып"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "read_18_4", "text": "Мәтін: «Шағын кәсіп»\nЕкі дос үйде жасалған дәптерлер сатты. Алғашқыда бағасы шығынды өтемеді. Олар материал құнын есептеп, бағаны қайта белгіледі. Сатылым саны сәл азайса да, әр дәптерден түсетін пайда артты.\n\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["деректерді тексерудің қажеті жоқ", "шығын мен пайданы есептеуге", "ештеңені өзгертпеу қажет", "ортақ жұмыс әрқашан зиян"], "correct": 1, "points": 2, "difficulty": "қиын"}, {"id": "read_18_5", "text": "Мәтін: «Шағын кәсіп»\nЕкі дос үйде жасалған дәптерлер сатты. Алғашқыда бағасы шығынды өтемеді. Олар материал құнын есептеп, бағаны қайта белгіледі. Сатылым саны сәл азайса да, әр дәптерден түсетін пайда артты.\n\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Мәселені елемеу ең тиімді жол.", "Шешім қабылдау үшін дерек қажет емес."], "correct": 1, "points": 2, "difficulty": "қиын"}]}, {"id": "ubt_read_19", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 19 — Кітап алмасу", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_19_1", "text": "Мәтін: «Кітап алмасу»\nСынып оқушылары өздері оқыған кітаптарын алмасатын бұрыш ашты. Кей кітаптар уақытында қайтарылмады. Оқушылар қарапайым тіркеу журналын енгізді. Осыдан кейін кітап жоғалту азайды.\n\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["ешқандай өзгеріс болмағандықтан", "кездейсоқ мереке болғандықтан", "барлығы алдын ала шешілгендіктен", "кітаптардың қозғалысы тіркелмегендіктен"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_19_2", "text": "Мәтін: «Кітап алмасу»\nСынып оқушылары өздері оқыған кітаптарын алмасатын бұрыш ашты. Кей кітаптар уақытында қайтарылмады. Оқушылар қарапайым тіркеу журналын енгізді. Осыдан кейін кітап жоғалту азайды.\n\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["барлық жұмыс тоқтады", "мәселе күрделене түсті", "қатысушылар саны нөлге түсті", "кітап жоғалту азайды"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_19_3", "text": "Мәтін: «Кітап алмасу»\nСынып оқушылары өздері оқыған кітаптарын алмасатын бұрыш ашты. Кей кітаптар уақытында қайтарылмады. Оқушылар қарапайым тіркеу журналын енгізді. Осыдан кейін кітап жоғалту азайды.\n\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["жоба басталмай тұрып", "журнал енгізілгеннен кейін", "әрқашан бір мезгілде", "мәтінде айтылмаған алыс болашақта"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "read_19_4", "text": "Мәтін: «Кітап алмасу»\nСынып оқушылары өздері оқыған кітаптарын алмасатын бұрыш ашты. Кей кітаптар уақытында қайтарылмады. Оқушылар қарапайым тіркеу журналын енгізді. Осыдан кейін кітап жоғалту азайды.\n\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ортақ жұмыс әрқашан зиян", "ортақ мүлікке жауапкершілікпен қарауға", "ештеңені өзгертпеу қажет", "деректерді тексерудің қажеті жоқ"], "correct": 1, "points": 2, "difficulty": "қиын"}, {"id": "read_19_5", "text": "Мәтін: «Кітап алмасу»\nСынып оқушылары өздері оқыған кітаптарын алмасатын бұрыш ашты. Кей кітаптар уақытында қайтарылмады. Оқушылар қарапайым тіркеу журналын енгізді. Осыдан кейін кітап жоғалту азайды.\n\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Мәселені елемеу ең тиімді жол.", "Шешім қабылдау үшін дерек қажет емес.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады."], "correct": 3, "points": 2, "difficulty": "қиын"}]}, {"id": "ubt_read_20", "subject": "reading", "subjectName": "Оқу сауаттылығы", "topic": "Оқу сауаттылығы 20 — Қауіпсіз интернет", "desc": "Мәтін бойынша 5 сұрақ", "questions": [{"id": "read_20_1", "text": "Мәтін: «Қауіпсіз интернет»\nОқушылар белгісіз сілтемелерді ашудың қауіпті екенін талқылады. Мұғалім оларға күмәнді хабарламаларды тексеруді үйретті. Кейін оқушылар фишинг белгілерін тану тапсырмасын орындады. Көпшілігі жалған хабарламаларды дұрыс ажыратты.\n\nМәтіндегі негізгі мәселенің себебі қандай?", "options": ["кездейсоқ мереке болғандықтан", "ешқандай өзгеріс болмағандықтан", "барлығы алдын ала шешілгендіктен", "күмәнді сілтемелер қауіп төндіретіндіктен"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_20_2", "text": "Мәтін: «Қауіпсіз интернет»\nОқушылар белгісіз сілтемелерді ашудың қауіпті екенін талқылады. Мұғалім оларға күмәнді хабарламаларды тексеруді үйретті. Кейін оқушылар фишинг белгілерін тану тапсырмасын орындады. Көпшілігі жалған хабарламаларды дұрыс ажыратты.\n\nМәтінде сипатталған шараның нәтижесі қандай?", "options": ["қатысушылар саны нөлге түсті", "мәселе күрделене түсті", "барлық жұмыс тоқтады", "жалған хабарламаларды ажырату жақсарды"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_20_3", "text": "Мәтін: «Қауіпсіз интернет»\nОқушылар белгісіз сілтемелерді ашудың қауіпті екенін талқылады. Мұғалім оларға күмәнді хабарламаларды тексеруді үйретті. Кейін оқушылар фишинг белгілерін тану тапсырмасын орындады. Көпшілігі жалған хабарламаларды дұрыс ажыратты.\n\nӨзгеріс қашан байқалды немесе қандай кезеңде болды?", "options": ["мәтінде айтылмаған алыс болашақта", "әрқашан бір мезгілде", "жоба басталмай тұрып", "түсіндіру сабағынан кейін"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "read_20_4", "text": "Мәтін: «Қауіпсіз интернет»\nОқушылар белгісіз сілтемелерді ашудың қауіпті екенін талқылады. Мұғалім оларға күмәнді хабарламаларды тексеруді үйретті. Кейін оқушылар фишинг белгілерін тану тапсырмасын орындады. Көпшілігі жалған хабарламаларды дұрыс ажыратты.\n\nАвтордың негізгі ойына қай тұжырым жақын?", "options": ["ештеңені өзгертпеу қажет", "деректерді тексерудің қажеті жоқ", "ортақ жұмыс әрқашан зиян", "цифрлық қауіпсіздікті арттыруға"], "correct": 3, "points": 2, "difficulty": "қиын"}, {"id": "read_20_5", "text": "Мәтін: «Қауіпсіз интернет»\nОқушылар белгісіз сілтемелерді ашудың қауіпті екенін талқылады. Мұғалім оларға күмәнді хабарламаларды тексеруді үйретті. Кейін оқушылар фишинг белгілерін тану тапсырмасын орындады. Көпшілігі жалған хабарламаларды дұрыс ажыратты.\n\nМәтін мазмұнына сай қандай қорытынды жасауға болады?", "options": ["Кез келген өзгеріс міндетті түрде сәтсіз болады.", "Шешім қабылдау үшін дерек қажет емес.", "Мәселені байқап, нақты әрекет ету нәтижені жақсарта алады.", "Мәселені елемеу ең тиімді жол."], "correct": 2, "points": 2, "difficulty": "қиын"}]}], "math": [{"id": "mathlit_001", "text": "Дүкенде 13 қорап бар, әр қорапта 4 дәптерден. Барлық дәптердің төрттен бірі сатылса, қанша дәптер қалады?", "options": ["42", "45", "36", "39"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_002", "text": "Автобус бірінші күні 44 км, екінші күні одан 12 км артық жүрді. Екінші күні қанша км жүрді?", "options": ["59", "62", "56", "53"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_003", "text": "Тік төртбұрыштың ұзындығы 11 м, ені 5 м. Ауданы қанша м²?", "options": ["55", "58", "61", "52"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_004", "text": "9 оқушының әрқайсысы 3 есептен шығарды. Барлығы неше есеп шығарылды?", "options": ["30", "33", "27", "24"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_005", "text": "Дүкенде 17 қорап бар, әр қорапта 8 дәптерден. Барлық дәптердің төрттен бірі сатылса, қанша дәптер қалады?", "options": ["102", "108", "105", "99"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_006", "text": "Автобус бірінші күні 52 км, екінші күні одан 16 км артық жүрді. Екінші күні қанша км жүрді?", "options": ["71", "65", "68", "74"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_007", "text": "Тік төртбұрыштың ұзындығы 15 м, ені 4 м. Ауданы қанша м²?", "options": ["63", "57", "66", "60"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_008", "text": "13 оқушының әрқайсысы 3 есептен шығарды. Барлығы неше есеп шығарылды?", "options": ["45", "39", "42", "36"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_009", "text": "Дүкенде 20 қорап бар, әр қорапта 6 дәптерден. Барлық дәптердің төрттен бірі сатылса, қанша дәптер қалады?", "options": ["96", "87", "90", "93"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_010", "text": "Автобус бірінші күні 60 км, екінші күні одан 20 км артық жүрді. Екінші күні қанша км жүрді?", "options": ["77", "80", "86", "83"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_011", "text": "Тік төртбұрыштың ұзындығы 19 м, ені 3 м. Ауданы қанша м²?", "options": ["54", "57", "60", "63"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_012", "text": "17 оқушының әрқайсысы 3 есептен шығарды. Барлығы неше есеп шығарылды?", "options": ["54", "48", "51", "57"], "correct": 2, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_013", "text": "Дүкенде 25 қорап бар, әр қорапта 4 дәптерден. Барлық дәптердің төрттен бірі сатылса, қанша дәптер қалады?", "options": ["81", "75", "78", "72"], "correct": 1, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_014", "text": "Автобус бірінші күні 68 км, екінші күні одан 24 км артық жүрді. Екінші күні қанша км жүрді?", "options": ["98", "95", "89", "92"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_015", "text": "Тік төртбұрыштың ұзындығы 23 м, ені 2 м. Ауданы қанша м²?", "options": ["43", "52", "49", "46"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_016", "text": "21 оқушының әрқайсысы 3 есептен шығарды. Барлығы неше есеп шығарылды?", "options": ["63", "66", "60", "69"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_017", "text": "Дүкенде 29 қорап бар, әр қорапта 8 дәптерден. Барлық дәптердің төрттен бірі сатылса, қанша дәптер қалады?", "options": ["174", "177", "180", "171"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_018", "text": "Автобус бірінші күні 76 км, екінші күні одан 28 км артық жүрді. Екінші күні қанша км жүрді?", "options": ["104", "107", "110", "101"], "correct": 0, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_019", "text": "Тік төртбұрыштың ұзындығы 27 м, ені 6 м. Ауданы қанша м²?", "options": ["168", "159", "165", "162"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_020", "text": "25 оқушының әрқайсысы 3 есептен шығарды. Барлығы неше есеп шығарылды?", "options": ["81", "78", "72", "75"], "correct": 3, "points": 1, "difficulty": "орташа"}, {"id": "mathlit_021", "text": "Дүкенде 32 қорап бар, әр қорапта 6 дәптерден. Барлық дәптердің төрттен бірі сатылса, қанша дәптер қалады?", "options": ["141", "144", "150", "147"], "correct": 1, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_022", "text": "Автобус бірінші күні 84 км, екінші күні одан 32 км артық жүрді. Екінші күні қанша км жүрді?", "options": ["116", "122", "113", "119"], "correct": 0, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_023", "text": "Тік төртбұрыштың ұзындығы 31 м, ені 5 м. Ауданы қанша м²?", "options": ["155", "158", "161", "152"], "correct": 0, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_024", "text": "29 оқушының әрқайсысы 3 есептен шығарды. Барлығы неше есеп шығарылды?", "options": ["84", "93", "90", "87"], "correct": 3, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_025", "text": "Дүкенде 37 қорап бар, әр қорапта 4 дәптерден. Барлық дәптердің төрттен бірі сатылса, қанша дәптер қалады?", "options": ["108", "117", "111", "114"], "correct": 2, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_026", "text": "Автобус бірінші күні 92 км, екінші күні одан 36 км артық жүрді. Екінші күні қанша км жүрді?", "options": ["125", "134", "131", "128"], "correct": 3, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_027", "text": "Тік төртбұрыштың ұзындығы 35 м, ені 4 м. Ауданы қанша м²?", "options": ["143", "146", "137", "140"], "correct": 3, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_028", "text": "33 оқушының әрқайсысы 3 есептен шығарды. Барлығы неше есеп шығарылды?", "options": ["99", "102", "105", "96"], "correct": 0, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_029", "text": "Дүкенде 41 қорап бар, әр қорапта 8 дәптерден. Барлық дәптердің төрттен бірі сатылса, қанша дәптер қалады?", "options": ["249", "246", "243", "252"], "correct": 1, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_030", "text": "Автобус бірінші күні 100 км, екінші күні одан 40 км артық жүрді. Екінші күні қанша км жүрді?", "options": ["146", "137", "143", "140"], "correct": 3, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_031", "text": "Тік төртбұрыштың ұзындығы 39 м, ені 3 м. Ауданы қанша м²?", "options": ["123", "120", "114", "117"], "correct": 3, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_032", "text": "37 оқушының әрқайсысы 3 есептен шығарды. Барлығы неше есеп шығарылды?", "options": ["111", "114", "117", "108"], "correct": 0, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_033", "text": "Дүкенде 44 қорап бар, әр қорапта 6 дәптерден. Барлық дәптердің төрттен бірі сатылса, қанша дәптер қалады?", "options": ["198", "195", "204", "201"], "correct": 0, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_034", "text": "Автобус бірінші күні 108 км, екінші күні одан 44 км артық жүрді. Екінші күні қанша км жүрді?", "options": ["155", "149", "158", "152"], "correct": 3, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_035", "text": "Тік төртбұрыштың ұзындығы 43 м, ені 2 м. Ауданы қанша м²?", "options": ["92", "89", "86", "83"], "correct": 2, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_036", "text": "41 оқушының әрқайсысы 3 есептен шығарды. Барлығы неше есеп шығарылды?", "options": ["126", "123", "129", "120"], "correct": 1, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_037", "text": "Дүкенде 49 қорап бар, әр қорапта 4 дәптерден. Барлық дәптердің төрттен бірі сатылса, қанша дәптер қалады?", "options": ["144", "153", "150", "147"], "correct": 3, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_038", "text": "Автобус бірінші күні 116 км, екінші күні одан 48 км артық жүрді. Екінші күні қанша км жүрді?", "options": ["170", "167", "161", "164"], "correct": 3, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_039", "text": "Тік төртбұрыштың ұзындығы 47 м, ені 6 м. Ауданы қанша м²?", "options": ["279", "288", "282", "285"], "correct": 2, "points": 1, "difficulty": "қиын"}, {"id": "mathlit_040", "text": "45 оқушының әрқайсысы 3 есептен шығарды. Барлығы неше есеп шығарылды?", "options": ["138", "132", "135", "141"], "correct": 2, "points": 1, "difficulty": "қиын"}]};
 
-function showMyTests(){
-  showUbt140();return;
-  const list=document.getElementById('my-list');const tests=myTests();
+let schoolOwnedTestsShown=50;
+function showMyTests(more=false){
+  if(!user)return;if(more)schoolOwnedTestsShown+=50;else schoolOwnedTestsShown=50;
+  const list=document.getElementById('my-list'),all=myTests().filter(t=>t.authorId===user.id),tests=all.slice(0,schoolOwnedTestsShown);
   if(!tests.length){list.innerHTML='<div class="empty"><div class="ic">📭</div><p>Сізде әзірге тест жоқ.</p></div>'}
   else {
     const groups={};tests.forEach(t=>{const k=t.subjectName||subjName(t.subject)||'Басқа';(groups[k]||(groups[k]=[])).push(t)});
@@ -5201,8 +5205,9 @@ function showMyTests(){
       `<details class="ubt-subject-folder" ${i===0?'open':''} style="border:1px solid var(--bd,#334155);border-radius:16px;margin:12px 0;padding:12px;background:var(--card,#171e32)">
        <summary style="cursor:pointer;font-weight:800;padding:8px">📁 ${esc(name)} <span style="opacity:.7;font-size:13px">(${items.length} тест)</span></summary>
        <div style="padding-top:10px">${items.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic)}</h4><p>${t.questions.length} сұрақ · ${t.isPublic?'🌐 Жария':'🔒 Жеке'}</p></div>
-       <div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest(${jsq(t.id)})">Бастау</button><button class="btn btn-s btn-sm" onclick="previewTest(${jsq(t.id)})">👁</button><button class="btn btn-s btn-sm" onclick="editTest(${jsq(t.id)})">+ Сұрақ қосу</button><button class="btn btn-s btn-sm" onclick="exportTest(${jsq(t.id)})">⬇ TXT</button><button class="btn btn-s btn-sm" onclick="exportJsonTest(${jsq(t.id)})">⬇ JSON</button><button class="btn btn-d btn-sm" onclick="delTest(${jsq(t.id)})">✕</button></div></div>`).join('')}</div></details>`).join('');
+       <div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest(${jsq(t.id)})">Бастау</button>${isTeacherUser()?`<button class="btn btn-ok btn-sm" onclick="schoolClassSendDialog('',${jsq(t.id)})">Сыныпқа жіберу</button>`:''}<button class="btn btn-s btn-sm" onclick="previewTest(${jsq(t.id)})">👁</button><button class="btn btn-s btn-sm" onclick="editTest(${jsq(t.id)})">+ Сұрақ қосу</button><button class="btn btn-s btn-sm" onclick="exportTest(${jsq(t.id)})">⬇ TXT</button><button class="btn btn-s btn-sm" onclick="exportJsonTest(${jsq(t.id)})">⬇ JSON</button><button class="btn btn-d btn-sm" onclick="delTest(${jsq(t.id)})">✕</button></div></div>`).join('')}</div></details>`).join('');
   }
+  if(all.length>schoolOwnedTestsShown)list.insertAdjacentHTML('beforeend','<button class="btn btn-s" onclick="showMyTests(true)">Тағы 50 тест</button>');
   showScr('s-mytests');
 }
 function requestPub(id){
@@ -6794,8 +6799,7 @@ function finishTest(force){
   if(st.secureExam){submitSecureResult();return;}
   stopTimer();lockEnd();
   let score=0,max=(st.isSubjectPractice||st.is140)?st.questions.reduce((sum,q)=>sum+practicePoints(q),0):st.questions.length,wrong=[];
-  const heldRes=!!(st.verifiedExam&&st.verifiedExam.held);
-  if(!heldRes)st.questions.forEach(q=>{if(st.answers[q.id]===q.correct)score+=(st.isSubjectPractice||st.is140)?practicePoints(q):1;else wrong.push({...q,userAnswer:st.answers[q.id]})});
+  st.questions.forEach(q=>{if(st.answers[q.id]===q.correct)score+=(st.isSubjectPractice||st.is140)?practicePoints(q):1;else wrong.push({...q,userAnswer:st.answers[q.id]})});
   if(st.verifiedExam){score=st.verifiedExam.score;max=st.verifiedExam.max}
   if(!st.verifiedExam){
     if(!st.isMistakes&&wrong.length){let m=LS.get('ubt_mistakes_'+user.id,[]);const ids=new Set(m.map(x=>x.id));wrong.forEach(q=>{if(!ids.has(q.id))m.push(q)});LS.set('ubt_mistakes_'+user.id,m)}
@@ -6807,15 +6811,14 @@ function finishTest(force){
   const pct=max?score/max:0;
   if(pct>=1) gained+=50; else if(pct>=0.8) gained+=25; else if(pct>=0.5) gained+=10;
   gained=st.verifiedExam?st.verifiedExam.gained:0;
-  if(user&&st.questions.length&&!heldRes){
+  if(user&&st.questions.length){
     try{sessionStorage.setItem('ubt_last_review_'+user.id,JSON.stringify({questions:st.questions,answers:st.answers,topic:st.subjectName}))}catch(e){}
   }
   st.lastWrong=wrong;st.lastScore={score,max,gained};
   document.getElementById('sc').textContent=score;document.getElementById('sm').textContent=max;
   document.getElementById('res-break').innerHTML=`<div class="res-row"><span>${esc(st.subjectName||'Тест')}</span><span style="font-weight:700;color:var(--p)">${score} / ${max}</span></div>
     ${st.verifiedExam&&!st.verifiedExam.owner?`<div class="res-row"><span>Сервер растаған ұпай</span><span style="font-weight:700;color:var(--ok)">+${gained} ⭐</span></div>`:''}
-    ${lock.viol?`<div class="res-row"><span>Ереже бұзу ескертулері</span><span style="font-weight:700;color:var(--err)">${lock.viol} / ${MAX_VIOL}</span></div>`:''}
-    ${heldRes?'<div class="res-row"><span>🔒 Қателер мен дұрыс жауаптар</span><span style="font-weight:700;color:var(--warn)">Сынып бойынша барлығы тапсырған соң, админ рұқсат бергенде ашылады</span></div>':''}`;
+    ${lock.viol?`<div class="res-row"><span>Ереже бұзу ескертулері</span><span style="font-weight:700;color:var(--err)">${lock.viol} / ${MAX_VIOL}</span></div>`:''}`;
   const certArea=document.getElementById('ubt-cert-area');
   const eligible=!!st.verifiedExam&&max>0&&score/max>=.8&&!st.isMistakes&&lock.viol===0;
   st.certificate=eligible?{name:user.name,topic:st.subjectName||'ҰБТ тесті',score,max,date:new Date().toLocaleDateString('kk-KZ')}:null;
@@ -6841,10 +6844,7 @@ async function explainReviewQuestion(i,button){
   catch(e){box.textContent="Байланыс үзілді. Қайта басыңыз."}finally{button.disabled=false}
 }
 function reviewAns(){
-  const L=['A','B','C','D','E'];
-  const latestH=user?LS.get('ubt_hist_'+user.id,[])[0]:null;
-  const heldNow=!!(latestH&&latestH.held)||!!(st.verifiedExam&&st.verifiedExam.held&&(!latestH||!latestH.classTestId));
-  if(heldNow){document.getElementById('rev-list').innerHTML='<div class="card">🔒 Қателер мен дұрыс жауаптар әзірге жабық. Сынып бойынша барлығы тапсырып болған соң, админ рұқсат береді — сонда осы жерден көре аласыз.</div>';showScr('s-rev');return}
+  const L=['A','B','C','D'];
   let review=null;
   if(st.lastScore&&st.questions.length&&!st.secureExam)review={questions:st.questions,answers:st.answers};
   if(!review&&user){try{review=JSON.parse(sessionStorage.getItem('ubt_last_review_'+user.id)||'null')}catch(e){}}
@@ -6869,28 +6869,7 @@ function renderHistoryPage(){
   document.getElementById('hist-list').innerHTML=hist.length?hist.slice(0,ubtHistoryShown).map(h=>`<div class="item"><div class="info"><h4>${esc(h.topic||'Тест')}</h4><p>${esc(h.date||'')}</p></div><div style="font-weight:700;color:var(--p)">${esc(h.score)}/${esc(h.max)}</div></div>`).join('')+(hist.length>ubtHistoryShown?`<button class="btn btn-s" onclick="ubtHistoryShown+=50;renderHistoryPage()">Тағы 50 нәтиже (${hist.length-ubtHistoryShown} қалды)</button>`:''):'<div class="empty"><div class="ic">📭</div><p>Тарих бос</p></div>';
 }
 
-function studentHistRowHTML(h){
-  const L=['A','B','C','D','E','F'];
-  const qs=Array.isArray(h.questions)?h.questions:[],ans=(h.answers&&typeof h.answers==='object')?h.answers:null;
-  const head=`<summary style="cursor:pointer"><b>${esc(h.topic||'Тест')}</b> · ${esc(h.date||'')} · <b style="color:var(--p)">${esc(h.score)} / ${esc(h.max)}</b></summary>`;
-  if(h.held)return `<details class="card" style="margin-bottom:8px">${head}<p class="sub" style="margin-top:8px">🔒 Қателер мен дұрыс жауаптар әзірге жабық. Админ рұқсат бергенде ашылады.</p></details>`;
-  if(!qs.length||!ans)return '';
-  const body=qs.map((q,i)=>{
-    if(!q||!Array.isArray(q.options))return '';
-    const ua=ans[q.id],skip=ua===undefined||ua===null,ok=!skip&&ua===q.correct;
-    const mine=skip?'⏭ Жауап берілмеген':(ok?'✓ ':'✗ ')+'Сіз белгіледіңіз: '+(L[ua]||(ua+1))+') '+esc(q.options[ua]||'');
-    const right=Number.isInteger(q.correct)&&q.correct>=0&&q.correct<q.options.length?`<div style="color:var(--ok)">✓ Дұрыс жауап: ${L[q.correct]||(q.correct+1)}) ${esc(q.options[q.correct]||'')}</div>`:'';
-    return `<div class="ea-q"><b>${i+1}. ${esc(String(q.text||'').replace(/\s+/g,' ').slice(0,220))}</b><div style="color:${ok?'var(--ok)':'var(--err)'}">${mine}</div>${ok?'':right}</div>`;
-  }).join('');
-  return `<details class="card" style="margin-bottom:8px">${head}<div style="margin-top:8px">${body}</div></details>`;
-}
-function renderTakenTests(){
-  const box=document.getElementById('mist-tests');if(!box||!user)return;
-  const rows=LS.get('ubt_hist_'+user.id,[]).filter(h=>h&&(h.held||(Array.isArray(h.questions)&&h.questions.length&&h.answers))).slice(0,30);
-  box.innerHTML=rows.length?`<h3 style="margin:10px 0">📋 Тапсырған тесттер</h3>${rows.map(studentHistRowHTML).join('')}`:'';
-}
 function showMistakes(){
-  renderTakenTests();
   const m=LS.get('ubt_mistakes_'+user.id,[]);const btn=document.getElementById('mist-start');
   if(!m.length){document.getElementById('mist-list').innerHTML='<div class="empty"><div class="ic">🎉</div><p>Қате жоқ!</p></div>';btn.style.display='none'}
   else{document.getElementById('mist-list').innerHTML=m.map(q=>`<div class="item"><div class="info"><h4>${esc(q.text.substring(0,70)+(q.text.length>70?'...':''))}</h4><p>${esc(q.subjectName||'')}</p></div></div>`).join('');btn.style.display='inline-flex'}
@@ -6898,7 +6877,7 @@ function showMistakes(){
 }
 function clearMist(){if(confirm('Тазалау?')){LS.set('ubt_mistakes_'+user.id,[]);showMistakes()}}
 function startMistakes(){const m=LS.get('ubt_mistakes_'+user.id,[]);if(!m.length)return;st=baseState();st.questions=m.map(q=>({...q}));st.subjectName='Қателер';st.isMistakes=true;st.timerSeconds=Math.max(m.length*90,600);beginTest()}
-function startMistakesFromLast(){if(st.verifiedExam&&st.verifiedExam.held){alert('Қателер әзірге жабық. Сынып бойынша барлығы тапсырып болған соң, админ рұқсат береді.');return}if(!st.lastWrong||!st.lastWrong.length){alert('Қате жоқ!');return}st.questions=st.lastWrong.map(q=>({...q}));st.currentIndex=0;st.answers={};st.flags={};st.subjectName='Қателер';st.isMistakes=true;st.timerSeconds=Math.max(st.questions.length*90,600);beginTest()}
+function startMistakesFromLast(){if(!st.lastWrong||!st.lastWrong.length){alert('Қате жоқ!');return}st.questions=st.lastWrong.map(q=>({...q}));st.currentIndex=0;st.answers={};st.flags={};st.subjectName='Қателер';st.isMistakes=true;st.timerSeconds=Math.max(st.questions.length*90,600);beginTest()}
 const MAX_Q=500;
 const SAMPLE_TXT=`Тақырып: Қазақ хандығы
 Пән: Қазақстан тарихы
@@ -6935,9 +6914,9 @@ function letterIdx(ch,ru){
 function shortT(x){x=String(x||'').trim();return x.length>40?x.slice(0,40)+'…':x}
 function checkQ(q){
   if(!q.text||!String(q.text).trim())return 'сұрақ мәтіні жоқ';
-  if(!Array.isArray(q.options)||q.options.length<4||q.options.length>5)return 'нұсқа саны 4 немесе 5 болуы керек (табылды: '+(Array.isArray(q.options)?q.options.length:0)+')';
+  if(!Array.isArray(q.options)||q.options.length!==4)return 'нұсқа саны 4 болуы керек (табылды: '+(Array.isArray(q.options)?q.options.length:0)+')';
   if(q.options.some(o=>!String(o).trim()))return 'бос нұсқа бар';
-  if(!(q.correct>=0&&q.correct<q.options.length))return 'дұрыс жауап көрсетілмеген (мыс: «Жауап: B» немесе *B)';
+  if(!(q.correct>=0&&q.correct<4))return 'дұрыс жауап көрсетілмеген (мыс: «Жауап: B» немесе *B)';
   return null;
 }
 function addParsed(res,q){
@@ -7225,7 +7204,7 @@ async function importFileScreen10000(){
   let duplicate=0,invalid=0;
   for(const q of r.questions){
     if(added.length>=free)break;
-    if(!q||!q.text||!Array.isArray(q.options)||q.options.length<4||q.options.length>5||!Number.isInteger(q.correct)||q.correct<0||q.correct>=q.options.length){invalid++;continue}
+    if(!q||!q.text||!Array.isArray(q.options)||q.options.length!==4||!Number.isInteger(q.correct)||q.correct<0||q.correct>3){invalid++;continue}
     const identity=ubtBankIdentity(subject,q.text);
     if(known.has(identity)){duplicate++;continue}
     known.add(identity);
@@ -8614,16 +8593,15 @@ function studentStats(id){
   return{n,avg,last:n?pg[n-1]:null,mist:LS.get('ubt_mistakes_'+id,[]).length,points:getUserStats(id).points||0};
 }
 function showTeacher(){tchOpen=null;document.getElementById('tch-detail').innerHTML='';document.getElementById('teacher-send-actions').style.display=isTeacherUser()?'flex':'none';renderTeacher();showScr('s-teacher');if(isTeacherUser())window.__bridge.refresh().then(()=>{if(document.getElementById('s-teacher').classList.contains('active'))renderTeacher()}).catch(()=>{})}
-function showClassSend(selectedId,classId){
+function showClassSend(selectedId){
   if(!isTeacherUser())return;
-  const classes=getClasses().filter(c=>user.isAdmin||c.teacherId===user.id);
-  const tests=allTests().filter(t=>(user.isAdmin||t.authorId===user.id)&&!t.assignmentId&&Array.isArray(t.questions)&&t.questions.length);
-  if(!classes.length){alert(user.isAdmin?'Алдымен сынып құрыңыз':'Сізге әлі сынып бекітілмеген. Сыныпты админ ашады');return}
+  const classes=getClasses().filter(c=>c.teacherId===user.id);
+  const tests=allTests().filter(t=>t.authorId===user.id&&!t.assignmentId&&Array.isArray(t.questions)&&t.questions.length);
+  if(!classes.length){alert('Алдымен өз сыныбыңызды ашыңыз');return}
   if(!tests.length){alert('Алдымен өз тестіңізді жасаңыз немесе JSON файлдан сақтаңыз');return}
   document.getElementById('class-send-choice').innerHTML=classes.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
-  document.getElementById('class-send-test').innerHTML=tests.map(t=>`<option value="${esc(t.id)}">${esc(t.topic||'Тест')} (${t.questions.length} сұрақ)${user.isAdmin&&t.authorName&&t.authorId!==user.id?' · '+esc(t.authorName):''}</option>`).join('');
+  document.getElementById('class-send-test').innerHTML=tests.map(t=>`<option value="${esc(t.id)}">${esc(t.topic||'Тест')} (${t.questions.length} сұрақ)</option>`).join('');
   if(typeof selectedId==='string'&&tests.some(t=>t.id===selectedId))document.getElementById('class-send-test').value=selectedId;
-  if(typeof classId==='string'&&classes.some(c=>c.id===classId))document.getElementById('class-send-choice').value=classId;
   updateClassSendCount();showScr('s-class-send');
 }
 function updateClassSendCount(){
@@ -8636,12 +8614,12 @@ function sendTestToClass(){return guarded(async()=>{
   const classId=document.getElementById('class-send-choice').value;
   const testId=document.getElementById('class-send-test').value;
   const limit=Number(document.getElementById('class-send-limit').value);
-  const c=getClasses().find(x=>x.id===classId&&(user.isAdmin||x.teacherId===user.id));
-  const t=allTests().find(x=>x.id===testId&&(user.isAdmin||x.authorId===user.id)&&!x.assignmentId);
+  const c=getClasses().find(x=>x.id===classId&&x.teacherId===user.id);
+  const t=allTests().find(x=>x.id===testId&&x.authorId===user.id&&!x.assignmentId);
   if(!c||!t||!Number.isInteger(limit)||limit<1||limit>100){alert('Сыныпты, өз тестіңізді және 1–100 аралығындағы лимитті таңдаңыз');return}
   const n=[...new Set(c.students||[])].filter(id=>id!==user.id).length;
   if(!n){alert('Сыныпта тіркелген адам жоқ');return}
-  if(!confirm('«'+t.topic+'» тестін «'+c.name+'» сыныбындағы барлық '+n+' адамға жіберуді растайсыз ба? Әр адамға '+limit+' рет тапсыруға рұқсат беріледі. Дәл осы тест бұрын жіберілген болса, ескісі өшіріліп, жаңасы қалады.'))return;
+  if(!confirm('«'+t.topic+'» тестін «'+c.name+'» сыныбындағы барлық '+n+' адамға жіберуді растайсыз ба? Әр адамға '+limit+' рет тапсыруға рұқсат беріледі.'))return;
   const r=await authCall('teacher_assign_class',{classId,testId,limit});
   if(!r.ok){alert(r.msg||'Тест жіберілмеді');return}
   await window.__bridge.refresh();alert('✅ Тест сыныптағы '+r.count+' адамға жіберілді');showTeacher();
@@ -8652,8 +8630,7 @@ function createClass(){
   if(!n){alert('Сынып атауын жазыңыз');return}
   const a=getClasses();let code;
   do{code=genClassCode()}while(a.some(c=>c.code===code));
-  const tsel=document.getElementById('tch-teacher'),tp=tsel&&tsel.value?profileById(tsel.value):null;
-  a.push({id:'c_'+Date.now().toString(36),name:n,teacherId:tp?tp.id:user.id,teacherName:tp?tp.name:user.name,code,students:[]});
+  a.push({id:'c_'+Date.now().toString(36),name:n,teacherId:user.id,teacherName:user.name,code,students:[]});
   saveClasses(a);document.getElementById('tch-name').value='';renderTeacher();
 }
 function delClass(id){
@@ -8693,23 +8670,22 @@ function classCardHTML(c){
   const rows=c.students.map(id=>{
     const p=profileById(id),scores=assigned.filter(a=>a.uid===id).flatMap(a=>a.results||[]);
     const latest=scores.length?scores[scores.length-1]:null;
-    return `<tr><td><b>${p&&p.role==='teacher'?'👨‍🏫 ':'👨‍🎓 '}${esc(p?p.name:'?')}</b></td><td>${latest?latest.score+' / '+latest.max:'—'}</td><td style="white-space:nowrap"><button class="btn btn-s btn-sm" onclick="showStudent(${jsq(c.id)},${jsq(id)})">Балдарын қарау</button> <button class="btn btn-d btn-sm" onclick="removeStudent(${jsq(c.id)},${jsq(id)})">✕</button></td></tr>`;
+    return `<tr><td><b>${esc(p?p.name:'?')}</b></td><td>${latest?latest.score+' / '+latest.max:'—'}</td><td style="white-space:nowrap"><button class="btn btn-s btn-sm" onclick="showStudent(${jsq(c.id)},${jsq(id)})">Балдарын қарау</button> <button class="btn btn-d btn-sm" onclick="removeStudent(${jsq(c.id)},${jsq(id)})">✕</button></td></tr>`;
   }).join('');
   return `<div class="card">
     <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
       <h3>${esc(c.name)} <span class="badge badge-pub">Код: ${esc(c.code)}</span> <span class="sub">· ${esc(c.teacherName||'')}</span></h3>
-      <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-s btn-sm" onclick="openTchChat(${jsq(threadOfClass(c))})">💬 Админмен чат</button><button class="btn btn-ok btn-sm" onclick="showClassSend(null,${jsq(c.id)})">📨 Тест жіберу</button>${user&&user.isAdmin?`<button class="btn btn-d btn-sm" onclick="delClass(${jsq(c.id)})">Сыныпты өшіру</button>`:''}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-s btn-sm" onclick="openTchChat(${jsq(threadOfClass(c))})">💬 Админмен чат</button><button class="btn btn-d btn-sm" onclick="delClass(${jsq(c.id)})">Сыныпты өшіру</button></div>
     </div>
     <div class="sub" style="margin-bottom:10px">Сыныптағы адамдар: <b>${c.students.length}</b> · тек сіз жіберген тесттердің балдары көрсетіледі</div>
     ${c.students.length?`<div class="tscroll"><table class="ttable"><tr><th>Адам</th><th>Соңғы балл</th><th></th></tr>${rows}</table></div>`:'<div class="sub">Оқушы жоқ. Төмендегі өріс арқылы логин бойынша қосыңыз немесе кодты оқушыларға беріңіз.</div>'}
     <div style="display:flex;gap:8px;margin-top:12px"><input id="tch-add-${c.id}" placeholder="Оқушы логині" style="flex:1;padding:9px 12px;border:1px solid var(--b);border-radius:20px;background:var(--bg);color:var(--t);font-family:inherit"><button class="btn btn-ok btn-sm" onclick="addStudent(${jsq(c.id)})">➕ Қосу</button></div>
     <div style="display:flex;gap:8px;margin-top:8px"><input id="tch-ncode-${c.id}" placeholder="Жаңа код (бос = кездейсоқ)" maxlength="8" style="flex:1;padding:9px 12px;border:1px solid var(--b);border-radius:20px;background:var(--bg);color:var(--t);font-family:inherit;text-transform:uppercase"><button class="btn btn-w btn-sm" onclick="changeClassCode(${jsq(c.id)})">🔄 Кодты өзгерту</button></div>
-    ${user&&user.isAdmin?adminClassToolsHTML(c):''}
   </div>`;
 }
 function renderTeacher(){
   const all=getClasses(),mine=all.filter(c=>c.teacherId===user.id),joined=all.filter(c=>c.students.includes(user.id));
-  document.getElementById('tch-classes').innerHTML=mine.length?mine.map(classCardHTML).join(''):('<div class="empty"><div class="ic">🏫</div><p>'+(user.isAdmin?'Сынып жоқ. Жоғарыда жаңа сынып құрыңыз.':'Сыныпты тек админ ашады. Сізге сынып бекітілгенде осында көрінеді.')+'</p></div>');
+  document.getElementById('tch-classes').innerHTML=mine.length?mine.map(classCardHTML).join(''):'<div class="empty"><div class="ic">🏫</div><p>Сынып жоқ. Жоғарыда жаңа сынып құрыңыз.</p></div>';
   document.getElementById('tch-joined').innerHTML=joined.length?joined.map(c=>`<div class="item" style="margin-bottom:6px"><div class="info"><h4>${esc(c.name)}</h4><p>Мұғалім: ${esc(c.teacherName||'')}</p></div><button class="btn btn-s btn-sm" onclick="leaveClass(${jsq(c.id)})">Шығу</button></div>`).join(''):'';
 }
 function showStudent(cid,sid){
@@ -8722,107 +8698,8 @@ function showStudent(cid,sid){
   </div>`;
   document.getElementById('tch-detail').scrollIntoView({behavior:'smooth',block:'start'});
 }
-function renderHomeAssigned(){
-  const mb=document.getElementById('assigned-menu-btn');if(mb)mb.style.display=(user&&!user.isAdmin)?'':'none';
-  const box=document.getElementById('home-assigned');if(!box)return;
-  if(!user||user.isAdmin){box.innerHTML='';return}
-  const list=LS.get('ubt_assigned_tests',[]).filter(a=>a&&a.uid===user.id);
-  if(!list.length){box.innerHTML='';return}
-  const cls=getClasses();
-  const left=a=>Math.max(0,(a.limit||0)-(a.used||0));
-  const items=list.slice().sort((x,y)=>(left(x)===0)-(left(y)===0)||(y.created||0)-(x.created||0));
-  const open=items.filter(a=>left(a)>0).length;
-  box.innerHTML=`<section class="card asg-card"><div class="asg-head"><h3>📨 Тапсырмалар</h3><span class="badge badge-pub">${open} ашық</span></div><p class="sub" style="margin-bottom:10px">Мұғалім немесе админ жіберген тесттер осында тұрады. Осы жерден тапсырасыз.</p><div class="list">`+
-    items.map(a=>{
-      const l=left(a),done=l===0,c=a.classId?cls.find(x=>x.id===a.classId):null;
-      const last=Array.isArray(a.results)&&a.results.length?a.results[a.results.length-1]:null;
-      return `<div class="item asg-item${done?' asg-done':''}"><div class="info"><h4>${esc(a.title)}</h4><p>${c?'🏫 '+esc(c.name)+' · ':''}Қалған әрекет: ${l}/${a.limit}${last?' · Соңғы нәтиже: '+last.score+' / '+last.max:''}</p></div><button class="btn ${done?'btn-s':'btn-p'} btn-sm" ${done?'disabled':''} onclick="startAssignedTest(${jsq(a.id)})">${done?'✔ Тапсырылды':'▶ Тапсыру'}</button></div>`;
-    }).join('')+`</div></section>`;
-}
-function lastReviewData(){
-  let r=null;
-  if(st&&st.lastScore&&Array.isArray(st.questions)&&st.questions.length&&!st.secureExam)r={questions:st.questions,answers:st.answers};
-  if(!r&&user){try{r=JSON.parse(sessionStorage.getItem('ubt_last_review_'+user.id)||'null')}catch(e){}}
-  if(!r&&user){const h=LS.get('ubt_hist_'+user.id,[])[0];if(h&&Array.isArray(h.questions))r=h}
-  return r&&Array.isArray(r.questions)?{questions:r.questions,answers:(r.answers&&typeof r.answers==='object')?r.answers:{}}:null;
-}
-function eaPct(ok,n){return n?Math.round(ok/n*100):0}
-function eaColor(p){return p>=80?'var(--ok)':p>=50?'var(--warn)':'var(--err)'}
-function errorAnalysisHTML(questions,answers){
-  const LT=['A','B','C','D','E','F'];
-  const qs=questions.filter(q=>q&&Array.isArray(q.options)&&Number.isInteger(q.correct)&&q.correct>=0&&q.correct<q.options.length);
-  if(!qs.length)return '';
-  const groups={},bad=[];let right=0,wrong=0,skipped=0;
-  qs.forEach((q,i)=>{
-    const ua=answers[q.id],skip=ua===undefined||ua===null,ok=!skip&&ua===q.correct;
-    const k=q.subjectName||'Басқа',g=groups[k]||(groups[k]={n:0,ok:0,lost:0});
-    const pts=Number.isFinite(q.points)&&q.points>0?q.points:1;
-    g.n++;
-    if(ok){g.ok++;right++}else{g.lost+=pts;if(skip)skipped++;else wrong++;bad.push({i,q,ua,skip})}
-  });
-  if(!bad.length)return '<h3>📊 Қате талдау</h3><p class="sub">🎉 Барлық жауап дұрыс — талдайтын қате жоқ.</p>';
-  const rows=Object.keys(groups).map(k=>({k,n:groups[k].n,ok:groups[k].ok,lost:groups[k].lost,p:eaPct(groups[k].ok,groups[k].n)})).sort((a,b)=>a.p-b.p||b.lost-a.lost);
-  const weak=rows.find(r=>r.p<100);
-  const list=bad.slice(0,40).map(b=>`<div class="ea-q"><b>${b.i+1}. ${esc(String(b.q.text||'').replace(/\s+/g,' ').slice(0,160))}</b><div>${b.skip?'⏭ Жауап берілмеген':'✗ Сіз: '+(LT[b.ua]||(b.ua+1))+') '+esc(b.q.options[b.ua]||'')}</div><div style="color:var(--ok)">✓ Дұрыс: ${LT[b.q.correct]||(b.q.correct+1)}) ${esc(b.q.options[b.q.correct]||'')}</div>${b.q.explanation?'<div class="sub">💡 '+esc(String(b.q.explanation))+'</div>':''}</div>`).join('');
-  const canRetry=st&&st.lastWrong&&st.lastWrong.length;
-  return `<h3>📊 Қате талдау</h3>
-    <div class="ea-chips"><span class="ea-chip ok">✓ Дұрыс: ${right}</span><span class="ea-chip bad">✗ Қате: ${wrong}</span><span class="ea-chip skip">⏭ Жауапсыз: ${skipped}</span></div>
-    ${rows.map(r=>`<div class="ea-row"><div class="ea-top"><span>${esc(r.k)}</span><b>${r.ok}/${r.n} · ${r.p}%${r.lost?' · −'+r.lost+' балл':''}</b></div><div class="ea-bar"><i style="width:${Math.max(r.p,3)}%;background:${eaColor(r.p)}"></i></div></div>`).join('')}
-    ${weak?`<div class="ea-tip">💡 Ең әлсіз пән: <b>${esc(weak.k)}</b> (${weak.p}%). Алдымен осы пәннің қателерін қайталаңыз.</div>`:''}
-    <details class="ea-more"><summary>Қателер тізімі (${bad.length})</summary>${list}${bad.length>40?'<div class="sub">Алғашқы 40 қате көрсетілді</div>':''}</details>
-    <div class="row" style="justify-content:flex-start;margin-top:12px">${canRetry?'<button class="btn btn-w btn-sm" onclick="startMistakesFromLast()">❌ Қателерді шешу</button>':''}<button class="btn btn-p btn-sm" onclick="reviewAns()">🤖 AI түсіндірмесі</button></div>`;
-}
-function renderErrorAnalysis(){
-  const el=document.getElementById('res-analysis');if(!el)return;
-  let html='';
-  try{const d=lastReviewData();if(d)html=errorAnalysisHTML(d.questions,d.answers)}catch(e){}
-  el.style.display=html?'':'none';el.innerHTML=html;
-}
-function renderMistAnalysis(){
-  const el=document.getElementById('mist-analysis');if(!el||!user)return;
-  const m=LS.get('ubt_mistakes_'+user.id,[]);
-  if(!m.length){el.innerHTML='';return}
-  const by={};m.forEach(q=>{const k=(q&&q.subjectName)||'Басқа';by[k]=(by[k]||0)+1});
-  const rows=Object.keys(by).map(k=>({k,n:by[k]})).sort((a,b)=>b.n-a.n).slice(0,10),mx=rows[0].n;
-  el.innerHTML=`<div class="card"><h3>📊 Қате талдау</h3><p class="sub">Сақталған қателер: <b>${m.length}</b>. Ең көп қате: <b>${esc(rows[0].k)}</b> (${rows[0].n}).</p>${rows.map(r=>`<div class="ea-row"><div class="ea-top"><span>${esc(r.k)}</span><b>${r.n}</b></div><div class="ea-bar"><i style="width:${Math.round(r.n/mx*100)}%;background:var(--err)"></i></div></div>`).join('')}<div class="ea-tip">💡 Алдымен «${esc(rows[0].k)}» пәнінің қателерін шешіңіз, содан кейін қалғандарына өтіңіз.</div></div>`;
-}
-function registeredUsers(){return Object.values(LS.get('ubt_profiles',{})).filter(p=>p&&typeof p==='object'&&p.id&&p.id!=='admin'&&p.accessApproved!==false)}
-function userOptionsHTML(exclude){
-  const ex=new Set(exclude||[]);
-  const us=registeredUsers().filter(p=>!ex.has(p.id)).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'kk'));
-  const stu=us.filter(p=>p.role!=='teacher'),tch=us.filter(p=>p.role==='teacher'&&p.teacherApproved);
-  const o=p=>`<option value="${esc(p.id)}">${esc(p.name||p.id)}</option>`;
-  return '<option value="">Тізімнен таңдаңыз…</option>'+(stu.length?`<optgroup label="👨‍🎓 Оқушылар">${stu.map(o).join('')}</optgroup>`:'')+(tch.length?`<optgroup label="👨‍🏫 Мұғалімдер">${tch.map(o).join('')}</optgroup>`:'');
-}
-function teacherOptionsHTML(sel){
-  const tch=registeredUsers().filter(p=>p.role==='teacher'&&p.teacherApproved).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'kk'));
-  return `<option value="">👑 Админ (мұғалімсіз)</option>`+tch.map(p=>`<option value="${esc(p.id)}" ${p.id===sel?'selected':''}>${esc(p.name||p.id)}</option>`).join('');
-}
-function fillTeacherSelect(){const e=document.getElementById('tch-teacher');if(e&&e.dataset.filled!==String(registeredUsers().length)){const v=e.value;e.innerHTML=teacherOptionsHTML(v);e.dataset.filled=String(registeredUsers().length)}}
-function adminClassToolsHTML(c){
-  const css='style="flex:1;min-width:180px;padding:9px 12px;border:1px solid var(--b);border-radius:20px;background:var(--bg);color:var(--t);font-family:inherit"';
-  return `<div style="border-top:1px solid var(--b);margin-top:12px;padding-top:12px"><div class="sub" style="margin-bottom:6px"><b>👑 Админ құралдары</b> · тіркелгендер тізімінен таңдаңыз</div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap"><select id="tch-pick-${esc(c.id)}" ${css}>${userOptionsHTML([...(c.students||[]),'admin'])}</select><button class="btn btn-ok btn-sm" onclick="addMemberFromList(${jsq(c.id)})">➕ Сыныпқа қосу</button></div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"><select id="tch-setteacher-${esc(c.id)}" ${css}>${teacherOptionsHTML(c.teacherId)}</select><button class="btn btn-s btn-sm" onclick="setClassTeacher(${jsq(c.id)})">👨‍🏫 Мұғалім тағайындау</button></div></div>`;
-}
-function addMemberFromList(cid){
-  if(!user||!user.isAdmin)return;
-  const a=getClasses(),c=a.find(x=>x.id===cid),sel=document.getElementById('tch-pick-'+cid);
-  if(!c||!sel||!sel.value){alert('Тізімнен қолданушыны таңдаңыз');return}
-  if((c.students||[]).includes(sel.value)){alert('Бұл адам сыныпта бар');return}
-  c.students=c.students||[];c.students.push(sel.value);saveClasses(a);refreshClassViews();
-}
-function setClassTeacher(cid){
-  if(!user||!user.isAdmin)return;
-  const a=getClasses(),c=a.find(x=>x.id===cid),sel=document.getElementById('tch-setteacher-'+cid);
-  if(!c||!sel)return;
-  const tp=sel.value?profileById(sel.value):null;
-  c.teacherId=tp?tp.id:user.id;c.teacherName=tp?tp.name:user.name;
-  saveClasses(a);refreshClassViews();
-}
 function renderHomeExtras(){
   const el=document.getElementById('home-extras');if(!el||!user)return;
-  try{renderHomeAssigned()}catch(e){}
   try{checkRollover()}catch(e){}
   if(user.isAdmin){el.innerHTML=quoteCard();return}
   const sk=currentStreak(),s=getStreak(),plan=LS.get('ubt_plan_'+user.id,null);
@@ -8863,7 +8740,7 @@ function profExtra(){
   const _ss=showScr;
   showScr=function(id){
     _ss(id);
-    try{document.body.classList.toggle('in-test',id==='s-test');if(id==='s-home')renderHomeExtras();if(id==='s-res')renderErrorAnalysis();if(id==='s-mist')renderMistAnalysis();mathScreen()}catch(e){}
+    try{document.body.classList.toggle('in-test',id==='s-test');if(id==='s-home')renderHomeExtras();mathScreen()}catch(e){}
   };
   const _rq=renderQ;
   renderQ=function(){_rq();try{updBmBtn();mathIn(document.getElementById('s-test'))}catch(e){}};
@@ -9024,7 +8901,6 @@ function sendThread(tid,who){
 function scrollChat(){const m=document.getElementById('cmsgs');if(m)m.scrollTop=m.scrollHeight}
 let tchThread=null;
 function submitClassRequest(){
-  alert('Сыныпты тек админ ашады');return;
   if(!user||user.isAdmin||!isTeacherUser())return;
   const name=document.getElementById('tch-req-name').value.trim();
   const note=document.getElementById('tch-req-note').value.trim();
@@ -9078,7 +8954,7 @@ function adminApproveClass(rid){
   a.push({id:cid,name:r.name,teacherId:r.teacherId,teacherName:r.teacherName,code,students:[],reqId:r.id});
   saveClasses(a);r.status='approved';r.classId=cid;LS.set('ubt_class_reqs',reqs);
   postThread(r.id,'system','','✅ Өтініш мақұлданды. Сынып ашылды. Сынып коды: '+code);
-  showAdmin();
+  showSchoolClasses();
 }
 function adminRejectClass(rid){
   if(!user||!user.isAdmin)return;
@@ -9086,14 +8962,14 @@ function adminRejectClass(rid){
   const reqs=getReqs(),r=reqs.find(x=>x.id===rid);if(!r||r.status!=='pending')return;
   r.status='rejected';LS.set('ubt_class_reqs',reqs);
   postThread(r.id,'system','','❌ Өтініш қабылданбады. Себебін чатта сұрай аласыз.');
-  showAdmin();
+  showSchoolClasses();
 }
 function renderAdminThreads(){
   const el=document.getElementById('admin-class-threads');if(!el)return;
-  const reqs=getReqs(),cls=getClasses();
+  const reqs=getReqs(),cls=getClasses(),messages=getCC();
   const rows=reqs.map(r=>({tid:r.id,title:r.name,teacher:r.teacherName,status:r.status}));
   cls.filter(c=>!c.reqId).forEach(c=>rows.push({tid:threadOfClass(c),title:c.name,teacher:c.teacherName||'',status:'approved'}));
-  rows.forEach(r=>{const m=threadMsgs(r.tid);r.n=m.length;r.last=m.length?m[m.length-1].t:0});
+  rows.forEach(r=>{const m=messages[r.tid]||[];r.n=m.length;r.last=m.length?m[m.length-1].t:0});
   rows.sort((a,b)=>(a.status==='pending'?0:1)-(b.status==='pending'?0:1)||b.last-a.last);
   const lab={pending:'⏳ Күтуде',approved:'✓ Сынып ашық',rejected:'✕ Қабылданбады'};
   el.innerHTML=rows.length?rows.map(r=>`<div class="item"><div class="info"><h4>${esc(r.title)}</h4><p>👨‍🏫 ${esc(r.teacher)} · ${lab[r.status]} · ${r.n} хабарлама${r.last?' · '+fmtT(r.last):''}</p></div><button class="btn ${admThread===r.tid?'btn-p':'btn-s'} btn-sm" onclick="openAdmChat(${jsq(r.tid)})">💬 Ашу</button></div>`).join(''):'<p class="sub">Чат жоқ</p>';
@@ -9112,13 +8988,11 @@ function renderAdminClassChat(){
     if(!user)return;
     const T=isTeacherUser(),A=!!user.isAdmin;
     const cc=document.getElementById('tch-create-card');if(cc)cc.style.display=A?'':'none';
-    ['tch-req-card','tch-reqs'].forEach(i=>{const e=document.getElementById(i);if(e)e.style.display='none'});
-    const chatEl=document.getElementById('tch-chat');if(chatEl)chatEl.style.display=(T&&!A)?'':'none';
-    if(A)fillTeacherSelect();
-    if(T&&!A){renderTeacherChat()}
+    ['tch-req-card','tch-reqs','tch-chat'].forEach(i=>{const e=document.getElementById(i);if(e)e.style.display=(T&&!A)?'':'none'});
+    if(T&&!A){renderTeacherReqs();renderTeacherChat();tickCooldown()}
   };
   const _sa=showAdmin;
-  showAdmin=function(){_sa();try{renderClassReqs();renderAdminThreads();renderAdminClassChat()}catch(e){}};
+  showAdmin=function(){_sa()};
   const _sc=sendChatMsg;
   sendChatMsg=function(){
     const key='support_'+threadKey(chatLogin||'');
@@ -9179,48 +9053,9 @@ function classTestsHTML(c,mode){
     }
     const n=new Set(LS.get('ubt_tres_'+t.id,[]).map(r=>r.uid)).size;
     const own=user.isAdmin||t.authorId===user.id;
-    return `<div class="item" style="margin-top:6px"><div class="info"><h4>${esc(t.topic)}</h4><p>${meta} · тапсырған: ${n}/${c.students.length}${user.isAdmin?((LS.get('ubt_class_release',{})||{})[t.id]?' · 🔓 ашық':' · 🔒 жабық'):''}</p></div><div class="acts"><button class="btn btn-s btn-sm" onclick="showTestResults(${jsq(t.id)})">📊 Нәтиже</button>${own?`<button class="btn btn-s btn-sm" onclick="editTest(${jsq(t.id)})">⚙ Баптау</button>`:''}</div></div>`;
+    return `<div class="item" style="margin-top:6px"><div class="info"><h4>${esc(t.topic)}</h4><p>${meta} · тапсырған: ${n}/${c.students.length}</p></div><div class="acts"><button class="btn btn-s btn-sm" onclick="showTestResults(${jsq(t.id)})">📊 Нәтиже</button>${own?`<button class="btn btn-s btn-sm" onclick="editTest(${jsq(t.id)})">⚙ Баптау</button>`:''}</div></div>`;
   }).join('');
 }
-
-function adminHistRowHTML(h){
-  const L=['A','B','C','D','E','F'];
-  const qs=Array.isArray(h.questions)?h.questions:[],ans=(h.answers&&typeof h.answers==='object')?h.answers:null;
-  let det='';
-  if(qs.length&&ans){
-    const bad=[];
-    qs.forEach((q,i)=>{if(q&&Array.isArray(q.options)&&Number.isInteger(q.correct)&&ans[q.id]!==q.correct)bad.push({i,q,ua:ans[q.id]})});
-    det=`<details style="margin-top:6px"><summary>❌ Қателері (${bad.length} / ${qs.length})</summary>${bad.length?bad.map(b=>`<div class="ea-q"><b>${b.i+1}. ${esc(String(b.q.text||'').replace(/\s+/g,' ').slice(0,200))}</b><div>${b.ua===undefined||b.ua===null?'⏭ Жауап берілмеген':'✗ Оқушы: '+(L[b.ua]||(b.ua+1))+') '+esc(b.q.options[b.ua]||'')}</div><div style="color:var(--ok)">✓ Дұрыс: ${L[b.q.correct]||(b.q.correct+1)}) ${esc(b.q.options[b.q.correct]||'')}</div></div>`).join(''):'<p class="sub">🎉 Қате жоқ</p>'}</details>`;
-  }
-  return `<div class="item"><div class="info"><h4>${esc(h.topic||'Тест')}${h.classTestId?' · 🏫 сынып тесті':''}</h4><p>${esc(h.date||'')}</p>${det}</div><div style="font-weight:700;color:var(--p)">${h.score}/${h.max}</div></div>`;
-}
-function adminStudentTestMistakes(tid,uid){
-  if(!user||!user.isAdmin)return;
-  const box=document.getElementById('tres-mist');if(!box)return;
-  const rows=LS.get('ubt_hist_'+uid,[]).filter(h=>h.classTestId===tid),p=profileById(uid);
-  box.innerHTML=`<h4 style="margin:12px 0 6px">❌ ${esc(p?p.name:'?')} — қателері</h4>`+(rows.length?rows.map(adminHistRowHTML).join(''):'<p class="sub">Бұл тест бойынша мәлімет жоқ</p>');
-  box.querySelectorAll('details').forEach(x=>{x.open=true});
-  box.scrollIntoView({behavior:'smooth',block:'nearest'});
-}
-function releaseBarHTML(t,c){
-  const rel=(LS.get('ubt_class_release',{})||{})[t.id];
-  const n=new Set(LS.get('ubt_tres_'+t.id,[]).map(r=>r.uid)).size,total=c.students.length;
-  return rel
-    ?`<div class="sub" style="margin:8px 0">🔓 Қателер мен дұрыс жауаптар сыныпқа ашық</div><button class="btn btn-s btn-sm" onclick="adminReleaseResults(${jsq(t.id)},false)">🔒 Қайта жабу</button>`
-    :`<div class="sub" style="margin:8px 0">🔒 Оқушыларға қателер жабық · тапсырған: ${n} / ${total}</div><button class="btn btn-p btn-sm" onclick="adminReleaseResults(${jsq(t.id)},true)">🔓 Сыныпқа рұқсат беру</button>`;
-}
-function adminReleaseResults(tid,release){return guarded(async()=>{
-  if(!user||!user.isAdmin)return;
-  if(!confirm(release?'Осы тест бойынша сынып оқушыларына қателері мен дұрыс жауаптарын ашу керек пе?':'Қателерді сыныпқа қайта жабу керек пе?'))return;
-  let r=await authCall('admin_release_class_results',{testId:tid,release:release});
-  if(!r.ok&&r.missing){
-    if(!confirm((r.msg||'')+' '+(r.names||[]).join(', ')+'\nБәрібір рұқсат беру керек пе?'))return;
-    r=await authCall('admin_release_class_results',{testId:tid,release:release,force:true});
-  }
-  if(!r.ok){alert(r.msg||'Қате');return}
-  try{await window.__bridge.refresh()}catch(e){}
-  showTestResults(tid);
-})}
 function showTestResults(tid){
   const t=allTests().find(x=>x.id===tid);if(!t)return;
   const c=getClasses().find(x=>x.id===t.classId);if(!c||!canManageClass(c))return;
@@ -9230,9 +9065,9 @@ function showTestResults(tid){
     const p=profileById(id),l=by[id]||[];
     const best=l.length?Math.max.apply(null,l.map(r=>r.max?Math.round(r.score/r.max*100):0)):null;
     const last=l.length?l[l.length-1]:null;
-    return `<tr><td><b>${esc(p?p.name:'?')}</b></td><td>${attemptsOf(tid,id)}</td><td>${best===null?'—':best+'%'}</td><td>${last?last.score+'/'+last.max:'—'}</td>${user.isAdmin?`<td><button class="btn btn-s btn-sm" onclick="adminStudentTestMistakes(${jsq(tid)},${jsq(id)})">❌ Қателері</button></td>`:''}</tr>`;
+    return `<tr><td><b>${esc(p?p.name:'?')}</b></td><td>${attemptsOf(tid,id)}</td><td>${best===null?'—':best+'%'}</td><td>${last?last.score+'/'+last.max:'—'}</td></tr>`;
   }).join('');
-  document.getElementById('tch-detail').innerHTML=`<div class="card" style="border-color:var(--p)"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h3>📊 ${esc(t.topic)} · ${esc(c.name)}</h3><button class="btn btn-s btn-sm" onclick="document.getElementById('tch-detail').innerHTML=''">Жабу</button></div><div class="sub" style="margin-bottom:8px">⏱ ${t.timerMin?t.timerMin+' мин':'авто'} · лимит: ${t.limit?t.limit:'шексіз'}</div>${c.students.length?`<div class="tscroll"><table class="ttable"><tr><th>Оқушы</th><th>Әрекет</th><th>Үздік</th><th>Соңғы</th>${user.isAdmin?'<th></th>':''}</tr>${rows}</table></div>`:'<div class="sub">Сыныпта оқушы жоқ</div>'}${user.isAdmin?releaseBarHTML(t,c)+'<div id="tres-mist"></div>':''}</div>`;
+  document.getElementById('tch-detail').innerHTML=`<div class="card" style="border-color:var(--p)"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h3>📊 ${esc(t.topic)} · ${esc(c.name)}</h3><button class="btn btn-s btn-sm" onclick="document.getElementById('tch-detail').innerHTML=''">Жабу</button></div><div class="sub" style="margin-bottom:8px">⏱ ${t.timerMin?t.timerMin+' мин':'авто'} · лимит: ${t.limit?t.limit:'шексіз'}</div>${c.students.length?`<div class="tscroll"><table class="ttable"><tr><th>Оқушы</th><th>Әрекет</th><th>Үздік</th><th>Соңғы</th></tr>${rows}</table></div>`:'<div class="sub">Сыныпта оқушы жоқ</div>'}</div>`;
   if(user.isAdmin)showScr('s-teacher');
   document.getElementById('tch-detail').scrollIntoView({behavior:'smooth',block:'start'});
 }
@@ -9453,7 +9288,7 @@ async function importBankFiles10000(sourceInput,sourceSubject,statusTarget,butto
         const origin=String(block.topic||block.title||file.name).slice(0,120);
         for(const q of block.questions){
           scanned++;
-          if(!q||typeof q.text!=='string'||!q.text.trim()||!Array.isArray(q.options)||q.options.length<4||q.options.length>5||q.options.some(x=>typeof x!=='string'||!x.trim())||!Number.isInteger(q.correct)||q.correct<0||q.correct>=q.options.length){invalid++;continue}
+          if(!q||typeof q.text!=='string'||!q.text.trim()||!Array.isArray(q.options)||q.options.length!==4||q.options.some(x=>typeof x!=='string'||!x.trim())||!Number.isInteger(q.correct)||q.correct<0||q.correct>3){invalid++;continue}
           const identity=ubtBankIdentity(subject,q.text);
           if(known.has(identity)){duplicates++;continue}
           if(added>=free)continue;
@@ -9724,7 +9559,7 @@ function startUbt140(){
     _ss(cid,sid);if(user.isAdmin)showScr('s-teacher');
   };
   const _sa=showAdmin;
-  showAdmin=function(){_sa();try{renderAdminClasses()}catch(e){}};
+  showAdmin=function(){_sa()};
   const _af=afterFinish;
   afterFinish=function(){
     _af();
@@ -9874,7 +9709,8 @@ function ubtRailSync(){
   const visible=!!user&&!!id&&!['s-login','s-test'].includes(id);
   document.body.classList.toggle('ubt-has-rail',visible);
   rail.setAttribute('aria-hidden',String(!visible));rail.inert=!visible||document.body.classList.contains('app-menu-open');
-  const groups={home:['s-home'],analytics:['s-analytics','s-knowledge-map','s-score-forecast'],profile:['s-profile'],exam:['s-ubt140'],subjects:['s-subj'],bank:['s-question-bank'],flash:['s-flash'],history:['s-hist'],create:['s-create','s-addq','s-schemes'],admin:['s-admin','s-registered','s-access-requests']};
+  const schoolKind=screen&&screen.dataset&&screen.dataset.kind;
+  const groups={teachers:(['s-school-people','s-school-person'].includes(id)&&schoolKind==='teachers')?[id]:[],students:(['s-school-people','s-school-person'].includes(id)&&schoolKind==='students')?[id]:[],classes:['s-school-classes','s-school-class','s-class-send','s-teacher'],home:['s-home'],analytics:['s-analytics','s-knowledge-map','s-score-forecast'],profile:['s-profile'],exam:['s-ubt140'],subjects:['s-subj'],bank:['s-question-bank'],flash:['s-flash'],history:['s-hist'],create:['s-create','s-addq','s-schemes'],admin:['s-admin','s-registered','s-access-requests']};
   let matched=false;
   rail.querySelectorAll('[data-rail-group]').forEach(button=>{
     const on=visible&&!!groups[button.dataset.railGroup]&&groups[button.dataset.railGroup].includes(id);
@@ -9895,6 +9731,203 @@ const ubtRailViewport=window.matchMedia('(max-width:700px)');
 if(ubtRailViewport.addEventListener)ubtRailViewport.addEventListener('change',ubtRailSync);
 ubtRailSync();
 
+
+const schoolState={kind:'teachers',page:0,person:null,classId:null,imported:null,fileName:'',fileJob:0,fileReading:false,busy:false,searchTimer:0,classPage:0,assignedShown:100};
+const schoolCache={uid:null,p:null,c:null,data:null};
+function schoolData(){
+  if(!user)return {people:[],classes:[],byId:new Map()};
+  const p=localStorage.getItem('ubt_profiles')||'{}',c=localStorage.getItem('ubt_classes')||'[]';
+  if(schoolCache.uid===user.id&&schoolCache.p===p&&schoolCache.c===c)return schoolCache.data;
+  const parse=(v,f)=>{try{return JSON.parse(v)||f}catch(e){return f}};
+  const profiles=parse(p,{}),classes=parse(c,[]),people=Object.entries(profiles).filter(([_,v])=>v&&v.id&&v.id!=='admin'&&typeof v==='object').map(([login,v])=>({...v,login}));
+  people.sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'kk'));
+  const data={people,classes:Array.isArray(classes)?classes:[],byId:new Map(people.map(p=>[p.id,p]))};
+  Object.assign(schoolCache,{uid:user.id,p,c,data});return data;
+}
+function schoolTabs(kind){return `<div class="school-tabs"><button class="btn ${kind==='teachers'?'btn-p':'btn-s'} btn-sm" onclick="showSchoolPeople('teachers')">Мұғалімдер</button><button class="btn ${kind==='students'?'btn-p':'btn-s'} btn-sm" onclick="showSchoolPeople('students')">Оқушылар</button><button class="btn ${kind==='classes'?'btn-p':'btn-s'} btn-sm" onclick="showSchoolClasses()">Сыныптар тізімі</button></div>`}
+function schoolAllowedStudents(data){
+  if(user.isAdmin)return null;
+  const ids=new Set([user.id]);
+  if(isTeacherUser())data.classes.filter(c=>c.teacherId===user.id).forEach(c=>(c.students||[]).forEach(id=>ids.add(id)));
+  return ids;
+}
+function showSchoolPeople(kind='teachers'){
+  if(!user)return;schoolState.kind=kind==='students'?'students':'teachers';schoolState.page=0;document.getElementById('s-school-people').dataset.kind=schoolState.kind;
+  document.getElementById('school-people-title').textContent=schoolState.kind==='teachers'?'Мұғалімдер':'Оқушылар';
+  document.getElementById('school-people-sub').textContent=schoolState.kind==='teachers'?'Мұғалім профилі, тест файлдары және сыныптар':'Оқушылардың профилі мен сыныптары. Сыныпқа тек админ тағайындайды.';
+  document.getElementById('school-people-tabs').innerHTML=schoolTabs(schoolState.kind);
+  document.getElementById('school-add-person-button').hidden=!user.isAdmin;
+  document.getElementById('school-add-person-button').textContent=schoolState.kind==='teachers'?'+ Мұғалім қосу':'+ Оқушы қосу';
+  document.getElementById('school-people-search').value='';showScr('s-school-people');schoolRenderPeople();
+}
+function schoolSearchPeople(){clearTimeout(schoolState.searchTimer);schoolState.searchTimer=setTimeout(()=>{schoolState.page=0;schoolRenderPeople()},160)}
+function schoolPeoplePage(d){schoolState.page=Math.max(0,schoolState.page+d);schoolRenderPeople()}
+function schoolRenderPeople(){
+  if(!user)return;const d=schoolData(),isTeacher=schoolState.kind==='teachers',allowed=schoolAllowedStudents(d),q=document.getElementById('school-people-search').value.trim().toLocaleLowerCase('kk');
+  const all=d.people.filter(p=>(isTeacher?p.role==='teacher':p.role!=='teacher')&&(user.isAdmin||p.accessApproved===true)&&(isTeacher||!allowed||allowed.has(p.id))).filter(p=>!q||(p.name+' '+(p.teacherSubject?subjName(p.teacherSubject):'')).toLocaleLowerCase('kk').includes(q));
+  const pages=Math.max(1,Math.ceil(all.length/36));schoolState.page=Math.min(schoolState.page,pages-1);
+  const classesByPerson=new Map();d.classes.forEach(c=>{[c.teacherId,...(c.students||[])].forEach(id=>{if(!classesByPerson.has(id))classesByPerson.set(id,[]);classesByPerson.get(id).push(c.name)})});
+  document.getElementById('school-people-count').textContent='Барлығы: '+all.length;
+  document.getElementById('school-people-list').innerHTML=all.length?all.slice(schoolState.page*36,(schoolState.page+1)*36).map(p=>`<article class="school-person-card"><div class="school-mark">${esc(String(p.name||'?').slice(0,1).toUpperCase())}</div><h3>${esc(p.name)}</h3><span class="school-tag">${isTeacher?(p.teacherApproved?'МҰҒАЛІМ':'БЕКІТУДІ КҮТЕДІ'):'ОҚУШЫ'}</span><p class="sub" style="margin-top:12px">${isTeacher?esc(subjName(p.teacherSubject||'other')):'Сынып: '+esc((classesByPerson.get(p.id)||['Тағайындалмаған']).join(', '))}</p>${isTeacher?`<p class="sub">Сыныптар: ${(classesByPerson.get(p.id)||[]).length}</p>`:''}<button class="btn btn-s btn-sm" onclick="schoolOpenPerson(${jsq(p.id)})">Профильді ашу ↗</button></article>`).join(''):'<div class="card"><p class="sub">Бұл тізімде әзірге адам жоқ.</p></div>';
+  document.getElementById('school-people-pager').innerHTML=pages>1?`<button class="btn btn-s btn-sm" onclick="schoolPeoplePage(-1)" ${schoolState.page===0?'disabled':''}>←</button><span>${schoolState.page+1} / ${pages}</span><button class="btn btn-s btn-sm" onclick="schoolPeoplePage(1)" ${schoolState.page===pages-1?'disabled':''}>→</button>`:'';
+}
+function schoolSubjectOptions(value='other'){return Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value).map(o=>`<option value="${esc(o.value)}" ${o.value===value?'selected':''}>${esc(o.textContent)}</option>`).join('')}
+function schoolCreatePersonDialog(){
+  if(!user||!user.isAdmin)return;const teacher=schoolState.kind==='teachers';
+  document.getElementById('school-new-person-title').textContent=teacher?'Мұғалім қосу':'Оқушы қосу';
+  document.getElementById('school-new-person-name').value='';document.getElementById('school-new-person-pass').value='';
+  document.getElementById('school-new-person-subject').innerHTML=schoolSubjectOptions();document.getElementById('school-new-person-subject-wrap').hidden=!teacher;document.getElementById('school-new-person-status').textContent='';
+  document.getElementById('school-person-dialog').showModal();
+}
+async function schoolCreatePerson(button){
+  if(!user||!user.isAdmin||schoolState.busy)return;const teacher=schoolState.kind==='teachers',password=document.getElementById('school-new-person-pass'),name=document.getElementById('school-new-person-name').value.trim();
+  if(name.length<2||password.value.length<10){document.getElementById('school-new-person-status').textContent='Аты кемінде 2, пароль кемінде 10 таңба болсын.';return}
+  await schoolAction(button,'school_create_person',{name,pass:password.value,role:teacher?'teacher':'student',subject:document.getElementById('school-new-person-subject').value},()=>{password.value='';document.getElementById('school-person-dialog').close();schoolRenderPeople()});
+}
+async function schoolAction(button,type,data,onSuccess){
+  if(schoolState.busy)return;schoolState.busy=true;if(button)button.disabled=true;
+  try{const r=await authCall(type,data);if(!r||!r.ok){alert(r&&r.msg||'Сақтау мүмкін болмады');return}if(onSuccess)onSuccess(r)}catch(e){alert('Байланысты тексеріп, қайта көріңіз.')}finally{schoolState.busy=false;if(button&&button.isConnected)button.disabled=false}
+}
+function schoolOpenPerson(id){
+  const data=schoolData(),p=data.byId.get(id);if(!user||!p)return;
+  if(p.role!=='teacher'&&!user.isAdmin&&!schoolAllowedStudents(data).has(id)){alert('Бұл профильге рұқсат жоқ');return}
+  schoolState.person=id;schoolState.fileJob++;schoolState.fileReading=false;schoolState.kind=p.role==='teacher'?'teachers':'students';document.getElementById('s-school-person').dataset.kind=schoolState.kind;schoolState.imported=null;schoolState.fileName='';schoolRenderPerson();showScr('s-school-person');
+}
+function schoolRenderPerson(){
+  const d=schoolData(),p=d.byId.get(schoolState.person);if(!p)return;
+  const teacher=p.role==='teacher',classes=d.classes.filter(c=>teacher?c.teacherId===p.id:(c.students||[]).includes(p.id));
+  const deliveries=LS.get('ubt_teacher_deliveries',[]).filter(x=>x.uid===p.id).slice().reverse();
+  const oldSource=document.getElementById('school-profile-test'),previous=oldSource?oldSource.value:'';
+  document.getElementById('school-person-body').innerHTML=`<div class="school-person-head"><div class="school-mark">${esc(String(p.name||'?')[0])}</div><div><span class="school-tag">${teacher?'МҰҒАЛІМ':'ОҚУШЫ'}</span><h2>${esc(p.name)}</h2><p class="sub">${teacher?esc(subjName(p.teacherSubject||'other')):'Сынып: '+esc(classes.map(c=>c.name).join(', ')||'Тағайындалмаған')}</p></div></div><div class="school-actions">${user.isAdmin?`<button class="btn btn-s btn-sm" onclick="adminViewUser(${jsq(p.id)})">Профильді басқару</button>`:''}${teacher&&user.id===p.id?`<button class="btn btn-p btn-sm" onclick="showMyTests()">Өз тесттерім</button><button class="btn btn-s btn-sm" onclick="showFileTest()">Файлдан тест құру</button>`:''}${!teacher&&user.isAdmin?`<button class="btn btn-p btn-sm" onclick="schoolMoveDialog(${jsq(p.id)})">Сыныпқа тағайындау / ауыстыру</button>`:''}</div><h3 class="school-subhead">СЫНЫПТАР</h3>${classes.length?classes.map(c=>`<button class="btn btn-s btn-sm" style="margin:0 8px 8px 0" onclick="schoolOpenClass(${jsq(c.id)})">${esc(c.name)} ↗</button>`).join(''):'<p class="sub">Сынып әлі тағайындалмаған.</p>'}${teacher&&user.isAdmin?`<section class="card school-person-compose" style="margin-top:22px"><h3>Мұғалімге тест файлын жіберу</h3><p class="sub" style="margin:8px 0 14px">Жіберілген тест мұғалімнің «Өз тесттерім» бөліміне сақталады. Мұғалім оны сыныбына тарата алады.</p><div class="grid2"><div class="fg"><label>Дайын тестті таңдау</label><select id="school-profile-test" onchange="schoolClearImported()"><option value="">Тестті таңдаңыз</option>${allTests().filter(t=>!t.assignmentId&&t.questions&&t.questions.length).map(t=>`<option value="${esc(t.id)}">${esc(t.topic||'Тест')} · ${t.questions.length} сұрақ</option>`).join('')}</select></div><div class="fg"><label>Немесе тест файлын таңдау</label><input type="file" accept=".json,.txt,.docx,.csv,.tsv" onchange="schoolReadTestFile(this)"></div></div><div id="school-file-status" class="school-status" role="status">${schoolState.imported?esc(schoolState.fileName)+' · '+schoolState.imported.length+' тест дайын.':'JSON, TXT, DOCX, CSV · 5 МБ дейін. 500-ден көп сұрақ бөлек тесттерге бөлінеді.'}</div><button class="btn btn-p" style="margin-top:14px" onclick="schoolSendTeacher(this)">Мұғалімге жіберу →</button></section>`:''}${teacher&&(user.isAdmin||user.id===p.id)?`<section class="card" style="margin-top:22px"><h3>Админнен келген тесттер</h3><p class="sub" style="margin:6px 0 14px">Тесттер мұғалімнің жеке базасында да сақталған.</p>${deliveries.length?deliveries.slice(0,50).map(x=>`<div class="item"><div class="info"><h4>${esc(x.title)}</h4><p>${esc(x.fileName||'Дайын тест')} · ${new Date(x.created*1000).toLocaleDateString('kk-KZ')}</p></div><div class="acts"><button class="btn btn-s btn-sm" onclick="exportJsonTest(${jsq(x.testId)})">JSON жүктеу</button>${user.id===p.id?`<button class="btn btn-p btn-sm" onclick="schoolClassSendDialog('',${jsq(x.testId)})">Сыныбыма жіберу</button>`:''}</div></div>`).join(''):'<p class="sub">Келген тест жоқ.</p>'}</section>`:''}`;
+  const next=document.getElementById('school-profile-test');if(next&&Array.from(next.options).some(o=>o.value===previous))next.value=previous;
+}
+function schoolClearImported(){if(document.getElementById('school-profile-test').value){schoolState.imported=null;schoolState.fileName='';document.getElementById('school-file-status').textContent='Дайын тест таңдалды.'}}
+async function schoolReadTestFile(input){
+  const file=input.files&&input.files[0];input.value='';if(!file)return;
+  schoolState.imported=null;schoolState.fileName='';const job=++schoolState.fileJob;schoolState.fileReading=true;document.getElementById('school-profile-test').value='';const status=document.getElementById('school-file-status'),uid=schoolState.person;
+  if(file.size>5*1024*1024){schoolState.fileReading=false;status.textContent='Файл 5 МБ-тан аспауы керек.';return}
+  status.textContent='Файл оқылып жатыр…';
+  try{
+    let text;if(/\.docx$/i.test(file.name)){await ubtLoadMammoth();text=(await mammoth.extractRawText({arrayBuffer:await file.arrayBuffer()})).value}else text=await file.text();
+    if(uid!==schoolState.person||job!==schoolState.fileJob)return;
+    let tests=[];
+    if(/\.json$/i.test(file.name)){
+      const data=JSON.parse(text.replace(/^\uFEFF/,''));let groups;
+      if(Array.isArray(data))groups=data.length&&data.every(x=>x&&Array.isArray(x.questions))?data:[{questions:data}];
+      else groups=Array.isArray(data.tests)?data.tests:[data];
+      for(const group of groups){
+        if(!group||!Array.isArray(group.questions))throw new Error('JSON ішінде questions тізімі болуы керек.');
+        const questions=group.questions.map(q=>{
+          let options=q.options||q.answers||q.variants||[];if(!Array.isArray(options)&&options&&typeof options==='object')options=Object.values(options);
+          const answer=q.correct!==undefined?q.correct:(q.answer!==undefined?q.answer:q.correctAnswer);
+          let correct=answer;if(typeof correct==='string')correct=/^[A-Da-dА-Да-д]$/.test(correct.trim())?letterIdx(correct.trim()):/^[E-He-h]$/.test(correct.trim())?correct.trim().toUpperCase().charCodeAt(0)-65:options.findIndex(x=>String(x).trim()===correct.trim());
+          if(!Number.isInteger(correct)||correct<0||correct>=options.length)throw new Error('Дұрыс жауабы белгіленбеген сұрақ бар.');
+          return {...q,text:String(q.text||q.question||q.q||''),options:options.map(String),correct,points:q.points===undefined?1:q.points};
+        });tests.push({...group,topic:group.topic||group.title||file.name.replace(/\.[^.]+$/,''),subject:group.subject||'',questions});
+      }
+    }else{
+      const parsed=parseQuestions(text,file.name.replace(/\.docx$/i,'.txt'));if(parsed.errors&&parsed.errors.length)throw new Error(parsed.errors.length+' сұрақта қате бар. Алдымен файлды түзетіңіз.');
+      tests=[{topic:parsed.meta.topic||file.name.replace(/\.[^.]+$/,''),subject:parsed.meta.subject||'',questions:parsed.questions}];
+    }
+    const teacher=schoolData().byId.get(uid),parts=[];
+    for(const test of tests){
+      if(!test.questions.length)throw new Error('Файлда сұрақ жоқ.');const subject=matchSubject(test.subject),count=Math.ceil(test.questions.length/500);
+      for(let i=0;i<count;i++)parts.push({...test,topic:test.topic+(count>1?' · '+(i+1)+'/'+count:''),subject:subject?subject.value:(teacher.teacherSubject||'other'),questions:test.questions.slice(i*500,(i+1)*500)});
+    }
+    if(parts.length>20)throw new Error('Бір жіберуде 20 тестке дейін. Файлды бөліп жіберіңіз.');
+    schoolState.imported=parts;schoolState.fileName=file.name;document.getElementById('school-profile-test').value='';status.textContent='Дайын: '+file.name+' · '+parts.length+' тест · '+parts.reduce((n,t)=>n+t.questions.length,0)+' сұрақ.';
+  }catch(e){if(job===schoolState.fileJob)status.textContent='Файл оқылмады: '+String(e.message||e)}finally{if(job===schoolState.fileJob)schoolState.fileReading=false}
+}
+async function schoolSendTeacher(button){
+  if(!user||!user.isAdmin)return;if(schoolState.fileReading){alert('Файлдың оқылуын күтіңіз.');return}const testId=document.getElementById('school-profile-test').value;
+  if(!testId&&!schoolState.imported){alert('Дайын тестті немесе тест файлын таңдаңыз');return}
+  await schoolAction(button,'school_send_teacher',{uid:schoolState.person,testId,tests:testId?undefined:schoolState.imported,fileName:schoolState.fileName},r=>{schoolState.imported=null;schoolState.fileName='';schoolRenderPerson();alert(r.count+' тест мұғалімге жіберілді.')});
+}
+function schoolMoveDialog(uid){
+  if(!user||!user.isAdmin)return;const d=schoolData(),p=d.byId.get(uid);if(!p)return;
+  document.getElementById('school-move-person').textContent=p.name;document.getElementById('school-move-dialog').dataset.uid=uid;
+  const current=d.classes.find(c=>(c.students||[]).includes(uid));
+  document.getElementById('school-move-class').innerHTML='<option value="">Сыныпсыз қалдыру</option>'+d.classes.map(c=>`<option value="${esc(c.id)}" ${current&&current.id===c.id?'selected':''}>${esc(c.name)} · ${esc(c.teacherName||'Мұғалім тағайындалмаған')}</option>`).join('');
+  document.getElementById('school-move-dialog').showModal();
+}
+async function schoolMoveStudent(button){
+  const uid=document.getElementById('school-move-dialog').dataset.uid,classId=document.getElementById('school-move-class').value;
+  await schoolAction(button,'school_move_student',{uid,classId},()=>{document.getElementById('school-move-dialog').close();schoolRefreshActive()});
+}
+function showSchoolClasses(){
+  if(!user)return;document.getElementById('school-classes-tabs').innerHTML=schoolTabs('classes');document.getElementById('school-add-class-button').hidden=!user.isAdmin;document.getElementById('school-class-search').value='';schoolState.classPage=0;showScr('s-school-classes');schoolRenderClasses();schoolRenderTools();
+}
+function schoolRenderClasses(){
+  const d=schoolData(),q=document.getElementById('school-class-search').value.trim().toLocaleLowerCase('kk'),classes=d.classes.filter(c=>!q||(c.name+' '+c.teacherName).toLocaleLowerCase('kk').includes(q));
+  const pages=Math.max(1,Math.ceil(classes.length/36));schoolState.classPage=Math.min(schoolState.classPage,pages-1);
+  document.getElementById('school-class-pager').innerHTML=pages>1?`<button class="btn btn-s btn-sm" onclick="schoolClassPage(-1)" ${schoolState.classPage===0?'disabled':''}>←</button><span>${schoolState.classPage+1} / ${pages}</span><button class="btn btn-s btn-sm" onclick="schoolClassPage(1)" ${schoolState.classPage===pages-1?'disabled':''}>→</button>`:'';
+  document.getElementById('school-classes-list').innerHTML=classes.length?classes.slice(schoolState.classPage*36,(schoolState.classPage+1)*36).map(c=>`<article class="school-person-card"><div class="school-mark">▦</div><h3>${esc(c.name)}</h3><p class="sub">Мұғалім: ${esc(c.teacherName||'Тағайындалмаған')}</p><p class="sub">Оқушылар: ${(c.students||[]).length}</p><button class="btn btn-s btn-sm" onclick="schoolOpenClass(${jsq(c.id)})">Сыныпты ашу ↗</button></article>`).join(''):'<div class="card"><p class="sub">Сынып табылмады.</p></div>';
+}
+function schoolClassPage(d){schoolState.classPage=Math.max(0,schoolState.classPage+d);schoolRenderClasses()}
+function schoolSearchClasses(){clearTimeout(schoolState.searchTimer);schoolState.searchTimer=setTimeout(()=>{schoolState.classPage=0;schoolRenderClasses()},160)}
+function schoolClassDialog(cid=''){
+  if(!user||!user.isAdmin)return;const d=schoolData(),c=d.classes.find(c=>c.id===cid);document.getElementById('school-class-dialog').dataset.cid=cid;
+  document.getElementById('school-class-name').value=c?c.name:'';document.getElementById('school-class-teacher').innerHTML='<option value="admin">Админ / Өзім</option>'+d.people.filter(p=>p.role==='teacher'&&p.teacherApproved&&p.accessApproved===true).map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+  document.getElementById('school-class-teacher').value=c?c.teacherId:'admin';document.getElementById('school-class-dialog').showModal();
+}
+async function schoolSaveClass(button){await schoolAction(button,'school_save_class',{id:document.getElementById('school-class-dialog').dataset.cid,name:document.getElementById('school-class-name').value,teacherId:document.getElementById('school-class-teacher').value},r=>{document.getElementById('school-class-dialog').close();schoolOpenClass(r.classId)})}
+function schoolOpenClass(cid){
+  if(!user)return;const c=schoolData().classes.find(c=>c.id===cid);if(!c){alert('Сынып табылмады');return}schoolState.classId=cid;schoolState.assignedShown=100;schoolRenderClass();showScr('s-school-class');
+}
+function schoolRenderClass(){
+  const d=schoolData(),c=d.classes.find(c=>c.id===schoolState.classId);if(!c)return;
+  const manage=!!(user.isAdmin||(isTeacherUser()&&c.teacherId===user.id)),teacher=d.byId.get(c.teacherId),students=[...new Set(c.students||[])],assigned=LS.get('ubt_assigned_tests',[]).filter(a=>a.classId===c.id);
+  const results=new Map();assigned.forEach(a=>{if(!results.has(a.uid))results.set(a.uid,[]);for(const r of a.results||[])results.get(a.uid).push(r)});
+  document.getElementById('school-class-heading').innerHTML=`<div class="school-person-head" style="margin-bottom:12px"><div class="school-mark">▦</div><div><span class="school-tag" style="color:#a0f1d8">СЫНЫП</span><h2>${esc(c.name)}</h2><p class="sub">${students.length} оқушы · Мұғалім және сынып құрамы</p></div></div><div class="school-actions">${manage?`<button class="btn btn-p btn-sm" onclick="schoolClassSendDialog(${jsq(c.id)})">Тестті сыныпқа жіберу →</button>`:''}${user.isAdmin?`<button class="btn btn-s btn-sm" onclick="schoolClassDialog(${jsq(c.id)})">Сыныпты / мұғалімді өзгерту</button><button class="btn btn-s btn-sm" onclick="showSchoolPeople('students')">Оқушы қосу</button><button class="btn btn-s btn-sm" onclick="schoolDeleteClass(${jsq(c.id)},this)">Сыныпты өшіру</button>`:''}</div>`;
+  document.getElementById('school-class-teacher-card').innerHTML=`<h3 class="school-subhead">МҰҒАЛІМ</h3><div class="item"><div class="school-mark">${esc(String((teacher&&teacher.name)||c.teacherName||'?')[0])}</div><div class="info"><h4>${esc((teacher&&teacher.name)||c.teacherName||'Мұғалім тағайындалмаған')}</h4><p>Сынып жетекшісі</p></div>${teacher?`<button class="btn btn-s btn-sm" onclick="schoolOpenPerson(${jsq(teacher.id)})">Профиль ↗</button>`:''}</div>`;
+  document.getElementById('school-class-students').innerHTML='<h3 class="school-subhead">ОҚУШЫЛАР</h3>'+ (students.length?students.map((uid,i)=>{const p=d.byId.get(uid),scores=results.get(uid)||[],last=scores[scores.length-1];return `<div class="item"><div class="school-mark" style="width:35px;height:35px;font-size:13px">${i+1}</div><div class="info"><h4>${esc(p?p.name:'Тіркелмеген оқушы')}</h4><p>${last?'Соңғы нәтиже: '+last.score+' / '+last.max:'Жіберілген тест нәтижесі әзірге жоқ'}</p></div><div class="acts">${p?`<button class="btn btn-s btn-sm" onclick="schoolOpenPerson(${jsq(uid)})">Профиль</button>`:''}${user.isAdmin?`<button class="btn btn-s btn-sm" onclick="schoolMoveDialog(${jsq(uid)})">Ауыстыру</button>`:''}</div></div>`}).join(''):'<p class="sub">Бұл сыныпқа оқушы әлі тағайындалмаған. Оқушылар бөлімінен админ қоса алады.</p>');
+  document.getElementById('school-class-tests').innerHTML=`<h3 class="school-subhead">СЫНЫП ТЕСТТЕРІ</h3>${classTestsHTML(c,manage?'manage':'student')}<h3 class="school-subhead">ЖІБЕРІЛГЕН ТЕСТТЕР</h3>`+(assigned.length?assigned.slice().reverse().slice(0,schoolState.assignedShown).map(a=>{const p=d.byId.get(a.uid);return `<div class="item"><div class="info"><h4>${esc(a.title)}</h4><p>${esc(p?p.name:a.login||'Оқушы')} · Тапсырғаны ${a.used||0}/${a.limit}</p></div>${user.id===a.uid?`<button class="btn btn-p btn-sm" onclick="startAssignedTest(${jsq(a.id)})">Тапсыру</button>`:''}</div>`}).join('')+(assigned.length>schoolState.assignedShown?'<button class="btn btn-s btn-sm" onclick="schoolState.assignedShown+=100;schoolRenderClass()">Тағы 100 нәтиже</button>':''):'<p class="sub">Жіберілген тесттер жоқ.</p>');
+}
+function schoolClassSendDialog(cid='',testId=''){
+  if(!user||!(user.isAdmin||isTeacherUser()))return;
+  const classes=schoolData().classes.filter(c=>user.isAdmin||c.teacherId===user.id),tests=allTests().filter(t=>!t.assignmentId&&(user.isAdmin||t.authorId===user.id)&&Array.isArray(t.questions)&&t.questions.length);
+  if(!classes.length||!tests.length){alert(!classes.length?'Сізге сынып тағайындалмаған.':'Жіберілетін тест жоқ. Файлдан тест сақтаңыз.');return}
+  document.getElementById('school-send-class').innerHTML=classes.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');if(cid)document.getElementById('school-send-class').value=cid;
+  document.getElementById('school-send-test').innerHTML=tests.map(t=>`<option value="${esc(t.id)}">${esc(t.topic||'Тест')} · ${t.questions.length} сұрақ</option>`).join('');if(testId)document.getElementById('school-send-test').value=testId;
+  document.getElementById('school-send-limit').value=1;schoolClassSendInfo();document.getElementById('school-send-dialog').showModal();
+}
+function schoolClassSendInfo(){const c=schoolData().classes.find(c=>c.id===document.getElementById('school-send-class').value);document.getElementById('school-send-info').textContent=c?'Тест осы сыныптағы '+[...new Set(c.students||[])].length+' оқушыға жеке жіберіледі.':''}
+async function schoolSendClass(button){
+  await schoolAction(button,'teacher_assign_class',{classId:document.getElementById('school-send-class').value,testId:document.getElementById('school-send-test').value,limit:Number(document.getElementById('school-send-limit').value)},r=>{document.getElementById('school-send-dialog').close();schoolRefreshActive();alert('Тест '+r.count+' оқушыға жіберілді.')});
+}
+function schoolRenderTools(){
+  if(!user)return;const admin=!!user.isAdmin,teacher=isTeacherUser()&&!admin;
+  document.getElementById('school-admin-class-tools').hidden=!admin;document.getElementById('school-teacher-class-tools').hidden=!teacher;
+  if(admin&&document.getElementById('school-admin-class-tools').open){renderClassReqs();renderAdminThreads();renderAdminClassChat()}
+  ['tch-req-card','tch-reqs','tch-chat'].forEach(id=>{document.getElementById(id).style.display=teacher?'':'none'});
+  if(teacher){renderTeacherReqs();renderTeacherChat();tickCooldown()}
+}
+function schoolRefreshActive(){
+  const el=document.querySelector('.screen.active');if(!el||!user)return;
+  if(el.id==='s-school-people')schoolRenderPeople();else if(el.id==='s-school-person'){if(!schoolState.fileReading)schoolRenderPerson()}else if(el.id==='s-school-classes'){schoolRenderClasses();schoolRenderTools()}else if(el.id==='s-school-class')schoolRenderClass();
+}
+const schoolPreviousSync=syncRefresh;
+syncRefresh=function(){const r=schoolPreviousSync.apply(this,arguments);const keys=window.__ubtChangedKeys||[];if(!keys.length||keys.some(k=>['ubt_profiles','ubt_classes','ubt_assigned_tests','ubt_teacher_deliveries','ubt_tests','ubt_class_reqs','ubt_class_chat'].includes(k)))schoolRefreshActive();return r};
+showTeacher=function(){showSchoolClasses()};
+joinClass=function(){alert('Оқушыны сыныпқа тек админ қосады немесе ауыстырады.')};
+leaveClass=function(){alert('Сынып құрамын тек админ өзгертеді.')};
+openTchChat=function(tid){tchThread=tid;schoolRenderTools()};
+closeTchChat=function(){tchThread=null;schoolRenderTools()};
+const schoolPreviousProfile=adminViewUser;
+adminViewUser=function(id){schoolPreviousProfile.apply(this,arguments);const p=schoolData().byId.get(id);if(p&&p.role==='teacher')document.getElementById('uv-actions').insertAdjacentHTML('beforeend',`<button class="btn btn-p" onclick="schoolOpenPerson(${jsq(id)})">Мұғалімге тест файлын жіберу</button>`)};
+const schoolPreviousResults=showTestResults;
+showTestResults=function(){const r=schoolPreviousResults.apply(this,arguments);if(schoolState.classId)showScr('s-school-class');return r};
+
+
+showClassSend=function(selectedId){schoolClassSendDialog('',typeof selectedId==='string'?selectedId:'')};
+function schoolOwnProfile(){if(user&&!user.isAdmin&&isTeacherUser())schoolOpenPerson(user.id);else showMyProfile()}
+const schoolPreviousOwnProfile=showMyProfile;
+showMyProfile=function(){const r=schoolPreviousOwnProfile.apply(this,arguments);if(user&&!user.isAdmin&&isTeacherUser()){const el=document.getElementById('prof-extra');if(el&&!document.getElementById('school-own-teacher-link'))el.insertAdjacentHTML('beforeend','<div id="school-own-teacher-link" class="school-actions" style="margin-top:12px"><button class="btn btn-p btn-sm" onclick="schoolOpenPerson(user.id)">Мұғалім профилім · келген тесттер</button><button class="btn btn-s btn-sm" onclick="showSchoolClasses()">Сыныптарым</button></div>')}return r};
+
+async function schoolDeleteClass(cid,button){
+  if(!user||!user.isAdmin||!confirm('Сыныпты өшіресіз бе? Тесттер мен нәтижелер сақталады.'))return;
+  await schoolAction(button,'school_delete_class',{classId:cid},()=>{schoolState.classId=null;showSchoolClasses()});
+}
 </script>
 <script>
 (function(){
@@ -10026,7 +10059,7 @@ ubtRailSync();
   }catch(e){}
   window.addEventListener('resize',height);
   try{new ResizeObserver(height).observe(document.body)}catch(e){}
-  setInterval(height,6000);
+  setInterval(height,2500);
   window.addEventListener('message',function(ev){
     if(ev.source!==window.parent||(hostOrigin&&ev.origin!==hostOrigin))return;
     var d=ev.data;if(!d||d.type!=='streamlit:render')return;
@@ -10077,86 +10110,6 @@ ubtRailSync();
   window.addEventListener('focus',syncOnReturn);
   setInterval(function(){if(connected&&document.visibilityState!=='hidden')send()},30000);
   setTimeout(boot,100);
-})();
-</script>
-
-<script>
-(function(){
-  var KEY='lang_ui',DICT={"ru": {"Оқушы, мұғалім және админ ретінде кіру": "Вход для ученика, учителя и администратора", "Логин": "Логин", "Пароль": "Пароль", "Админ ретінде кіру": "Войти как админ", "Кіру": "Войти", "Тіркелу": "Регистрация", "Админге хабарласу": "Связаться с админом", "Назар аударыңыз!": "Внимание!", "Аты-жөніңіз (толық, нақты) *": "ФИО (полностью, настоящее) *", "Парольді қайталаңыз *": "Повторите пароль *", "Мұғалім ретінде тіркелу": "Регистрация как учитель", "Артқа": "Назад", "Парольді қалпына келтіру": "Восстановление пароля", "Код алу": "Получить код", "Код": "Код", "Шығу": "Выйти", "Басты бет": "Главная", "Статистика": "Статистика", "140 формат": "Формат 140", "Пәндер": "Предметы", "Сұрақтар базасы": "База вопросов", "Флеш-карталар": "Флеш-карточки", "Тест тарихы": "История тестов", "Материал құру": "Создание материалов", "Мәзір": "Меню", "Админ панелі": "Панель админа", "Профиль": "Профиль", "Тапсырмалар": "Задания", "Сұрақтарды базадан таңдаңыз немесе кездейсоқ алыңыз": "Выберите вопросы из базы или возьмите случайные", "Тест тапсырыңыз немесе өз тестіңізді құрыңыз": "Пройдите тест или создайте свой", "Пән тесттерім": "Тесты по предметам", "Сабақ": "Уроки", "Анимация сабақтар": "Анимационные уроки", "Құру және материалдар": "Создание и материалы", "Тест құру": "Создать тест", "Сұрақ қосу": "Добавить вопрос", "Схема құру": "Создать схему", "Кітапхана": "Библиотека", "Басқа бөлімдер": "Другие разделы", "Админнен": "От админа", "Келген хабарламалар": "Входящие сообщения", "Формула": "Формулы", "Қателер": "Ошибки", "Қателері": "Ошибки", "Қате жауаптар": "Неверные ответы", "Тарих": "История", "Тест нәтижелері": "Результаты тестов", "JSON / файл тесті": "Тест из JSON / файла", "График": "График", "Үлгерім көрсеткіші": "Показатели успеваемости", "Білім картасы": "Карта знаний", "ҰБТ балын болжау": "Прогноз балла ЕНТ", "Қайталауға арналған": "Для повторения", "Глоссарий": "Глоссарий", "Таңдаулылар": "Избранное", "Жоспар": "План", "Мұғалім панелі": "Панель учителя", "Қолданушылар": "Пользователи", "Өтініштер": "Заявки", "Көшірмені сақтау": "Сохранить копию", "Жіберу": "Отправить", "Барлық уақыт": "За всё время", "Соңғы 7 күн": "Последние 7 дней", "Соңғы 30 күн": "Последние 30 дней", "Соңғы 90 күн": "Последние 90 дней", "Кезең": "Период", "Пән": "Предмет", "Барлық пәндер": "Все предметы", "Сақтау": "Сохранить", "Өшіру": "Удалить", "Жабу": "Закрыть", "Рейтинг": "Рейтинг", "Менің нәтижелерім": "Мои результаты", "Қазақстан тарихы": "История Казахстана", "Оқу сауаттылығы": "Грамотность чтения", "Математикалық сауаттылық": "Математическая грамотность", "Математика": "Математика", "Физика": "Физика", "Химия": "Химия", "Биология": "Биология", "География": "География", "Информатика": "Информатика", "Ағылшын тілі": "Английский язык", "Қазақ тілі": "Казахский язык", "Дүниежүзі тарихы": "Всемирная история", "Құқық негіздері": "Основы права", "Басқа": "Другое", "Нәтиже": "Результат", "Жауаптарды қарау": "Посмотреть ответы", "Қателерді шешу": "Решить ошибки", "Қатемен жұмыс": "Работа над ошибками", "Тазалау": "Очистить", "Тестті аяқтау": "Завершить тест", "Аяқтау": "Завершить", "Қайту": "Вернуться", "Алдыңғы": "Назад", "Келесі сұрақ": "Следующий вопрос", "Сұрақ": "Вопрос", "Калькулятор": "Калькулятор", "Менделеев кестесі": "Таблица Менделеева", "Тестті бастау": "Начать тест", "Кездейсоқ тестті бастау": "Начать случайный тест", "Сұрақ саны": "Количество вопросов", "Жаңа тест": "Новый тест", "Менің тесттерім": "Мои тесты", "Сипаттама (міндетті емес)": "Описание (необязательно)", "Тестті сақтау": "Сохранить тест", "Болдырмау": "Отмена", "Жауап нұсқалары": "Варианты ответов", "Сұрақ мәтіні": "Текст вопроса", "Жаңа сұрақ": "Новый вопрос", "Сурет таңдау": "Выбрать картинку", "Қазіргі пароль": "Текущий пароль", "Жаңа пароль": "Новый пароль", "Парольді өзгерту": "Сменить пароль", "Парольді сақтау": "Сохранить пароль", "Жаңа ат": "Новое имя", "Атымды өзгерту": "Изменить имя", "Фото қою / ауыстыру": "Установить / сменить фото", "Тапсырған тесттері": "Пройденные тесты", "Тапсырған тесттер": "Пройденные тесты", "Жария тесттер": "Публичные тесты", "Маған жіберілген тесттер": "Тесты, отправленные мне", "Жіберілген тесттер": "Отправленные тесты", "Жүктелген тесттер": "Загруженные тесты", "Тапсыру лимиті": "Лимит попыток", "Мұғалім / Куратор": "Учитель / Куратор", "Жаңа сынып": "Новый класс", "Сынып құру": "Создать класс", "Сынып": "Класс", "Алдын ала қарау": "Предпросмотр", "Тест жалғасуда": "Тест продолжается", "Толық экранға оралу": "Вернуться в полноэкранный режим", "Мазмұн қорғалған": "Содержимое защищено", "БІЛІМГЕ БІР ҚАДАМ ЖАҚЫН": "НА ШАГ БЛИЖЕ К ЗНАНИЯМ", "Пароліңізді енгізіңіз": "Введите пароль", "Логинді жазыңыз немесе тізімнен таңдаңыз": "Введите логин или выберите из списка", "Кемінде 10 таңба": "Минимум 10 символов", "Хабарлама жазыңыз...": "Напишите сообщение...", "Сыныпқа рұқсат беру": "Открыть классу", "Қайта жабу": "Закрыть снова", "Админ рұқсат бергенде ашылады": "Откроется, когда админ разрешит", "Қателері мен дұрыс жауаптарын": "Ошибки и правильные ответы", "Шығарылған жаңа ұпай": "Новый результат"}, "en": {"Оқушы, мұғалім және админ ретінде кіру": "Sign in as student, teacher or admin", "Логин": "Login", "Пароль": "Password", "Админ ретінде кіру": "Sign in as admin", "Кіру": "Sign in", "Тіркелу": "Sign up", "Админге хабарласу": "Contact admin", "Назар аударыңыз!": "Attention!", "Аты-жөніңіз (толық, нақты) *": "Full name (real) *", "Парольді қайталаңыз *": "Repeat password *", "Мұғалім ретінде тіркелу": "Register as teacher", "Артқа": "Back", "Парольді қалпына келтіру": "Reset password", "Код алу": "Get code", "Код": "Code", "Шығу": "Log out", "Басты бет": "Home", "Статистика": "Statistics", "140 формат": "140 format", "Пәндер": "Subjects", "Сұрақтар базасы": "Question bank", "Флеш-карталар": "Flashcards", "Тест тарихы": "Test history", "Материал құру": "Create materials", "Мәзір": "Menu", "Админ панелі": "Admin panel", "Профиль": "Profile", "Тапсырмалар": "Assignments", "Сұрақтарды базадан таңдаңыз немесе кездейсоқ алыңыз": "Pick questions from the bank or take random ones", "Тест тапсырыңыз немесе өз тестіңізді құрыңыз": "Take a test or create your own", "Пән тесттерім": "Subject tests", "Сабақ": "Lessons", "Анимация сабақтар": "Animated lessons", "Құру және материалдар": "Create & materials", "Тест құру": "Create test", "Сұрақ қосу": "Add question", "Схема құру": "Create diagram", "Кітапхана": "Library", "Басқа бөлімдер": "Other sections", "Админнен": "From admin", "Келген хабарламалар": "Received messages", "Формула": "Formulas", "Қателер": "Mistakes", "Қателері": "Mistakes", "Қате жауаптар": "Wrong answers", "Тарих": "History", "Тест нәтижелері": "Test results", "JSON / файл тесті": "Test from JSON / file", "График": "Chart", "Үлгерім көрсеткіші": "Progress indicators", "Білім картасы": "Knowledge map", "ҰБТ балын болжау": "UNT score forecast", "Қайталауға арналған": "For review", "Глоссарий": "Glossary", "Таңдаулылар": "Favorites", "Жоспар": "Plan", "Мұғалім панелі": "Teacher panel", "Қолданушылар": "Users", "Өтініштер": "Requests", "Көшірмені сақтау": "Save backup", "Жіберу": "Send", "Барлық уақыт": "All time", "Соңғы 7 күн": "Last 7 days", "Соңғы 30 күн": "Last 30 days", "Соңғы 90 күн": "Last 90 days", "Кезең": "Period", "Пән": "Subject", "Барлық пәндер": "All subjects", "Сақтау": "Save", "Өшіру": "Delete", "Жабу": "Close", "Рейтинг": "Leaderboard", "Менің нәтижелерім": "My results", "Қазақстан тарихы": "History of Kazakhstan", "Оқу сауаттылығы": "Reading literacy", "Математикалық сауаттылық": "Math literacy", "Математика": "Mathematics", "Физика": "Physics", "Химия": "Chemistry", "Биология": "Biology", "География": "Geography", "Информатика": "Computer science", "Ағылшын тілі": "English", "Қазақ тілі": "Kazakh language", "Дүниежүзі тарихы": "World history", "Құқық негіздері": "Law basics", "Басқа": "Other", "Нәтиже": "Result", "Жауаптарды қарау": "Review answers", "Қателерді шешу": "Practice mistakes", "Қатемен жұмыс": "Work on mistakes", "Тазалау": "Clear", "Тестті аяқтау": "Finish test", "Аяқтау": "Finish", "Қайту": "Return", "Алдыңғы": "Previous", "Келесі сұрақ": "Next question", "Сұрақ": "Question", "Калькулятор": "Calculator", "Менделеев кестесі": "Periodic table", "Тестті бастау": "Start test", "Кездейсоқ тестті бастау": "Start random test", "Сұрақ саны": "Number of questions", "Жаңа тест": "New test", "Менің тесттерім": "My tests", "Сипаттама (міндетті емес)": "Description (optional)", "Тестті сақтау": "Save test", "Болдырмау": "Cancel", "Жауап нұсқалары": "Answer options", "Сұрақ мәтіні": "Question text", "Жаңа сұрақ": "New question", "Сурет таңдау": "Choose image", "Қазіргі пароль": "Current password", "Жаңа пароль": "New password", "Парольді өзгерту": "Change password", "Парольді сақтау": "Save password", "Жаңа ат": "New name", "Атымды өзгерту": "Change my name", "Фото қою / ауыстыру": "Set / change photo", "Тапсырған тесттері": "Taken tests", "Тапсырған тесттер": "Taken tests", "Жария тесттер": "Public tests", "Маған жіберілген тесттер": "Tests sent to me", "Жіберілген тесттер": "Sent tests", "Жүктелген тесттер": "Imported tests", "Тапсыру лимиті": "Attempt limit", "Мұғалім / Куратор": "Teacher / Curator", "Жаңа сынып": "New class", "Сынып құру": "Create class", "Сынып": "Class", "Алдын ала қарау": "Preview", "Тест жалғасуда": "Test in progress", "Толық экранға оралу": "Return to fullscreen", "Мазмұн қорғалған": "Content protected", "БІЛІМГЕ БІР ҚАДАМ ЖАҚЫН": "ONE STEP CLOSER TO KNOWLEDGE", "Пароліңізді енгізіңіз": "Enter your password", "Логинді жазыңыз немесе тізімнен таңдаңыз": "Type a login or pick from the list", "Кемінде 10 таңба": "At least 10 characters", "Хабарлама жазыңыз...": "Write a message...", "Сыныпқа рұқсат беру": "Release to class", "Қайта жабу": "Lock again", "Админ рұқсат бергенде ашылады": "Opens when the admin allows it", "Қателері мен дұрыс жауаптарын": "Mistakes and correct answers", "Шығарылған жаңа ұпай": "New score"}},lang='kk',busy=0;
-  var RX=/^([^\p{L}\p{N}]*)([\s\S]*?)([^\p{L}\p{N}]*)$/u;
-  function core(t){var m=RX.exec(t);return m?m[2].replace(/\s+/g,' ').trim().toLowerCase():t.trim().toLowerCase()}
-  var MAP={ru:{},en:{}};
-  ['ru','en'].forEach(function(l){Object.keys(DICT[l]).forEach(function(k){MAP[l][core(k)]=DICT[l][k]})});
-  function trText(t){
-    if(lang==='kk')return t;
-    var m=RX.exec(t);if(!m||!m[2].trim())return t;
-    var inner=m[2],lead=/^\s*/.exec(inner)[0],tail=/\s*$/.exec(inner)[0];
-    var hit=MAP[lang][core(inner)];
-    if(hit===undefined)return t;
-    var trail=m[3];
-    // сөз соңындағы * : сияқты белгілер сөздікте болса, оны қайта қоспаймыз
-    var keyHasTail=/[^\p{L}\p{N}\s]$/u.test(hit.trim());
-    return m[1]+lead+hit+tail+(keyHasTail?'':trail);
-  }
-  var store=new WeakMap(),ATTRS=['placeholder','title','aria-label'];
-  function skip(n){var p=n.parentNode;return !p||/^(SCRIPT|STYLE|TEXTAREA|CODE|PRE|NOSCRIPT)$/.test(p.nodeName)||(p.closest&&p.closest('#lang-sw'))}
-  function doText(n){
-    if(skip(n))return;
-    var rec=store.get(n),cur=n.nodeValue,orig=(rec&&cur===rec.t)?rec.o:cur;
-    var out=trText(orig);
-    if(out!==cur){n.nodeValue=out}
-    store.set(n,{o:orig,t:out});
-  }
-  function doAttrs(el){
-    if(el.closest&&el.closest('#lang-sw'))return;
-    var rec=el.__kk||(el.__kk={});
-    ATTRS.forEach(function(a){
-      if(!el.hasAttribute||!el.hasAttribute(a))return;
-      var cur=el.getAttribute(a),r=rec[a],orig=(r&&cur===r.t)?r.o:cur,out=trText(orig);
-      if(out!==cur)el.setAttribute(a,out);
-      rec[a]={o:orig,t:out};
-    });
-  }
-  function walk(root){
-    if(root.nodeType===3){doText(root);return}
-    if(root.nodeType!==1&&root.nodeType!==9&&root.nodeType!==11)return;
-    if(root.nodeType===1)doAttrs(root);
-    var w=document.createTreeWalker(root,NodeFilter.SHOW_ELEMENT|NodeFilter.SHOW_TEXT,null),n;
-    while((n=w.nextNode())){if(n.nodeType===3)doText(n);else doAttrs(n)}
-  }
-  var obs=new MutationObserver(function(ms){
-    ms.forEach(function(m){
-      if(m.type==='characterData')doText(m.target);
-      else if(m.type==='attributes')doAttrs(m.target);
-      else m.addedNodes.forEach(function(n){walk(n)});
-    });
-  });
-  function start(){obs.observe(document.body,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:ATTRS})}
-  function setLang(l){
-    lang=(l==='ru'||l==='en')?l:'kk';
-    try{localStorage.setItem(KEY,lang)}catch(e){}
-    document.documentElement.lang=lang==='kk'?'kk':lang;
-    obs.disconnect();walk(document.body);start();
-    var b=document.querySelectorAll('#lang-sw button');
-    for(var i=0;i<b.length;i++)b[i].style.opacity=(b[i].getAttribute('data-l')===lang)?'1':'.55';
-  }
-  window.setUiLang=setLang;
-  function build(){
-    var d=document.createElement('div');d.id='lang-sw';
-    d.setAttribute('style','position:fixed;top:8px;right:8px;z-index:9000;display:flex;gap:4px;padding:3px;border-radius:10px;background:rgba(20,24,40,.72);backdrop-filter:blur(6px);font:600 11px system-ui,sans-serif');
-    [['kk','ҚАЗ'],['ru','РУС'],['en','ENG']].forEach(function(x){
-      var b=document.createElement('button');b.type='button';b.setAttribute('data-l',x[0]);b.textContent=x[1];
-      b.setAttribute('style','border:0;border-radius:7px;padding:4px 8px;cursor:pointer;color:#fff;background:rgba(255,255,255,.14);font:inherit');
-      b.onclick=function(){setLang(x[0])};d.appendChild(b);
-    });
-    document.body.appendChild(d);
-  }
-  function init(){
-    build();
-    var saved='kk';try{saved=localStorage.getItem(KEY)||'kk'}catch(e){}
-    setLang(saved);
-  }
-  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();
 </script>
 </body>
