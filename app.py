@@ -982,6 +982,26 @@ def _catalog_sync(state):
     state["catalog_cache"] = (state["db"].get("ubt_question_catalog", "[]"), sources, catalog)
     return catalog
 
+def _replace_prior_assignments(assignments, tests, uids, src_id, title, class_id=None):
+    """Бір тест қайта жіберілсе, сол адамдарға бұрын жіберілген ескі нұсқасы өшіріледі."""
+    uids = set(uids)
+    def same(a):
+        if not isinstance(a, dict) or a.get("uid") not in uids:
+            return False
+        if a.get("srcId"):
+            return a.get("srcId") == src_id
+        return a.get("title") == title and (a.get("classId") or None) == (class_id or None)
+    removed = [a for a in assignments if same(a)]
+    if not removed:
+        return assignments, tests
+    kept = [a for a in assignments if not same(a)]
+    gone = {a.get("testId") for a in removed}
+    live = {a.get("testId") for a in kept if isinstance(a, dict)}
+    orphan = gone - live
+    if orphan:
+        tests = [t for t in tests if not (isinstance(t, dict) and t.get("id") in orphan and t.get("assignmentId"))]
+    return kept, tests
+
 def _handle_req(state, sid, rq):
     typ = rq.get("type")
     d = rq.get("data") if isinstance(rq.get("data"), dict) else {}
@@ -1187,7 +1207,8 @@ def _handle_req(state, sid, rq):
             private_test.pop("className", None)
             assignment = {"id": aid, "uid": person["id"],
                           "login": login, "testId": private_id, "title": str(test.get("topic") or "Тест")[:150],
-                          "limit": limit, "used": 0, "created": int(time.time())}
+                          "limit": limit, "used": 0, "created": int(time.time()), "srcId": tid}
+            assignments, tests = _replace_prior_assignments(assignments, tests, [person["id"]], tid, assignment["title"], None)
             assignments.append(assignment)
             tests.append(private_test)
             _put(state, "ubt_tests", _jdump(tests))
@@ -1226,7 +1247,7 @@ def _handle_req(state, sid, rq):
                         (sess["admin"] or c.get("teacherId") == sess["uid"])), None)
             tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
             source = next((t for t in tests if isinstance(t, dict) and t.get("id") == tid and
-                           t.get("authorId") == sess["uid"] and not t.get("assignmentId")), None)
+                           (sess["admin"] or t.get("authorId") == sess["uid"]) and not t.get("assignmentId")), None)
             if not cls or not source or not isinstance(source.get("questions"), list) or not source["questions"]:
                 return {"ok": False, "msg": "Сынып немесе өз тестіңіз табылмады"}
             members = list(dict.fromkeys(x for x in cls.get("students", []) if isinstance(x, str) and x != sess["uid"]))
@@ -1243,7 +1264,9 @@ def _handle_req(state, sid, rq):
             clone.pop("className", None)
             assignments = _jload(state["db"].get("ubt_assigned_tests", "[]"), list, [])
             names = {p.get("id"): key for key, p in _profiles(state).items() if isinstance(p, dict)}
-            assignments.extend({"id": "as_" + secrets.token_hex(12), "batchId": batch,
+            assignments, tests = _replace_prior_assignments(assignments, tests, members, tid,
+                                                            str(source.get("topic") or "Тест")[:150], cid)
+            assignments.extend({"id": "as_" + secrets.token_hex(12), "batchId": batch, "srcId": tid,
                                 "classId": cid, "uid": uid, "login": names.get(uid, ""),
                                 "testId": private_id, "title": str(source.get("topic") or "Тест")[:150],
                                 "limit": limit, "used": 0, "created": int(time.time())} for uid in members)
@@ -1821,9 +1844,6 @@ def _merge_classes(state, sess, v):
             continue
         proposal = inc.get(c.get("id"))
         if not proposal:
-            
-            if _is_teacher(state, sess["uid"]) and c.get("teacherId") == sess["uid"]:
-                continue
             out.append(c)
             continue
         if _is_teacher(state, sess["uid"]) and c.get("teacherId") == sess["uid"]:
@@ -1853,6 +1873,7 @@ def _merge_class_reqs(state, sess, v):
         return None
     if sess["admin"]:
         return _jdump(inc)
+    return None  # сыныпты тек админ ашады
     stored = _jload(state["db"].get("ubt_class_reqs", "[]"), list, [])
     if sum(isinstance(r, dict) and r.get("teacherId") == sess["uid"] and r.get("status") == "pending" for r in stored) >= 5:
         return None
@@ -3116,6 +3137,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
   </div>
   <div class="wrap">
     <div class="hdr"><h2>Басты бет</h2><p class="sub">Тест тапсырыңыз немесе өз тестіңізді құрыңыз</p></div>
+    <div id="home-assigned"></div>
     <div id="ubd-home" class="ubd" aria-label="Жеке статистика"></div>
     <div id="home-extras"></div>
   </div>
@@ -3141,6 +3163,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
   <nav aria-label="Негізгі мәзір">
     <button type="button" class="app-menu-home" onclick="goHome()">⌂ Басты бет</button>
     <button type="button" class="app-menu-home" onclick="showAnalytics()">▥ Статистика</button>
+    <button type="button" class="app-menu-home" id="assigned-menu-btn" style="display:none" onclick="showAssignedTests()">📨 Тапсырмалар</button>
     <button class="mode" onclick="showUbt140()"><span class="ic">🎓</span><h3>140 формат</h3><p>Сұрақтарды базадан таңдаңыз немесе кездейсоқ алыңыз</p></button>
     <button class="mode" onclick="startQuickSubject()"><span class="ic">📘</span><h3>Пән тесттерім</h3><p>Әр пән бөлек · базадан өзім таңдау немесе кездейсоқ бастау</p></button>
     <details class="app-menu-group" open><summary>Сабақ</summary><div class="app-menu-items">      <div class="mode" onclick="showLessons()"><div class="ic">🎬</div><h3>Анимация сабақтар</h3><p>Анимация + код</p></div></div></details>
@@ -3289,7 +3312,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
 
 <div id="s-assigned" class="screen">
   <div class="wrap">
-    <div class="hdr"><h2>📨 Маған жіберілген тесттер</h2><p class="sub">Админ сізге арнайы жіберген тесттер</p></div>
+    <div class="hdr"><h2>📨 Маған жіберілген тесттер</h2><p class="sub">Мұғалім немесе админ жіберген тесттер осында тұрады</p></div>
     <div id="assigned-list" class="list"></div>
     <div class="row"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
@@ -3606,7 +3629,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
         <div class="timer" id="timer">00:30:00</div>
         <div class="prog-t" id="viol" style="display:none;background:#fef2f2;color:var(--err)"></div>
       </div>
-      <div class="test-tools"><button class="btn btn-s btn-sm" onclick="openChemTable()">⚗️ Менделеев кестесі</button><button class="btn btn-s btn-sm" onclick="openTestResultsDialog()">🗂️ Нәтижелер</button><button class="btn btn-s btn-sm" onclick="openCalculator()">🧮 Калькулятор</button></div>
+      <div class="test-tools"><button class="btn btn-s btn-sm" onclick="openChemTable()">⚗️ Менделеев кестесі</button><button class="btn btn-s btn-sm" onclick="openCalculator()">🧮 Калькулятор</button></div>
       <div class="qnav" id="qnav" role="navigation" aria-label="Сұрақтар"></div>
       <div class="qc">
         <div class="qh"><span class="qnum" id="qnum">Сұрақ 1</span><span style="display:flex;gap:6px"><button class="flag" id="bm" onclick="togBm()" title="Таңдаулыға сақтау">☆</button><button class="flag" id="flag" onclick="togFlag()">🚩</button></span></div>
@@ -3647,6 +3670,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
       <div class="score-c"><span id="sc">0</span><small>/ <span id="sm">0</span></small></div>
     </div>
     <div class="card" id="res-break"></div>
+    <div class="card" id="res-analysis" style="display:none"></div>
     <div id="ubt-cert-area" style="text-align:center;margin:12px 0"></div>
     <div class="row">
       <button class="btn btn-p" onclick="reviewAns()">Жауаптарды қарау</button>
@@ -3674,6 +3698,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
 <div id="s-mist" class="screen">
   <div class="wrap">
     <div class="hdr"><h2>❌ Қатемен жұмыс</h2></div>
+    <div id="mist-analysis"></div>
     <div id="mist-list" class="list"></div>
     <div class="row" style="margin-top:16px">
       <button class="btn btn-p" id="mist-start" style="display:none" onclick="startMistakes()">Қателерді шешу</button>
@@ -3774,6 +3799,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
     <div class="card" id="tch-create-card">
       <h3 style="margin-bottom:10px">➕ Жаңа сынып</h3>
       <div class="fg"><input id="tch-name" placeholder="Сынып атауы (мыс: 11 «А»)" maxlength="40"></div>
+      <div class="fg"><label>Мұғалім (міндетті емес)</label><select id="tch-teacher"></select></div>
       <button class="btn btn-ok btn-sm" onclick="createClass()">Сынып құру</button>
     </div>
     <div class="card" id="tch-req-card">
@@ -4038,6 +4064,17 @@ html{text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased;-moz-o
 .fg input:focus,.fg select:focus,.fg textarea:focus{outline:2px solid color-mix(in srgb,var(--p) 55%,transparent);outline-offset:1px;border-color:var(--p)}
 img,canvas,svg{image-rendering:auto}
 .qimg,.avatar,img{-webkit-backface-visibility:hidden}
+.asg-card{border-color:color-mix(in srgb,var(--p) 40%,var(--b));margin-bottom:16px}
+.asg-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px}
+.asg-item.asg-done{opacity:.6}
+.ea-chips{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 14px}
+.ea-chip{padding:6px 12px;border-radius:24px;font-size:12px;font-weight:700;background:var(--bg);border:1px solid var(--b)}
+.ea-chip.ok{color:var(--ok)}.ea-chip.bad{color:var(--err)}.ea-chip.skip{color:var(--warn)}
+.ea-row{margin:10px 0}.ea-top{display:flex;justify-content:space-between;gap:8px;font-size:13px;margin-bottom:4px}
+.ea-bar{height:9px;border-radius:9px;background:var(--b);overflow:hidden}.ea-bar>i{display:block;height:100%;border-radius:9px}
+.ea-tip{margin:12px 0;padding:10px 12px;border-radius:14px;background:color-mix(in srgb,var(--warn) 14%,transparent);font-size:13px}
+.ea-more{margin-top:8px}.ea-more summary{cursor:pointer;font-weight:700;font-size:13px}
+.ea-q{padding:10px 0;border-top:1px solid var(--b);font-size:13px;line-height:1.5}
 @media(min-width:1800px){html{font-size:18px}}
 @media(min-width:2560px){html{font-size:22px}.wrap{max-width:1500px}}
 @media(min-width:3400px){html{font-size:28px}.wrap{max-width:1900px}}
@@ -8499,15 +8536,16 @@ function studentStats(id){
   return{n,avg,last:n?pg[n-1]:null,mist:LS.get('ubt_mistakes_'+id,[]).length,points:getUserStats(id).points||0};
 }
 function showTeacher(){tchOpen=null;document.getElementById('tch-detail').innerHTML='';document.getElementById('teacher-send-actions').style.display=isTeacherUser()?'flex':'none';renderTeacher();showScr('s-teacher');if(isTeacherUser())window.__bridge.refresh().then(()=>{if(document.getElementById('s-teacher').classList.contains('active'))renderTeacher()}).catch(()=>{})}
-function showClassSend(selectedId){
+function showClassSend(selectedId,classId){
   if(!isTeacherUser())return;
-  const classes=getClasses().filter(c=>c.teacherId===user.id);
-  const tests=allTests().filter(t=>t.authorId===user.id&&!t.assignmentId&&Array.isArray(t.questions)&&t.questions.length);
-  if(!classes.length){alert('Алдымен өз сыныбыңызды ашыңыз');return}
+  const classes=getClasses().filter(c=>user.isAdmin||c.teacherId===user.id);
+  const tests=allTests().filter(t=>(user.isAdmin||t.authorId===user.id)&&!t.assignmentId&&Array.isArray(t.questions)&&t.questions.length);
+  if(!classes.length){alert(user.isAdmin?'Алдымен сынып құрыңыз':'Сізге әлі сынып бекітілмеген. Сыныпты админ ашады');return}
   if(!tests.length){alert('Алдымен өз тестіңізді жасаңыз немесе JSON файлдан сақтаңыз');return}
   document.getElementById('class-send-choice').innerHTML=classes.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
-  document.getElementById('class-send-test').innerHTML=tests.map(t=>`<option value="${esc(t.id)}">${esc(t.topic||'Тест')} (${t.questions.length} сұрақ)</option>`).join('');
+  document.getElementById('class-send-test').innerHTML=tests.map(t=>`<option value="${esc(t.id)}">${esc(t.topic||'Тест')} (${t.questions.length} сұрақ)${user.isAdmin&&t.authorName&&t.authorId!==user.id?' · '+esc(t.authorName):''}</option>`).join('');
   if(typeof selectedId==='string'&&tests.some(t=>t.id===selectedId))document.getElementById('class-send-test').value=selectedId;
+  if(typeof classId==='string'&&classes.some(c=>c.id===classId))document.getElementById('class-send-choice').value=classId;
   updateClassSendCount();showScr('s-class-send');
 }
 function updateClassSendCount(){
@@ -8520,12 +8558,12 @@ function sendTestToClass(){return guarded(async()=>{
   const classId=document.getElementById('class-send-choice').value;
   const testId=document.getElementById('class-send-test').value;
   const limit=Number(document.getElementById('class-send-limit').value);
-  const c=getClasses().find(x=>x.id===classId&&x.teacherId===user.id);
-  const t=allTests().find(x=>x.id===testId&&x.authorId===user.id&&!x.assignmentId);
+  const c=getClasses().find(x=>x.id===classId&&(user.isAdmin||x.teacherId===user.id));
+  const t=allTests().find(x=>x.id===testId&&(user.isAdmin||x.authorId===user.id)&&!x.assignmentId);
   if(!c||!t||!Number.isInteger(limit)||limit<1||limit>100){alert('Сыныпты, өз тестіңізді және 1–100 аралығындағы лимитті таңдаңыз');return}
   const n=[...new Set(c.students||[])].filter(id=>id!==user.id).length;
   if(!n){alert('Сыныпта тіркелген адам жоқ');return}
-  if(!confirm('«'+t.topic+'» тестін «'+c.name+'» сыныбындағы барлық '+n+' адамға жіберуді растайсыз ба? Әр адамға '+limit+' рет тапсыруға рұқсат беріледі.'))return;
+  if(!confirm('«'+t.topic+'» тестін «'+c.name+'» сыныбындағы барлық '+n+' адамға жіберуді растайсыз ба? Әр адамға '+limit+' рет тапсыруға рұқсат беріледі. Дәл осы тест бұрын жіберілген болса, ескісі өшіріліп, жаңасы қалады.'))return;
   const r=await authCall('teacher_assign_class',{classId,testId,limit});
   if(!r.ok){alert(r.msg||'Тест жіберілмеді');return}
   await window.__bridge.refresh();alert('✅ Тест сыныптағы '+r.count+' адамға жіберілді');showTeacher();
@@ -8536,7 +8574,8 @@ function createClass(){
   if(!n){alert('Сынып атауын жазыңыз');return}
   const a=getClasses();let code;
   do{code=genClassCode()}while(a.some(c=>c.code===code));
-  a.push({id:'c_'+Date.now().toString(36),name:n,teacherId:user.id,teacherName:user.name,code,students:[]});
+  const tsel=document.getElementById('tch-teacher'),tp=tsel&&tsel.value?profileById(tsel.value):null;
+  a.push({id:'c_'+Date.now().toString(36),name:n,teacherId:tp?tp.id:user.id,teacherName:tp?tp.name:user.name,code,students:[]});
   saveClasses(a);document.getElementById('tch-name').value='';renderTeacher();
 }
 function delClass(id){
@@ -8576,22 +8615,23 @@ function classCardHTML(c){
   const rows=c.students.map(id=>{
     const p=profileById(id),scores=assigned.filter(a=>a.uid===id).flatMap(a=>a.results||[]);
     const latest=scores.length?scores[scores.length-1]:null;
-    return `<tr><td><b>${esc(p?p.name:'?')}</b></td><td>${latest?latest.score+' / '+latest.max:'—'}</td><td style="white-space:nowrap"><button class="btn btn-s btn-sm" onclick="showStudent(${jsq(c.id)},${jsq(id)})">Балдарын қарау</button> <button class="btn btn-d btn-sm" onclick="removeStudent(${jsq(c.id)},${jsq(id)})">✕</button></td></tr>`;
+    return `<tr><td><b>${p&&p.role==='teacher'?'👨‍🏫 ':'👨‍🎓 '}${esc(p?p.name:'?')}</b></td><td>${latest?latest.score+' / '+latest.max:'—'}</td><td style="white-space:nowrap"><button class="btn btn-s btn-sm" onclick="showStudent(${jsq(c.id)},${jsq(id)})">Балдарын қарау</button> <button class="btn btn-d btn-sm" onclick="removeStudent(${jsq(c.id)},${jsq(id)})">✕</button></td></tr>`;
   }).join('');
   return `<div class="card">
     <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
       <h3>${esc(c.name)} <span class="badge badge-pub">Код: ${esc(c.code)}</span> <span class="sub">· ${esc(c.teacherName||'')}</span></h3>
-      <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-s btn-sm" onclick="openTchChat(${jsq(threadOfClass(c))})">💬 Админмен чат</button><button class="btn btn-d btn-sm" onclick="delClass(${jsq(c.id)})">Сыныпты өшіру</button></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-s btn-sm" onclick="openTchChat(${jsq(threadOfClass(c))})">💬 Админмен чат</button><button class="btn btn-ok btn-sm" onclick="showClassSend(null,${jsq(c.id)})">📨 Тест жіберу</button>${user&&user.isAdmin?`<button class="btn btn-d btn-sm" onclick="delClass(${jsq(c.id)})">Сыныпты өшіру</button>`:''}</div>
     </div>
     <div class="sub" style="margin-bottom:10px">Сыныптағы адамдар: <b>${c.students.length}</b> · тек сіз жіберген тесттердің балдары көрсетіледі</div>
     ${c.students.length?`<div class="tscroll"><table class="ttable"><tr><th>Адам</th><th>Соңғы балл</th><th></th></tr>${rows}</table></div>`:'<div class="sub">Оқушы жоқ. Төмендегі өріс арқылы логин бойынша қосыңыз немесе кодты оқушыларға беріңіз.</div>'}
     <div style="display:flex;gap:8px;margin-top:12px"><input id="tch-add-${c.id}" placeholder="Оқушы логині" style="flex:1;padding:9px 12px;border:1px solid var(--b);border-radius:20px;background:var(--bg);color:var(--t);font-family:inherit"><button class="btn btn-ok btn-sm" onclick="addStudent(${jsq(c.id)})">➕ Қосу</button></div>
     <div style="display:flex;gap:8px;margin-top:8px"><input id="tch-ncode-${c.id}" placeholder="Жаңа код (бос = кездейсоқ)" maxlength="8" style="flex:1;padding:9px 12px;border:1px solid var(--b);border-radius:20px;background:var(--bg);color:var(--t);font-family:inherit;text-transform:uppercase"><button class="btn btn-w btn-sm" onclick="changeClassCode(${jsq(c.id)})">🔄 Кодты өзгерту</button></div>
+    ${user&&user.isAdmin?adminClassToolsHTML(c):''}
   </div>`;
 }
 function renderTeacher(){
   const all=getClasses(),mine=all.filter(c=>c.teacherId===user.id),joined=all.filter(c=>c.students.includes(user.id));
-  document.getElementById('tch-classes').innerHTML=mine.length?mine.map(classCardHTML).join(''):'<div class="empty"><div class="ic">🏫</div><p>Сынып жоқ. Жоғарыда жаңа сынып құрыңыз.</p></div>';
+  document.getElementById('tch-classes').innerHTML=mine.length?mine.map(classCardHTML).join(''):('<div class="empty"><div class="ic">🏫</div><p>'+(user.isAdmin?'Сынып жоқ. Жоғарыда жаңа сынып құрыңыз.':'Сыныпты тек админ ашады. Сізге сынып бекітілгенде осында көрінеді.')+'</p></div>');
   document.getElementById('tch-joined').innerHTML=joined.length?joined.map(c=>`<div class="item" style="margin-bottom:6px"><div class="info"><h4>${esc(c.name)}</h4><p>Мұғалім: ${esc(c.teacherName||'')}</p></div><button class="btn btn-s btn-sm" onclick="leaveClass(${jsq(c.id)})">Шығу</button></div>`).join(''):'';
 }
 function showStudent(cid,sid){
@@ -8604,8 +8644,107 @@ function showStudent(cid,sid){
   </div>`;
   document.getElementById('tch-detail').scrollIntoView({behavior:'smooth',block:'start'});
 }
+function renderHomeAssigned(){
+  const mb=document.getElementById('assigned-menu-btn');if(mb)mb.style.display=(user&&!user.isAdmin)?'':'none';
+  const box=document.getElementById('home-assigned');if(!box)return;
+  if(!user||user.isAdmin){box.innerHTML='';return}
+  const list=LS.get('ubt_assigned_tests',[]).filter(a=>a&&a.uid===user.id);
+  if(!list.length){box.innerHTML='';return}
+  const cls=getClasses();
+  const left=a=>Math.max(0,(a.limit||0)-(a.used||0));
+  const items=list.slice().sort((x,y)=>(left(x)===0)-(left(y)===0)||(y.created||0)-(x.created||0));
+  const open=items.filter(a=>left(a)>0).length;
+  box.innerHTML=`<section class="card asg-card"><div class="asg-head"><h3>📨 Тапсырмалар</h3><span class="badge badge-pub">${open} ашық</span></div><p class="sub" style="margin-bottom:10px">Мұғалім немесе админ жіберген тесттер осында тұрады. Осы жерден тапсырасыз.</p><div class="list">`+
+    items.map(a=>{
+      const l=left(a),done=l===0,c=a.classId?cls.find(x=>x.id===a.classId):null;
+      const last=Array.isArray(a.results)&&a.results.length?a.results[a.results.length-1]:null;
+      return `<div class="item asg-item${done?' asg-done':''}"><div class="info"><h4>${esc(a.title)}</h4><p>${c?'🏫 '+esc(c.name)+' · ':''}Қалған әрекет: ${l}/${a.limit}${last?' · Соңғы нәтиже: '+last.score+' / '+last.max:''}</p></div><button class="btn ${done?'btn-s':'btn-p'} btn-sm" ${done?'disabled':''} onclick="startAssignedTest(${jsq(a.id)})">${done?'✔ Тапсырылды':'▶ Тапсыру'}</button></div>`;
+    }).join('')+`</div></section>`;
+}
+function lastReviewData(){
+  let r=null;
+  if(st&&st.lastScore&&Array.isArray(st.questions)&&st.questions.length&&!st.secureExam)r={questions:st.questions,answers:st.answers};
+  if(!r&&user){try{r=JSON.parse(sessionStorage.getItem('ubt_last_review_'+user.id)||'null')}catch(e){}}
+  if(!r&&user){const h=LS.get('ubt_hist_'+user.id,[])[0];if(h&&Array.isArray(h.questions))r=h}
+  return r&&Array.isArray(r.questions)?{questions:r.questions,answers:(r.answers&&typeof r.answers==='object')?r.answers:{}}:null;
+}
+function eaPct(ok,n){return n?Math.round(ok/n*100):0}
+function eaColor(p){return p>=80?'var(--ok)':p>=50?'var(--warn)':'var(--err)'}
+function errorAnalysisHTML(questions,answers){
+  const LT=['A','B','C','D','E','F'];
+  const qs=questions.filter(q=>q&&Array.isArray(q.options)&&Number.isInteger(q.correct)&&q.correct>=0&&q.correct<q.options.length);
+  if(!qs.length)return '';
+  const groups={},bad=[];let right=0,wrong=0,skipped=0;
+  qs.forEach((q,i)=>{
+    const ua=answers[q.id],skip=ua===undefined||ua===null,ok=!skip&&ua===q.correct;
+    const k=q.subjectName||'Басқа',g=groups[k]||(groups[k]={n:0,ok:0,lost:0});
+    const pts=Number.isFinite(q.points)&&q.points>0?q.points:1;
+    g.n++;
+    if(ok){g.ok++;right++}else{g.lost+=pts;if(skip)skipped++;else wrong++;bad.push({i,q,ua,skip})}
+  });
+  if(!bad.length)return '<h3>📊 Қате талдау</h3><p class="sub">🎉 Барлық жауап дұрыс — талдайтын қате жоқ.</p>';
+  const rows=Object.keys(groups).map(k=>({k,n:groups[k].n,ok:groups[k].ok,lost:groups[k].lost,p:eaPct(groups[k].ok,groups[k].n)})).sort((a,b)=>a.p-b.p||b.lost-a.lost);
+  const weak=rows.find(r=>r.p<100);
+  const list=bad.slice(0,40).map(b=>`<div class="ea-q"><b>${b.i+1}. ${esc(String(b.q.text||'').replace(/\s+/g,' ').slice(0,160))}</b><div>${b.skip?'⏭ Жауап берілмеген':'✗ Сіз: '+(LT[b.ua]||(b.ua+1))+') '+esc(b.q.options[b.ua]||'')}</div><div style="color:var(--ok)">✓ Дұрыс: ${LT[b.q.correct]||(b.q.correct+1)}) ${esc(b.q.options[b.q.correct]||'')}</div>${b.q.explanation?'<div class="sub">💡 '+esc(String(b.q.explanation))+'</div>':''}</div>`).join('');
+  const canRetry=st&&st.lastWrong&&st.lastWrong.length;
+  return `<h3>📊 Қате талдау</h3>
+    <div class="ea-chips"><span class="ea-chip ok">✓ Дұрыс: ${right}</span><span class="ea-chip bad">✗ Қате: ${wrong}</span><span class="ea-chip skip">⏭ Жауапсыз: ${skipped}</span></div>
+    ${rows.map(r=>`<div class="ea-row"><div class="ea-top"><span>${esc(r.k)}</span><b>${r.ok}/${r.n} · ${r.p}%${r.lost?' · −'+r.lost+' балл':''}</b></div><div class="ea-bar"><i style="width:${Math.max(r.p,3)}%;background:${eaColor(r.p)}"></i></div></div>`).join('')}
+    ${weak?`<div class="ea-tip">💡 Ең әлсіз пән: <b>${esc(weak.k)}</b> (${weak.p}%). Алдымен осы пәннің қателерін қайталаңыз.</div>`:''}
+    <details class="ea-more"><summary>Қателер тізімі (${bad.length})</summary>${list}${bad.length>40?'<div class="sub">Алғашқы 40 қате көрсетілді</div>':''}</details>
+    <div class="row" style="justify-content:flex-start;margin-top:12px">${canRetry?'<button class="btn btn-w btn-sm" onclick="startMistakesFromLast()">❌ Қателерді шешу</button>':''}<button class="btn btn-p btn-sm" onclick="reviewAns()">🤖 AI түсіндірмесі</button></div>`;
+}
+function renderErrorAnalysis(){
+  const el=document.getElementById('res-analysis');if(!el)return;
+  let html='';
+  try{const d=lastReviewData();if(d)html=errorAnalysisHTML(d.questions,d.answers)}catch(e){}
+  el.style.display=html?'':'none';el.innerHTML=html;
+}
+function renderMistAnalysis(){
+  const el=document.getElementById('mist-analysis');if(!el||!user)return;
+  const m=LS.get('ubt_mistakes_'+user.id,[]);
+  if(!m.length){el.innerHTML='';return}
+  const by={};m.forEach(q=>{const k=(q&&q.subjectName)||'Басқа';by[k]=(by[k]||0)+1});
+  const rows=Object.keys(by).map(k=>({k,n:by[k]})).sort((a,b)=>b.n-a.n).slice(0,10),mx=rows[0].n;
+  el.innerHTML=`<div class="card"><h3>📊 Қате талдау</h3><p class="sub">Сақталған қателер: <b>${m.length}</b>. Ең көп қате: <b>${esc(rows[0].k)}</b> (${rows[0].n}).</p>${rows.map(r=>`<div class="ea-row"><div class="ea-top"><span>${esc(r.k)}</span><b>${r.n}</b></div><div class="ea-bar"><i style="width:${Math.round(r.n/mx*100)}%;background:var(--err)"></i></div></div>`).join('')}<div class="ea-tip">💡 Алдымен «${esc(rows[0].k)}» пәнінің қателерін шешіңіз, содан кейін қалғандарына өтіңіз.</div></div>`;
+}
+function registeredUsers(){return Object.values(LS.get('ubt_profiles',{})).filter(p=>p&&typeof p==='object'&&p.id&&p.id!=='admin'&&p.accessApproved!==false)}
+function userOptionsHTML(exclude){
+  const ex=new Set(exclude||[]);
+  const us=registeredUsers().filter(p=>!ex.has(p.id)).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'kk'));
+  const stu=us.filter(p=>p.role!=='teacher'),tch=us.filter(p=>p.role==='teacher'&&p.teacherApproved);
+  const o=p=>`<option value="${esc(p.id)}">${esc(p.name||p.id)}</option>`;
+  return '<option value="">Тізімнен таңдаңыз…</option>'+(stu.length?`<optgroup label="👨‍🎓 Оқушылар">${stu.map(o).join('')}</optgroup>`:'')+(tch.length?`<optgroup label="👨‍🏫 Мұғалімдер">${tch.map(o).join('')}</optgroup>`:'');
+}
+function teacherOptionsHTML(sel){
+  const tch=registeredUsers().filter(p=>p.role==='teacher'&&p.teacherApproved).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'kk'));
+  return `<option value="">👑 Админ (мұғалімсіз)</option>`+tch.map(p=>`<option value="${esc(p.id)}" ${p.id===sel?'selected':''}>${esc(p.name||p.id)}</option>`).join('');
+}
+function fillTeacherSelect(){const e=document.getElementById('tch-teacher');if(e&&e.dataset.filled!==String(registeredUsers().length)){const v=e.value;e.innerHTML=teacherOptionsHTML(v);e.dataset.filled=String(registeredUsers().length)}}
+function adminClassToolsHTML(c){
+  const css='style="flex:1;min-width:180px;padding:9px 12px;border:1px solid var(--b);border-radius:20px;background:var(--bg);color:var(--t);font-family:inherit"';
+  return `<div style="border-top:1px solid var(--b);margin-top:12px;padding-top:12px"><div class="sub" style="margin-bottom:6px"><b>👑 Админ құралдары</b> · тіркелгендер тізімінен таңдаңыз</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><select id="tch-pick-${esc(c.id)}" ${css}>${userOptionsHTML([...(c.students||[]),'admin'])}</select><button class="btn btn-ok btn-sm" onclick="addMemberFromList(${jsq(c.id)})">➕ Сыныпқа қосу</button></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"><select id="tch-setteacher-${esc(c.id)}" ${css}>${teacherOptionsHTML(c.teacherId)}</select><button class="btn btn-s btn-sm" onclick="setClassTeacher(${jsq(c.id)})">👨‍🏫 Мұғалім тағайындау</button></div></div>`;
+}
+function addMemberFromList(cid){
+  if(!user||!user.isAdmin)return;
+  const a=getClasses(),c=a.find(x=>x.id===cid),sel=document.getElementById('tch-pick-'+cid);
+  if(!c||!sel||!sel.value){alert('Тізімнен қолданушыны таңдаңыз');return}
+  if((c.students||[]).includes(sel.value)){alert('Бұл адам сыныпта бар');return}
+  c.students=c.students||[];c.students.push(sel.value);saveClasses(a);refreshClassViews();
+}
+function setClassTeacher(cid){
+  if(!user||!user.isAdmin)return;
+  const a=getClasses(),c=a.find(x=>x.id===cid),sel=document.getElementById('tch-setteacher-'+cid);
+  if(!c||!sel)return;
+  const tp=sel.value?profileById(sel.value):null;
+  c.teacherId=tp?tp.id:user.id;c.teacherName=tp?tp.name:user.name;
+  saveClasses(a);refreshClassViews();
+}
 function renderHomeExtras(){
   const el=document.getElementById('home-extras');if(!el||!user)return;
+  try{renderHomeAssigned()}catch(e){}
   try{checkRollover()}catch(e){}
   if(user.isAdmin){el.innerHTML=quoteCard();return}
   const sk=currentStreak(),s=getStreak(),plan=LS.get('ubt_plan_'+user.id,null);
@@ -8646,7 +8785,7 @@ function profExtra(){
   const _ss=showScr;
   showScr=function(id){
     _ss(id);
-    try{document.body.classList.toggle('in-test',id==='s-test');if(id==='s-home')renderHomeExtras();mathScreen()}catch(e){}
+    try{document.body.classList.toggle('in-test',id==='s-test');if(id==='s-home')renderHomeExtras();if(id==='s-res')renderErrorAnalysis();if(id==='s-mist')renderMistAnalysis();mathScreen()}catch(e){}
   };
   const _rq=renderQ;
   renderQ=function(){_rq();try{updBmBtn();mathIn(document.getElementById('s-test'))}catch(e){}};
@@ -8807,6 +8946,7 @@ function sendThread(tid,who){
 function scrollChat(){const m=document.getElementById('cmsgs');if(m)m.scrollTop=m.scrollHeight}
 let tchThread=null;
 function submitClassRequest(){
+  alert('Сыныпты тек админ ашады');return;
   if(!user||user.isAdmin||!isTeacherUser())return;
   const name=document.getElementById('tch-req-name').value.trim();
   const note=document.getElementById('tch-req-note').value.trim();
@@ -8894,8 +9034,10 @@ function renderAdminClassChat(){
     if(!user)return;
     const T=isTeacherUser(),A=!!user.isAdmin;
     const cc=document.getElementById('tch-create-card');if(cc)cc.style.display=A?'':'none';
-    ['tch-req-card','tch-reqs','tch-chat'].forEach(i=>{const e=document.getElementById(i);if(e)e.style.display=(T&&!A)?'':'none'});
-    if(T&&!A){renderTeacherReqs();renderTeacherChat();tickCooldown()}
+    ['tch-req-card','tch-reqs'].forEach(i=>{const e=document.getElementById(i);if(e)e.style.display='none'});
+    const chatEl=document.getElementById('tch-chat');if(chatEl)chatEl.style.display=(T&&!A)?'':'none';
+    if(A)fillTeacherSelect();
+    if(T&&!A){renderTeacherChat()}
   };
   const _sa=showAdmin;
   showAdmin=function(){_sa();try{renderClassReqs();renderAdminThreads();renderAdminClassChat()}catch(e){}};
