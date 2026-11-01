@@ -99,15 +99,15 @@ def _sb_call(conf, method, path, body=None, prefer=None, timeout=30):
     return json.loads(raw.decode("utf-8")) if raw else None
 
 def _sb_load_all(conf):
-    out, off, step = {}, 0, 1000
+    out, off, step = {}, 0, 200
     while True:
         rows = _sb_call(conf, "GET", "%s?select=key,value&order=key.asc&limit=%d&offset=%d" % (_TABLE, step, off))
         for r in rows or []:
             if isinstance(r, dict) and isinstance(r.get("key"), str) and isinstance(r.get("value"), str):
                 out[r["key"]] = r["value"]
-        if not rows:
+        if not rows or len(rows) < step:
             return out
-        off += len(rows)
+        off += step
 
 def _sb_upsert(conf, items):
     batch, size = [], 0
@@ -2375,6 +2375,8 @@ html,body,.stApp,[data-testid="stAppViewContainer"],[data-testid="stMain"],secti
 [data-testid="stElementContainer"]{margin:0!important}
 [data-testid="stVerticalBlock"]{gap:0!important}
 iframe{border:none!important;display:block!important;width:100%!important}
+.stale-element,[data-stale="true"],[data-stale="true"] *,[data-testid="stAppViewContainer"] [data-stale]{opacity:1!important;filter:none!important;transition:none!important}
+[data-testid="stApp"]>*{transition:none!important}
 </style>""", unsafe_allow_html=True)
 
 html_code = r"""
@@ -4024,7 +4026,6 @@ html{text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased;-moz-o
 
 <style id="ubt-polish">
 :root{--ease:cubic-bezier(.22,.8,.3,1)}
-body{background:radial-gradient(1200px 600px at 12% -8%,color-mix(in srgb,var(--p) 14%,transparent),transparent 60%),radial-gradient(900px 500px at 100% 0,color-mix(in srgb,#7c3aed 12%,transparent),transparent 55%),var(--bg);background-attachment:fixed}
 @keyframes ubtIn{from{opacity:0;transform:translate3d(0,14px,0)}to{opacity:1;transform:none}}
 @keyframes ubtLogo{from{opacity:0;transform:scale(.86) translate3d(0,8px,0)}to{opacity:1;transform:none}}
 .screen.active>.wrap,.screen.active>.ubd{animation:ubtIn .42s var(--ease) both}
