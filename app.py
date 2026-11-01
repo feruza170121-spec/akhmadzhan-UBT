@@ -3752,6 +3752,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
   <div class="wrap">
     <div class="hdr"><h2>❌ Қатемен жұмыс</h2></div>
     <div id="mist-analysis"></div>
+    <div id="mist-tests"></div>
     <div id="mist-list" class="list"></div>
     <div class="row" style="margin-top:16px">
       <button class="btn btn-p" id="mist-start" style="display:none" onclick="startMistakes()">Қателерді шешу</button>
@@ -6840,7 +6841,7 @@ async function explainReviewQuestion(i,button){
   catch(e){box.textContent="Байланыс үзілді. Қайта басыңыз."}finally{button.disabled=false}
 }
 function reviewAns(){
-  const L=['A','B','C','D'];
+  const L=['A','B','C','D','E'];
   const latestH=user?LS.get('ubt_hist_'+user.id,[])[0]:null;
   const heldNow=!!(latestH&&latestH.held)||!!(st.verifiedExam&&st.verifiedExam.held&&(!latestH||!latestH.classTestId));
   if(heldNow){document.getElementById('rev-list').innerHTML='<div class="card">🔒 Қателер мен дұрыс жауаптар әзірге жабық. Сынып бойынша барлығы тапсырып болған соң, админ рұқсат береді — сонда осы жерден көре аласыз.</div>';showScr('s-rev');return}
@@ -6868,7 +6869,28 @@ function renderHistoryPage(){
   document.getElementById('hist-list').innerHTML=hist.length?hist.slice(0,ubtHistoryShown).map(h=>`<div class="item"><div class="info"><h4>${esc(h.topic||'Тест')}</h4><p>${esc(h.date||'')}</p></div><div style="font-weight:700;color:var(--p)">${esc(h.score)}/${esc(h.max)}</div></div>`).join('')+(hist.length>ubtHistoryShown?`<button class="btn btn-s" onclick="ubtHistoryShown+=50;renderHistoryPage()">Тағы 50 нәтиже (${hist.length-ubtHistoryShown} қалды)</button>`:''):'<div class="empty"><div class="ic">📭</div><p>Тарих бос</p></div>';
 }
 
+function studentHistRowHTML(h){
+  const L=['A','B','C','D','E','F'];
+  const qs=Array.isArray(h.questions)?h.questions:[],ans=(h.answers&&typeof h.answers==='object')?h.answers:null;
+  const head=`<summary style="cursor:pointer"><b>${esc(h.topic||'Тест')}</b> · ${esc(h.date||'')} · <b style="color:var(--p)">${esc(h.score)} / ${esc(h.max)}</b></summary>`;
+  if(h.held)return `<details class="card" style="margin-bottom:8px">${head}<p class="sub" style="margin-top:8px">🔒 Қателер мен дұрыс жауаптар әзірге жабық. Админ рұқсат бергенде ашылады.</p></details>`;
+  if(!qs.length||!ans)return '';
+  const body=qs.map((q,i)=>{
+    if(!q||!Array.isArray(q.options))return '';
+    const ua=ans[q.id],skip=ua===undefined||ua===null,ok=!skip&&ua===q.correct;
+    const mine=skip?'⏭ Жауап берілмеген':(ok?'✓ ':'✗ ')+'Сіз белгіледіңіз: '+(L[ua]||(ua+1))+') '+esc(q.options[ua]||'');
+    const right=Number.isInteger(q.correct)&&q.correct>=0&&q.correct<q.options.length?`<div style="color:var(--ok)">✓ Дұрыс жауап: ${L[q.correct]||(q.correct+1)}) ${esc(q.options[q.correct]||'')}</div>`:'';
+    return `<div class="ea-q"><b>${i+1}. ${esc(String(q.text||'').replace(/\s+/g,' ').slice(0,220))}</b><div style="color:${ok?'var(--ok)':'var(--err)'}">${mine}</div>${ok?'':right}</div>`;
+  }).join('');
+  return `<details class="card" style="margin-bottom:8px">${head}<div style="margin-top:8px">${body}</div></details>`;
+}
+function renderTakenTests(){
+  const box=document.getElementById('mist-tests');if(!box||!user)return;
+  const rows=LS.get('ubt_hist_'+user.id,[]).filter(h=>h&&(h.held||(Array.isArray(h.questions)&&h.questions.length&&h.answers))).slice(0,30);
+  box.innerHTML=rows.length?`<h3 style="margin:10px 0">📋 Тапсырған тесттер</h3>${rows.map(studentHistRowHTML).join('')}`:'';
+}
 function showMistakes(){
+  renderTakenTests();
   const m=LS.get('ubt_mistakes_'+user.id,[]);const btn=document.getElementById('mist-start');
   if(!m.length){document.getElementById('mist-list').innerHTML='<div class="empty"><div class="ic">🎉</div><p>Қате жоқ!</p></div>';btn.style.display='none'}
   else{document.getElementById('mist-list').innerHTML=m.map(q=>`<div class="item"><div class="info"><h4>${esc(q.text.substring(0,70)+(q.text.length>70?'...':''))}</h4><p>${esc(q.subjectName||'')}</p></div></div>`).join('');btn.style.display='inline-flex'}
@@ -6913,9 +6935,9 @@ function letterIdx(ch,ru){
 function shortT(x){x=String(x||'').trim();return x.length>40?x.slice(0,40)+'…':x}
 function checkQ(q){
   if(!q.text||!String(q.text).trim())return 'сұрақ мәтіні жоқ';
-  if(!Array.isArray(q.options)||q.options.length!==4)return 'нұсқа саны 4 болуы керек (табылды: '+(Array.isArray(q.options)?q.options.length:0)+')';
+  if(!Array.isArray(q.options)||q.options.length<4||q.options.length>5)return 'нұсқа саны 4 немесе 5 болуы керек (табылды: '+(Array.isArray(q.options)?q.options.length:0)+')';
   if(q.options.some(o=>!String(o).trim()))return 'бос нұсқа бар';
-  if(!(q.correct>=0&&q.correct<4))return 'дұрыс жауап көрсетілмеген (мыс: «Жауап: B» немесе *B)';
+  if(!(q.correct>=0&&q.correct<q.options.length))return 'дұрыс жауап көрсетілмеген (мыс: «Жауап: B» немесе *B)';
   return null;
 }
 function addParsed(res,q){
@@ -7203,7 +7225,7 @@ async function importFileScreen10000(){
   let duplicate=0,invalid=0;
   for(const q of r.questions){
     if(added.length>=free)break;
-    if(!q||!q.text||!Array.isArray(q.options)||q.options.length!==4||!Number.isInteger(q.correct)||q.correct<0||q.correct>3){invalid++;continue}
+    if(!q||!q.text||!Array.isArray(q.options)||q.options.length<4||q.options.length>5||!Number.isInteger(q.correct)||q.correct<0||q.correct>=q.options.length){invalid++;continue}
     const identity=ubtBankIdentity(subject,q.text);
     if(known.has(identity)){duplicate++;continue}
     known.add(identity);
@@ -9431,7 +9453,7 @@ async function importBankFiles10000(sourceInput,sourceSubject,statusTarget,butto
         const origin=String(block.topic||block.title||file.name).slice(0,120);
         for(const q of block.questions){
           scanned++;
-          if(!q||typeof q.text!=='string'||!q.text.trim()||!Array.isArray(q.options)||q.options.length!==4||q.options.some(x=>typeof x!=='string'||!x.trim())||!Number.isInteger(q.correct)||q.correct<0||q.correct>3){invalid++;continue}
+          if(!q||typeof q.text!=='string'||!q.text.trim()||!Array.isArray(q.options)||q.options.length<4||q.options.length>5||q.options.some(x=>typeof x!=='string'||!x.trim())||!Number.isInteger(q.correct)||q.correct<0||q.correct>=q.options.length){invalid++;continue}
           const identity=ubtBankIdentity(subject,q.text);
           if(known.has(identity)){duplicates++;continue}
           if(added>=free)continue;
@@ -10055,6 +10077,86 @@ ubtRailSync();
   window.addEventListener('focus',syncOnReturn);
   setInterval(function(){if(connected&&document.visibilityState!=='hidden')send()},30000);
   setTimeout(boot,100);
+})();
+</script>
+
+<script>
+(function(){
+  var KEY='lang_ui',DICT={"ru": {"Оқушы, мұғалім және админ ретінде кіру": "Вход для ученика, учителя и администратора", "Логин": "Логин", "Пароль": "Пароль", "Админ ретінде кіру": "Войти как админ", "Кіру": "Войти", "Тіркелу": "Регистрация", "Админге хабарласу": "Связаться с админом", "Назар аударыңыз!": "Внимание!", "Аты-жөніңіз (толық, нақты) *": "ФИО (полностью, настоящее) *", "Парольді қайталаңыз *": "Повторите пароль *", "Мұғалім ретінде тіркелу": "Регистрация как учитель", "Артқа": "Назад", "Парольді қалпына келтіру": "Восстановление пароля", "Код алу": "Получить код", "Код": "Код", "Шығу": "Выйти", "Басты бет": "Главная", "Статистика": "Статистика", "140 формат": "Формат 140", "Пәндер": "Предметы", "Сұрақтар базасы": "База вопросов", "Флеш-карталар": "Флеш-карточки", "Тест тарихы": "История тестов", "Материал құру": "Создание материалов", "Мәзір": "Меню", "Админ панелі": "Панель админа", "Профиль": "Профиль", "Тапсырмалар": "Задания", "Сұрақтарды базадан таңдаңыз немесе кездейсоқ алыңыз": "Выберите вопросы из базы или возьмите случайные", "Тест тапсырыңыз немесе өз тестіңізді құрыңыз": "Пройдите тест или создайте свой", "Пән тесттерім": "Тесты по предметам", "Сабақ": "Уроки", "Анимация сабақтар": "Анимационные уроки", "Құру және материалдар": "Создание и материалы", "Тест құру": "Создать тест", "Сұрақ қосу": "Добавить вопрос", "Схема құру": "Создать схему", "Кітапхана": "Библиотека", "Басқа бөлімдер": "Другие разделы", "Админнен": "От админа", "Келген хабарламалар": "Входящие сообщения", "Формула": "Формулы", "Қателер": "Ошибки", "Қателері": "Ошибки", "Қате жауаптар": "Неверные ответы", "Тарих": "История", "Тест нәтижелері": "Результаты тестов", "JSON / файл тесті": "Тест из JSON / файла", "График": "График", "Үлгерім көрсеткіші": "Показатели успеваемости", "Білім картасы": "Карта знаний", "ҰБТ балын болжау": "Прогноз балла ЕНТ", "Қайталауға арналған": "Для повторения", "Глоссарий": "Глоссарий", "Таңдаулылар": "Избранное", "Жоспар": "План", "Мұғалім панелі": "Панель учителя", "Қолданушылар": "Пользователи", "Өтініштер": "Заявки", "Көшірмені сақтау": "Сохранить копию", "Жіберу": "Отправить", "Барлық уақыт": "За всё время", "Соңғы 7 күн": "Последние 7 дней", "Соңғы 30 күн": "Последние 30 дней", "Соңғы 90 күн": "Последние 90 дней", "Кезең": "Период", "Пән": "Предмет", "Барлық пәндер": "Все предметы", "Сақтау": "Сохранить", "Өшіру": "Удалить", "Жабу": "Закрыть", "Рейтинг": "Рейтинг", "Менің нәтижелерім": "Мои результаты", "Қазақстан тарихы": "История Казахстана", "Оқу сауаттылығы": "Грамотность чтения", "Математикалық сауаттылық": "Математическая грамотность", "Математика": "Математика", "Физика": "Физика", "Химия": "Химия", "Биология": "Биология", "География": "География", "Информатика": "Информатика", "Ағылшын тілі": "Английский язык", "Қазақ тілі": "Казахский язык", "Дүниежүзі тарихы": "Всемирная история", "Құқық негіздері": "Основы права", "Басқа": "Другое", "Нәтиже": "Результат", "Жауаптарды қарау": "Посмотреть ответы", "Қателерді шешу": "Решить ошибки", "Қатемен жұмыс": "Работа над ошибками", "Тазалау": "Очистить", "Тестті аяқтау": "Завершить тест", "Аяқтау": "Завершить", "Қайту": "Вернуться", "Алдыңғы": "Назад", "Келесі сұрақ": "Следующий вопрос", "Сұрақ": "Вопрос", "Калькулятор": "Калькулятор", "Менделеев кестесі": "Таблица Менделеева", "Тестті бастау": "Начать тест", "Кездейсоқ тестті бастау": "Начать случайный тест", "Сұрақ саны": "Количество вопросов", "Жаңа тест": "Новый тест", "Менің тесттерім": "Мои тесты", "Сипаттама (міндетті емес)": "Описание (необязательно)", "Тестті сақтау": "Сохранить тест", "Болдырмау": "Отмена", "Жауап нұсқалары": "Варианты ответов", "Сұрақ мәтіні": "Текст вопроса", "Жаңа сұрақ": "Новый вопрос", "Сурет таңдау": "Выбрать картинку", "Қазіргі пароль": "Текущий пароль", "Жаңа пароль": "Новый пароль", "Парольді өзгерту": "Сменить пароль", "Парольді сақтау": "Сохранить пароль", "Жаңа ат": "Новое имя", "Атымды өзгерту": "Изменить имя", "Фото қою / ауыстыру": "Установить / сменить фото", "Тапсырған тесттері": "Пройденные тесты", "Тапсырған тесттер": "Пройденные тесты", "Жария тесттер": "Публичные тесты", "Маған жіберілген тесттер": "Тесты, отправленные мне", "Жіберілген тесттер": "Отправленные тесты", "Жүктелген тесттер": "Загруженные тесты", "Тапсыру лимиті": "Лимит попыток", "Мұғалім / Куратор": "Учитель / Куратор", "Жаңа сынып": "Новый класс", "Сынып құру": "Создать класс", "Сынып": "Класс", "Алдын ала қарау": "Предпросмотр", "Тест жалғасуда": "Тест продолжается", "Толық экранға оралу": "Вернуться в полноэкранный режим", "Мазмұн қорғалған": "Содержимое защищено", "БІЛІМГЕ БІР ҚАДАМ ЖАҚЫН": "НА ШАГ БЛИЖЕ К ЗНАНИЯМ", "Пароліңізді енгізіңіз": "Введите пароль", "Логинді жазыңыз немесе тізімнен таңдаңыз": "Введите логин или выберите из списка", "Кемінде 10 таңба": "Минимум 10 символов", "Хабарлама жазыңыз...": "Напишите сообщение...", "Сыныпқа рұқсат беру": "Открыть классу", "Қайта жабу": "Закрыть снова", "Админ рұқсат бергенде ашылады": "Откроется, когда админ разрешит", "Қателері мен дұрыс жауаптарын": "Ошибки и правильные ответы", "Шығарылған жаңа ұпай": "Новый результат"}, "en": {"Оқушы, мұғалім және админ ретінде кіру": "Sign in as student, teacher or admin", "Логин": "Login", "Пароль": "Password", "Админ ретінде кіру": "Sign in as admin", "Кіру": "Sign in", "Тіркелу": "Sign up", "Админге хабарласу": "Contact admin", "Назар аударыңыз!": "Attention!", "Аты-жөніңіз (толық, нақты) *": "Full name (real) *", "Парольді қайталаңыз *": "Repeat password *", "Мұғалім ретінде тіркелу": "Register as teacher", "Артқа": "Back", "Парольді қалпына келтіру": "Reset password", "Код алу": "Get code", "Код": "Code", "Шығу": "Log out", "Басты бет": "Home", "Статистика": "Statistics", "140 формат": "140 format", "Пәндер": "Subjects", "Сұрақтар базасы": "Question bank", "Флеш-карталар": "Flashcards", "Тест тарихы": "Test history", "Материал құру": "Create materials", "Мәзір": "Menu", "Админ панелі": "Admin panel", "Профиль": "Profile", "Тапсырмалар": "Assignments", "Сұрақтарды базадан таңдаңыз немесе кездейсоқ алыңыз": "Pick questions from the bank or take random ones", "Тест тапсырыңыз немесе өз тестіңізді құрыңыз": "Take a test or create your own", "Пән тесттерім": "Subject tests", "Сабақ": "Lessons", "Анимация сабақтар": "Animated lessons", "Құру және материалдар": "Create & materials", "Тест құру": "Create test", "Сұрақ қосу": "Add question", "Схема құру": "Create diagram", "Кітапхана": "Library", "Басқа бөлімдер": "Other sections", "Админнен": "From admin", "Келген хабарламалар": "Received messages", "Формула": "Formulas", "Қателер": "Mistakes", "Қателері": "Mistakes", "Қате жауаптар": "Wrong answers", "Тарих": "History", "Тест нәтижелері": "Test results", "JSON / файл тесті": "Test from JSON / file", "График": "Chart", "Үлгерім көрсеткіші": "Progress indicators", "Білім картасы": "Knowledge map", "ҰБТ балын болжау": "UNT score forecast", "Қайталауға арналған": "For review", "Глоссарий": "Glossary", "Таңдаулылар": "Favorites", "Жоспар": "Plan", "Мұғалім панелі": "Teacher panel", "Қолданушылар": "Users", "Өтініштер": "Requests", "Көшірмені сақтау": "Save backup", "Жіберу": "Send", "Барлық уақыт": "All time", "Соңғы 7 күн": "Last 7 days", "Соңғы 30 күн": "Last 30 days", "Соңғы 90 күн": "Last 90 days", "Кезең": "Period", "Пән": "Subject", "Барлық пәндер": "All subjects", "Сақтау": "Save", "Өшіру": "Delete", "Жабу": "Close", "Рейтинг": "Leaderboard", "Менің нәтижелерім": "My results", "Қазақстан тарихы": "History of Kazakhstan", "Оқу сауаттылығы": "Reading literacy", "Математикалық сауаттылық": "Math literacy", "Математика": "Mathematics", "Физика": "Physics", "Химия": "Chemistry", "Биология": "Biology", "География": "Geography", "Информатика": "Computer science", "Ағылшын тілі": "English", "Қазақ тілі": "Kazakh language", "Дүниежүзі тарихы": "World history", "Құқық негіздері": "Law basics", "Басқа": "Other", "Нәтиже": "Result", "Жауаптарды қарау": "Review answers", "Қателерді шешу": "Practice mistakes", "Қатемен жұмыс": "Work on mistakes", "Тазалау": "Clear", "Тестті аяқтау": "Finish test", "Аяқтау": "Finish", "Қайту": "Return", "Алдыңғы": "Previous", "Келесі сұрақ": "Next question", "Сұрақ": "Question", "Калькулятор": "Calculator", "Менделеев кестесі": "Periodic table", "Тестті бастау": "Start test", "Кездейсоқ тестті бастау": "Start random test", "Сұрақ саны": "Number of questions", "Жаңа тест": "New test", "Менің тесттерім": "My tests", "Сипаттама (міндетті емес)": "Description (optional)", "Тестті сақтау": "Save test", "Болдырмау": "Cancel", "Жауап нұсқалары": "Answer options", "Сұрақ мәтіні": "Question text", "Жаңа сұрақ": "New question", "Сурет таңдау": "Choose image", "Қазіргі пароль": "Current password", "Жаңа пароль": "New password", "Парольді өзгерту": "Change password", "Парольді сақтау": "Save password", "Жаңа ат": "New name", "Атымды өзгерту": "Change my name", "Фото қою / ауыстыру": "Set / change photo", "Тапсырған тесттері": "Taken tests", "Тапсырған тесттер": "Taken tests", "Жария тесттер": "Public tests", "Маған жіберілген тесттер": "Tests sent to me", "Жіберілген тесттер": "Sent tests", "Жүктелген тесттер": "Imported tests", "Тапсыру лимиті": "Attempt limit", "Мұғалім / Куратор": "Teacher / Curator", "Жаңа сынып": "New class", "Сынып құру": "Create class", "Сынып": "Class", "Алдын ала қарау": "Preview", "Тест жалғасуда": "Test in progress", "Толық экранға оралу": "Return to fullscreen", "Мазмұн қорғалған": "Content protected", "БІЛІМГЕ БІР ҚАДАМ ЖАҚЫН": "ONE STEP CLOSER TO KNOWLEDGE", "Пароліңізді енгізіңіз": "Enter your password", "Логинді жазыңыз немесе тізімнен таңдаңыз": "Type a login or pick from the list", "Кемінде 10 таңба": "At least 10 characters", "Хабарлама жазыңыз...": "Write a message...", "Сыныпқа рұқсат беру": "Release to class", "Қайта жабу": "Lock again", "Админ рұқсат бергенде ашылады": "Opens when the admin allows it", "Қателері мен дұрыс жауаптарын": "Mistakes and correct answers", "Шығарылған жаңа ұпай": "New score"}},lang='kk',busy=0;
+  var RX=/^([^\p{L}\p{N}]*)([\s\S]*?)([^\p{L}\p{N}]*)$/u;
+  function core(t){var m=RX.exec(t);return m?m[2].replace(/\s+/g,' ').trim().toLowerCase():t.trim().toLowerCase()}
+  var MAP={ru:{},en:{}};
+  ['ru','en'].forEach(function(l){Object.keys(DICT[l]).forEach(function(k){MAP[l][core(k)]=DICT[l][k]})});
+  function trText(t){
+    if(lang==='kk')return t;
+    var m=RX.exec(t);if(!m||!m[2].trim())return t;
+    var inner=m[2],lead=/^\s*/.exec(inner)[0],tail=/\s*$/.exec(inner)[0];
+    var hit=MAP[lang][core(inner)];
+    if(hit===undefined)return t;
+    var trail=m[3];
+    // сөз соңындағы * : сияқты белгілер сөздікте болса, оны қайта қоспаймыз
+    var keyHasTail=/[^\p{L}\p{N}\s]$/u.test(hit.trim());
+    return m[1]+lead+hit+tail+(keyHasTail?'':trail);
+  }
+  var store=new WeakMap(),ATTRS=['placeholder','title','aria-label'];
+  function skip(n){var p=n.parentNode;return !p||/^(SCRIPT|STYLE|TEXTAREA|CODE|PRE|NOSCRIPT)$/.test(p.nodeName)||(p.closest&&p.closest('#lang-sw'))}
+  function doText(n){
+    if(skip(n))return;
+    var rec=store.get(n),cur=n.nodeValue,orig=(rec&&cur===rec.t)?rec.o:cur;
+    var out=trText(orig);
+    if(out!==cur){n.nodeValue=out}
+    store.set(n,{o:orig,t:out});
+  }
+  function doAttrs(el){
+    if(el.closest&&el.closest('#lang-sw'))return;
+    var rec=el.__kk||(el.__kk={});
+    ATTRS.forEach(function(a){
+      if(!el.hasAttribute||!el.hasAttribute(a))return;
+      var cur=el.getAttribute(a),r=rec[a],orig=(r&&cur===r.t)?r.o:cur,out=trText(orig);
+      if(out!==cur)el.setAttribute(a,out);
+      rec[a]={o:orig,t:out};
+    });
+  }
+  function walk(root){
+    if(root.nodeType===3){doText(root);return}
+    if(root.nodeType!==1&&root.nodeType!==9&&root.nodeType!==11)return;
+    if(root.nodeType===1)doAttrs(root);
+    var w=document.createTreeWalker(root,NodeFilter.SHOW_ELEMENT|NodeFilter.SHOW_TEXT,null),n;
+    while((n=w.nextNode())){if(n.nodeType===3)doText(n);else doAttrs(n)}
+  }
+  var obs=new MutationObserver(function(ms){
+    ms.forEach(function(m){
+      if(m.type==='characterData')doText(m.target);
+      else if(m.type==='attributes')doAttrs(m.target);
+      else m.addedNodes.forEach(function(n){walk(n)});
+    });
+  });
+  function start(){obs.observe(document.body,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:ATTRS})}
+  function setLang(l){
+    lang=(l==='ru'||l==='en')?l:'kk';
+    try{localStorage.setItem(KEY,lang)}catch(e){}
+    document.documentElement.lang=lang==='kk'?'kk':lang;
+    obs.disconnect();walk(document.body);start();
+    var b=document.querySelectorAll('#lang-sw button');
+    for(var i=0;i<b.length;i++)b[i].style.opacity=(b[i].getAttribute('data-l')===lang)?'1':'.55';
+  }
+  window.setUiLang=setLang;
+  function build(){
+    var d=document.createElement('div');d.id='lang-sw';
+    d.setAttribute('style','position:fixed;top:8px;right:8px;z-index:9000;display:flex;gap:4px;padding:3px;border-radius:10px;background:rgba(20,24,40,.72);backdrop-filter:blur(6px);font:600 11px system-ui,sans-serif');
+    [['kk','ҚАЗ'],['ru','РУС'],['en','ENG']].forEach(function(x){
+      var b=document.createElement('button');b.type='button';b.setAttribute('data-l',x[0]);b.textContent=x[1];
+      b.setAttribute('style','border:0;border-radius:7px;padding:4px 8px;cursor:pointer;color:#fff;background:rgba(255,255,255,.14);font:inherit');
+      b.onclick=function(){setLang(x[0])};d.appendChild(b);
+    });
+    document.body.appendChild(d);
+  }
+  function init(){
+    build();
+    var saved='kk';try{saved=localStorage.getItem(KEY)||'kk'}catch(e){}
+    setLang(saved);
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();
 </script>
 </body>
