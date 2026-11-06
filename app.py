@@ -4135,6 +4135,26 @@ html{text-rendering:optimizeSpeed}
 
 .school-dialog [hidden],.school-tools>[hidden]{display:none!important}
 </style>
+
+<style id="ubt-glass-navigation">
+#ubt-icon-rail{background:linear-gradient(135deg,rgba(47,53,54,.88),rgba(20,28,31,.86));backdrop-filter:blur(22px) saturate(140%);-webkit-backdrop-filter:blur(22px) saturate(140%);border:1px solid #ffffff36;box-shadow:0 10px 32px #0003,inset 0 1px 0 #ffffff20;overflow:hidden}
+#ubt-icon-rail .ubt-rail-link{z-index:1;color:#d7e3df;transition:color .3s,transform .4s,background .3s}
+#ubt-icon-rail .ubt-rail-link.is-active{color:#caffed;background:transparent;border-color:transparent;box-shadow:none}
+#ubt-icon-rail .ubt-rail-link.is-active:before{display:none}
+#ubt-icon-rail .ubt-rail-link.is-active svg{filter:drop-shadow(0 0 7px #6affcd)}
+#ubt-icon-rail .ubt-rail-link:hover{background:#ffffff0e;border-color:transparent;color:white}
+#ubt-icon-rail .ubt-glass-wave{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0;overflow:visible}
+#ubt-icon-rail .ubt-glass-wave path{fill:none;stroke:#7fffd1;stroke-width:2.3;filter:drop-shadow(0 0 3px #6affcf) drop-shadow(0 0 8px #52ffc0)}
+@media(max-width:700px){
+ body.ubt-has-rail #ubt-icon-rail{left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom,0px));width:calc(100% - 20px);height:70px;min-height:70px;padding:5px 8px;border:1px solid #ffffff45;border-radius:36px;box-shadow:0 10px 30px #0004,inset 0 1px 0 #ffffff22}
+ #ubt-icon-rail .ubt-rail-links{height:100%;gap:0}
+ #ubt-icon-rail .ubt-rail-link{height:58px;max-width:none;padding:7px 1px;gap:5px}
+ #ubt-icon-rail .ubt-rail-caption{font-size:clamp(7px,2.1vw,10px)}
+ body.ubt-has-rail #theme-btn,body.ubt-has-rail #sync-ind{bottom:calc(92px + env(safe-area-inset-bottom,0px))!important}
+}
+@media(prefers-reduced-motion:reduce){#ubt-icon-rail .ubt-rail-link{transition:none}}
+</style>
+
 <script type="text/plain" id="app-src">
 
 const ubtAssetPromises=new Map();
@@ -9731,6 +9751,39 @@ const ubtRailViewport=window.matchMedia('(max-width:700px)');
 if(ubtRailViewport.addEventListener)ubtRailViewport.addEventListener('change',ubtRailSync);
 ubtRailSync();
 
+
+
+// Glass navigation: one continuous neon curve follows the active destination.
+(function(){
+ const rail=document.getElementById('ubt-icon-rail');if(!rail)return;
+ const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg'),path=document.createElementNS(ns,'path');
+ svg.classList.add('ubt-glass-wave');svg.setAttribute('aria-hidden','true');svg.appendChild(path);rail.prepend(svg);
+ let frame=0,current=null,target=0,lastMode=null;
+ const reduced=window.matchMedia('(prefers-reduced-motion: reduce)');
+ function draw(center,mobile,w,h){
+  svg.setAttribute('viewBox','0 0 '+w+' '+h);
+  const length=mobile?w:h,base=mobile?h-4:w-4,peak=mobile?9:13,spread=mobile?Math.min(49,w/8):25;
+  const points=[['M',0,base],['L',center-spread,base],['C',center-spread*.44,base,center-spread*.56,peak,center,peak],['C',center+spread*.56,peak,center+spread*.44,base,center+spread,base],['L',length,base]];
+  path.setAttribute('d',points.map(p=>{let s=p[0];for(let i=1;i<p.length;i+=2)s+=' '+(mobile?p[i]:p[i+1])+' '+(mobile?p[i+1]:p[i]);return s}).join(' '));
+ }
+ function update(){
+  cancelAnimationFrame(frame);frame=0;
+  if(!document.body.classList.contains('ubt-has-rail')){current=null;return}
+  const mobile=window.matchMedia('(max-width:700px)').matches;
+  const active=Array.from(rail.querySelectorAll('.is-active')).find(b=>b.getClientRects().length);
+  if(!active){svg.style.display='none';return}svg.style.display='';
+  const box=rail.getBoundingClientRect(),b=active.getBoundingClientRect();
+  target=mobile?b.left-box.left+b.width/2:b.top-box.top+b.height/2;
+  if(current===null||lastMode!==mobile||reduced.matches)current=target;
+  lastMode=mobile;const start=current,goal=target,t0=performance.now();
+  function tick(now){const t=Math.min(1,(now-t0)/420),ease=1-Math.pow(1-t,3);current=start+(goal-start)*ease;draw(current,mobile,box.width,box.height);if(t<1)frame=requestAnimationFrame(tick)}
+  frame=requestAnimationFrame(tick);
+ }
+ const original=ubtRailSync;ubtRailSync=function(){const result=original.apply(this,arguments);update();return result};
+ window.addEventListener('resize',update,{passive:true});rail.querySelector('.ubt-rail-links').addEventListener('scroll',update,{passive:true});
+ if(window.ResizeObserver)new ResizeObserver(update).observe(rail);
+ update();
+})();
 
 const schoolState={kind:'teachers',page:0,person:null,classId:null,imported:null,fileName:'',fileJob:0,fileReading:false,busy:false,searchTimer:0,classPage:0,assignedShown:100};
 const schoolCache={uid:null,p:null,c:null,data:null};
