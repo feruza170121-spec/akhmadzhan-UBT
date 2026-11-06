@@ -31,7 +31,7 @@ _MAX_BOOK_BYTES = 5 * 1024 * 1024
 _PBKDF_ITER = 100_000
 _MIN_PASS = 10
 _SERVER_ONLY = ("ubt_admin_pass", "ubt_admin_ph", "ubt_owner_name")
-_SERVER_PREFIXES = ("ubt_server_exam_",)
+_SERVER_PREFIXES = ("ubt_server_exam_", "ubt_server_visits_")
 _ADMIN_NAMES = ("админ", "admin")
 _USER_TTL = 14 * 86400
 _ADMIN_TTL = 12 * 3600
@@ -1403,6 +1403,33 @@ def _handle_req(state, sid, rq):
 
     if typ == "submit_assigned_score":
         return {"ok": False, "msg": "Нәтиже тек finish_exam арқылы есептеледі"}
+
+    if typ == "visit_record":
+        if not sess:
+            return {"ok": False}
+        with state["lock"]:
+            if sess.get("visit_recorded"):
+                return {"ok": True}
+            stamp = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5))).isoformat(timespec="seconds")
+            device = str(d.get("device") or "Белгісіз құрылғы")[:240]
+            key = "ubt_server_visits_" + stamp[:10]
+            rows = _jload(state["db"].get(key, "[]"), list, [])
+            rows.append({"uid": sess["uid"], "name": sess["name"], "time": stamp, "device": device})
+            _put(state, key, _jdump(rows))
+            sess["visit_recorded"] = True
+            _commit(state)
+        return {"ok": True}
+    if typ == "admin_visits":
+        if not sess or not sess["admin"]:
+            return {"ok": False, "msg": "Тек админге қолжетімді"}
+        day = str(d.get("day") or "")
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            return {"ok": False, "msg": "Күнді таңдаңыз"}
+        offset = max(0, min(1000000, int(d.get("offset") or 0)))
+        with state["lock"]:
+            rows = _jload(state["db"].get("ubt_server_visits_" + day, "[]"), list, [])
+            result = list(reversed(rows))
+            return {"ok": True, "rows": result[offset:offset+50], "total": len(rows)}
 
     if typ == "login":
         name = str(d.get("name") or "").strip()[:60]
@@ -4155,6 +4182,7 @@ html{text-rendering:optimizeSpeed}
 @media(prefers-reduced-motion:reduce){#ubt-icon-rail .ubt-rail-link{transition:none}}
 </style>
 
+<style>@media(max-width:700px){.screen:not(.active){display:none!important}.card{content-visibility:auto;contain-intrinsic-size:auto 180px}#ubt-icon-rail{backdrop-filter:none!important;-webkit-backdrop-filter:none!important}#ubt-icon-rail .ubt-glass-wave path{filter:drop-shadow(0 0 3px #6affcf)!important}}#visit-panel th{text-align:left;padding:10px}</style>
 <script type="text/plain" id="app-src">
 
 const ubtAssetPromises=new Map();
@@ -9981,6 +10009,32 @@ async function schoolDeleteClass(cid,button){
   if(!user||!user.isAdmin||!confirm('Сыныпты өшіресіз бе? Тесттер мен нәтижелер сақталады.'))return;
   await schoolAction(button,'school_delete_class',{classId:cid},()=>{schoolState.classId=null;showSchoolClasses()});
 }
+
+(function(){
+ let page=0,job=0,recorded='',sending=false;
+ const today=()=>new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Almaty',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+ async function deviceName(){
+  const ua=navigator.userAgent;let model='';
+  try{if(navigator.userAgentData){const d=await navigator.userAgentData.getHighEntropyValues(['model','platform','platformVersion']);model=[d.platform,d.model].filter(Boolean).join(' ')}}catch(e){}
+  if(!model){const m=ua.match(/Android[^;)]*;\s*([^;)]+?)(?:\s+Build\/[^;)]*)?\)/);model=m?'Android · '+m[1]:/iPhone/.test(ua)?'Apple iPhone':/iPad/.test(ua)?'Apple iPad':/Windows/.test(ua)?'Windows компьютер':/Macintosh/.test(ua)?'Mac':/Android/.test(ua)?'Android телефон':'Белгісіз құрылғы'}
+  return model+' · '+(/Edg/.test(ua)?'Edge':/Firefox/.test(ua)?'Firefox':/Chrome/.test(ua)?'Chrome':/Safari/.test(ua)?'Safari':'Браузер');
+ }
+ async function record(){if(!user||!window.__token||sending||recorded===window.__token)return;sending=true;const token=window.__token;try{const r=await window.__bridge.call('visit_record',{device:await deviceName()});if(r.ok)recorded=token}finally{sending=false}}
+ window.loadVisitTimes=async function(reset=true){
+  if(!user||!user.isAdmin)return;if(reset)page=0;const id=++job,day=document.getElementById('visit-day').value;
+  const body=document.getElementById('visit-body');body.textContent='Жүктелуде…';
+  const r=await window.__bridge.call('admin_visits',{day,offset:page*50});if(id!==job||!user||!user.isAdmin)return;
+  if(!r.ok){body.textContent=r.msg||'Қайта көріңіз';return}
+  document.getElementById('visit-count').textContent='Кіру саны: '+r.total+' · Қазақстан уақыты (UTC+5)';
+  body.innerHTML=r.rows.length?'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;min-width:530px"><thead><tr><th>Аты</th><th>Күні</th><th>Уақыты</th><th>Құрылғы / браузер</th></tr></thead><tbody>'+r.rows.map(x=>'<tr>'+[x.name,x.time.slice(0,10),x.time.slice(11,19),x.device].map(v=>'<td style="padding:10px;border-bottom:1px solid var(--b)">'+esc(v)+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>':'Бұл күні кіру тіркелмеген.';
+  document.getElementById('visit-prev').disabled=page===0;document.getElementById('visit-next').disabled=(page+1)*50>=r.total;
+ };
+ window.visitPage=function(delta){page=Math.max(0,page+delta);loadVisitTimes(false)};
+ function sync(){record();const admin=!!(user&&user.isAdmin);let panel=document.getElementById('visit-panel');if(!admin){if(panel)panel.remove();return}if(document.querySelector('.screen.active')?.id!=='s-admin')return;if(!panel){panel=document.createElement('section');panel.id='visit-panel';panel.className='card';panel.style.marginTop='20px';panel.innerHTML='<h3>Уақыттар</h3><label>Күнді таңдаңыз <input type="date" id="visit-day" onchange="loadVisitTimes()"></label><p id="visit-count" class="sub"></p><p class="sub">Құрылғы браузер берген мәлімет бойынша көрсетіледі. Кей телефондар нақты моделін бермейді. Журнал осы жаңартудан бастап жазылады.</p><div id="visit-body"></div><div class="row" style="margin-top:12px"><button id="visit-prev" class="btn btn-s" onclick="visitPage(-1)">Алдыңғы</button><button id="visit-next" class="btn btn-s" onclick="visitPage(1)">Келесі</button></div>';document.querySelector('#s-admin > .wrap').appendChild(panel);document.getElementById('visit-day').value=today()}loadVisitTimes()}
+ const original=showScr;showScr=function(){const r=original.apply(this,arguments);sync();return r};
+ const oldRefresh=syncRefresh;syncRefresh=function(){const r=oldRefresh.apply(this,arguments);record();if(!user||!user.isAdmin)document.getElementById('visit-panel')?.remove();return r};
+ setTimeout(sync,500);
+})();
 </script>
 <script>
 (function(){
