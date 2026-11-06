@@ -31,7 +31,7 @@ _MAX_BOOK_BYTES = 5 * 1024 * 1024
 _PBKDF_ITER = 100_000
 _MIN_PASS = 10
 _SERVER_ONLY = ("ubt_admin_pass", "ubt_admin_ph", "ubt_owner_name")
-_SERVER_PREFIXES = ("ubt_server_exam_", "ubt_server_visits_")
+_SERVER_PREFIXES = ("ubt_server_exam_", "ubt_server_visits_", "ubt_server_animation_")
 _ADMIN_NAMES = ("админ", "admin")
 _USER_TTL = 14 * 86400
 _ADMIN_TTL = 12 * 3600
@@ -1403,6 +1403,29 @@ def _handle_req(state, sid, rq):
 
     if typ == "submit_assigned_score":
         return {"ok": False, "msg": "Нәтиже тек finish_exam арқылы есептеледі"}
+
+    if typ in ("profile_animation_get", "profile_animation_set"):
+        if not sess:
+            return {"ok": False, "msg": "Аккаунтқа кіріңіз"}
+        uid = str(d.get("uid") or sess["uid"])[:150]
+        if uid != sess["uid"] and not sess["admin"]:
+            return {"ok": False, "msg": "Рұқсат жоқ"}
+        if uid != "admin" and not any(p.get("id") == uid for p in _profiles(state).values() if isinstance(p, dict)):
+            return {"ok": False, "msg": "Қолданушы табылмады"}
+        key = "ubt_server_animation_" + uid
+        with state["lock"]:
+            if typ == "profile_animation_set":
+                if not sess["admin"]:
+                    return {"ok": False, "msg": "Тек админ өзгерте алады"}
+                url = str(d.get("url") or "").strip()
+                parsed = urllib.parse.urlsplit(url)
+                if url and (len(url) > 2000 or parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or not parsed.path.lower().endswith((".mp4", ".webm"))):
+                    return {"ok": False, "msg": "HTTPS арқылы ашылатын тікелей MP4 немесе WebM сілтемесін жазыңыз"}
+                _put(state, key, _jdump({"url": url}))
+                _commit(state)
+            config = _jload(state["db"].get(key, "{}"), dict, {})
+            variant = 0 if uid == "admin" else int(hashlib.sha256(uid.encode()).hexdigest()[:8], 16) % 4
+            return {"ok": True, "url": config.get("url", ""), "variant": variant}
 
     if typ == "visit_record":
         if not sess:
@@ -4208,6 +4231,29 @@ html{text-rendering:optimizeSpeed}
 #ubt-rail-preview{position:fixed;z-index:220;left:78px;top:20px;width:225px;max-width:calc(100vw - 90px);padding:22px 20px;border:1px solid #8cf0dc66;border-radius:0 16px 16px 16px;background:linear-gradient(135deg,#309e96,#277e80);color:#fff;box-shadow:0 12px 30px #05172130;pointer-events:none;opacity:0;visibility:hidden;transform:translateX(-12px) scale(.97);transform-origin:left center;transition:opacity .18s ease,transform .24s ease,visibility .18s;font-family:inherit;text-align:center}
 #ubt-rail-preview.is-visible{opacity:1;visibility:visible;transform:translateX(0) scale(1)}#ubt-rail-preview .preview-icon{display:flex;justify-content:center;margin-bottom:12px}#ubt-rail-preview svg{width:30px;height:30px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}#ubt-rail-preview strong{display:block;font-size:15px;line-height:1.4;margin-bottom:8px}#ubt-rail-preview p{font-size:12px;line-height:1.65;margin:0;color:#e2fffa}#ubt-icon-rail .ubt-rail-link:hover svg{transform:scale(1.13);transition:transform .2s}
 @media(max-width:700px),(hover:none){#ubt-rail-preview{display:none!important}}@media(prefers-reduced-motion:reduce){#ubt-rail-preview,#ubt-icon-rail .ubt-rail-link:hover svg{transition:none;transform:none}}
+</style>
+<style>
+.ubd-profile-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;position:relative;z-index:2}.ubd-profile-actions button{min-height:38px;border:1px solid #ac9ce366;background:#182544cc;color:#f5f2ff;border-radius:10px;padding:8px 16px;cursor:pointer;font:inherit;font-size:12px}.ubd-profile-actions button:last-child{color:#ffd2ce;border-color:#c9918855}.profile-scene{position:relative;isolation:isolate;height:180px;overflow:hidden;border-radius:16px;background:linear-gradient(135deg,#182f35,#193927 65%,#716037);margin-bottom:16px;contain:layout paint}.profile-scene svg{height:100%;width:100%;display:block}.profile-scene video{width:100%;height:100%;object-fit:cover;display:block}.profile-scene .leaf{position:absolute;top:-18px;left:var(--lx);width:10px;height:17px;border-radius:0 90% 0 90%;background:var(--leaf,#e8b55a);opacity:.8;animation:leaf-fall var(--ld) var(--delay) linear infinite;pointer-events:none}.scene-1{background:linear-gradient(135deg,#191739,#4e3054);--leaf:#d3a3f5}.scene-2{background:linear-gradient(135deg,#14273e,#245967);--leaf:#81e1d0}.scene-3{background:linear-gradient(135deg,#341c31,#754c38);--leaf:#ee947e}.ubd-profile-card{display:grid;grid-template-columns:minmax(0,1fr) minmax(140px,.7fr);gap:20px}.ubd-profile-card .profile-main{display:flex;align-items:center;gap:18px;min-width:0}.ubd-profile-card .profile-scene{margin:0;height:180px}.profile-card-name{overflow-wrap:anywhere}.scene-label{position:absolute;left:12px;bottom:10px;color:#fff;font-size:10px;text-shadow:0 1px 4px #000;pointer-events:none}.scene-controls{position:absolute;right:8px;bottom:8px;z-index:2;border:1px solid #fff4;background:#142331cc;color:white;border-radius:8px;padding:5px 8px;font-size:10px;cursor:pointer}#exam-window-guard{position:fixed;inset:0;z-index:9998;background:#0c1728f7;color:white;display:none;place-items:center;text-align:center;padding:24px}#exam-window-guard.show{display:grid}#exam-window-guard p{max-width:420px;line-height:1.7;margin:12px auto}#exam-window-guard button{padding:12px 20px;border:0;border-radius:12px;background:#6de4c5;color:#102b29;font:inherit;cursor:pointer}
+@keyframes leaf-fall{0%{transform:translate3d(0,-20px,0) rotate(0)}50%{transform:translate3d(20px,95px,0) rotate(160deg)}100%{transform:translate3d(-8px,220px,0) rotate(340deg);opacity:0}}
+@media(max-width:600px){.ubd-profile-card{grid-template-columns:1fr}.ubd-profile-card .profile-scene{height:130px}.profile-scene .leaf:nth-of-type(n+6){display:none}}
+@media(prefers-reduced-motion:reduce){.profile-scene .leaf{animation:none;top:40%;transform:rotate(25deg)}}
+</style>
+<style id="auth-sliding-panel-style">
+#s-login{background:radial-gradient(ellipse at 20% 10%,#36105277,transparent 65%),radial-gradient(ellipse at 90% 80%,#24115b66,transparent 60%),#0d061b;color:#f7efff;min-height:100dvh}
+#s-login>.wrap{max-width:1040px;padding:40px 24px 65px;min-height:100dvh;justify-content:center}
+#s-login .ubt-welcome{margin:0 0 24px}#s-login .ubt-brand-label{color:#ba98f0}#s-login .ubt-brand-title{font-size:36px;color:#faf6ff}#s-login .ubt-brand-title span{color:#b077ff}#s-login .ubt-brand-line{display:none}#s-login .ubt-welcome:after{display:none}
+#auth-sliding-panel{position:relative;width:100%;min-height:510px;border:1px solid #8035b05c;border-radius:22px;background:#140922;box-shadow:0 18px 60px #0005;isolation:isolate;overflow:hidden}
+#auth-sliding-panel .auth-forms{width:50%;min-height:510px;position:relative;transition:transform .65s cubic-bezier(.65,0,.25,1);padding:38px 32px;display:flex;flex-direction:column;justify-content:center}
+#auth-sliding-panel.auth-alternate .auth-forms{transform:translateX(100%)}
+#s-login #auth-sliding-panel .card{border:0;background:transparent;box-shadow:none;border-radius:0;margin:0;padding:0;content-visibility:visible;contain-intrinsic-size:none;color:#f7efff;animation:auth-form-in .5s both}
+#s-login #auth-sliding-panel h3{color:#fcf9ff;font-size:24px;text-align:center;margin:0 0 25px!important}
+#s-login #auth-sliding-panel .fg label{color:#d5c3e7;font-size:12px}#s-login #auth-sliding-panel input,#s-login #auth-sliding-panel textarea,#s-login #auth-sliding-panel select{background:#28103f;color:#fff;border:1px solid #5f307d;border-radius:10px;min-height:42px;color-scheme:dark}#s-login #auth-sliding-panel input::placeholder{color:#ab8dbf}#s-login #auth-sliding-panel input:focus{outline:2px solid #b56cff;outline-offset:2px}
+#s-login #auth-sliding-panel .btn-p{background:linear-gradient(100deg,#8b12dc,#a300f5);border:1px solid #bc66f3;color:#fff;border-radius:24px;box-shadow:0 4px 18px #9c20e52a}#s-login #auth-sliding-panel .btn-s{background:transparent;color:#e3cef4;border:1px solid #713f8c;border-radius:24px}#s-login #auth-sliding-panel .sub{color:#c3a6d6}#s-login #auth-sliding-panel .name-warn{background:#49283d;color:#ffe3ca;border-color:#865564;font-size:11px}
+#auth-sliding-panel .auth-welcome-panel{position:absolute;inset:0 0 0 50%;width:50%;padding:45px 32px;display:flex;align-items:center;justify-content:center;flex-direction:column;text-align:center;background:radial-gradient(ellipse at 20% 20%,#d478ff3b,transparent 60%),linear-gradient(135deg,#750ac1,#9300eb);transition:transform .65s cubic-bezier(.65,0,.25,1);z-index:2;color:white}
+#auth-sliding-panel.auth-alternate .auth-welcome-panel{transform:translateX(-100%)}.auth-welcome-panel .auth-emblem{font-size:40px;color:#e3b4ff;margin-bottom:22px}.auth-welcome-panel h2{font-size:clamp(22px,3vw,32px);line-height:1.25;margin:0 0 18px}.auth-welcome-panel p{font-size:13px;line-height:1.8;color:#f0daff;max-width:280px;margin:0 0 25px}.auth-welcome-panel button{border:1px solid #e7bfff;background:transparent;border-radius:30px;color:#fff;padding:11px 28px;min-width:150px;font:inherit;font-size:12px;cursor:pointer;margin:5px}.auth-welcome-panel button:hover{background:#ffffff15}.auth-welcome-panel button:focus-visible{outline:2px solid white;outline-offset:4px}
+@keyframes auth-form-in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}@keyframes auth-return{from{opacity:0;transform:translateY(16px) scale(.985)}to{opacity:1;transform:none}}#auth-sliding-panel.auth-return{animation:auth-return .6s both}
+@media(max-width:650px){#s-login>.wrap{padding:26px 14px 65px;justify-content:flex-start}#s-login .ubt-welcome{margin-bottom:18px}#auth-sliding-panel{min-height:0;display:flex;flex-direction:column}#auth-sliding-panel .auth-forms{order:2;width:100%;min-height:0;padding:27px 22px;transition:none}#auth-sliding-panel.auth-alternate .auth-forms{transform:none}#auth-sliding-panel .auth-welcome-panel{position:relative;inset:auto;width:100%;padding:24px 20px;order:1;transition:none}#auth-sliding-panel.auth-alternate .auth-welcome-panel{transform:none;animation:auth-form-in .4s both}.auth-welcome-panel .auth-emblem{font-size:24px;margin-bottom:8px}.auth-welcome-panel h2{font-size:23px;margin-bottom:8px}.auth-welcome-panel p{font-size:12px;margin-bottom:12px}.auth-welcome-panel button{padding:8px 16px;min-width:120px}.auth-welcome-panel .auth-side-actions{display:flex;justify-content:center;flex-wrap:wrap}}
+@media(prefers-reduced-motion:reduce){#auth-sliding-panel,#auth-sliding-panel .auth-forms,#auth-sliding-panel .auth-welcome-panel,#s-login #auth-sliding-panel .card{animation:none!important;transition:none!important}}
 </style>
 <script type="text/plain" id="app-src">
 
@@ -10096,6 +10142,69 @@ async function schoolDeleteClass(cid,button){
  rail.querySelectorAll('.ubt-rail-link').forEach(button=>{if(button.hasAttribute('title')){button.dataset.previewTitle=button.title;button.removeAttribute('title')}button.addEventListener('pointerenter',()=>show(button));button.addEventListener('pointerleave',hide);button.addEventListener('focus',()=>show(button));button.addEventListener('blur',hide)});
  rail.addEventListener('click',hide);rail.addEventListener('scroll',hide,true);window.addEventListener('resize',hide,{passive:true});document.addEventListener('keydown',e=>{if(e.key==='Escape')hide()});document.addEventListener('visibilitychange',hide);
  const original=showScr;showScr=function(){hide();return original.apply(this,arguments)};
+})();
+
+(function(){
+ const configCache=new Map();let currentUid=null,configJob=0;
+ function fallback(scene,variant){scene.className='profile-scene scene-'+variant;scene.innerHTML='<svg viewBox="0 0 400 200" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><defs><radialGradient id="tree-glow-'+variant+'"><stop stop-color="#f2d08a" stop-opacity=".38"/><stop offset="1" stop-color="#f2d08a" stop-opacity="0"/></radialGradient></defs><circle cx="280" cy="65" r="110" fill="url(#tree-glow-'+variant+')"/><path d="M0 186 Q140 160 400 181V200H0Z" fill="#102821"/><path d="M95 192 Q119 127 99 57 M108 128 62 87 M111 105 155 65 M103 87 80 47" fill="none" stroke="#675044" stroke-width="12" stroke-linecap="round"/><g fill="#909c4c"><ellipse cx="65" cy="67" rx="47" ry="24"/><ellipse cx="110" cy="43" rx="57" ry="27"/><ellipse cx="156" cy="64" rx="47" ry="26"/></g><g fill="#bfaa57" opacity=".7"><ellipse cx="67" cy="52" rx="31" ry="15"/><ellipse cx="137" cy="39" rx="34" ry="16"/></g></svg>';
+  for(let i=0;i<8;i++){const leaf=document.createElement('i');leaf.className='leaf';leaf.style.cssText='--lx:'+(14+i*10)+'%;--ld:'+(5+i%3)+'s;--delay:'+(-i*.9)+'s';scene.appendChild(leaf)}
+ }
+ function apply(scene,c){fallback(scene,c.variant||0);if(c.url&&!matchMedia('(prefers-reduced-motion: reduce)').matches){const video=document.createElement('video');video.muted=true;video.loop=true;video.playsInline=true;video.preload='none';video.setAttribute('aria-label','Профиль анимациясы');video.addEventListener('error',()=>{video.remove();scene.querySelectorAll('.leaf,svg').forEach(el=>el.style.display='')},{once:true});video.src=c.url;scene.querySelectorAll('.leaf,svg').forEach(el=>el.style.display='none');scene.appendChild(video);video.play().catch(()=>{video.remove();scene.querySelectorAll('.leaf,svg').forEach(el=>el.style.display='')})}
+  const toggle=document.createElement('button');toggle.type='button';toggle.className='scene-controls';toggle.textContent='⏸';toggle.setAttribute('aria-label','Анимацияны тоқтату');toggle.onclick=e=>{e.stopPropagation();const paused=scene.dataset.paused!=='1';scene.dataset.paused=paused?'1':'0';scene.querySelectorAll('.leaf').forEach(el=>el.style.animationPlayState=paused?'paused':'running');const v=scene.querySelector('video');if(v){if(paused)v.pause();else v.play().catch(()=>{})}toggle.textContent=paused?'▶':'⏸'};scene.appendChild(toggle);
+ }
+ async function config(){if(!user||!window.__token)return;const uid=user.id;if(currentUid!==uid){currentUid=uid;configJob++}if(configCache.has(uid))return;const job=++configJob;const r=await window.__bridge.call('profile_animation_get',{});if(r.ok&&user&&user.id===uid&&job===configJob){r.checked=Date.now();configCache.set(uid,r);refreshScenes()}}
+ function refreshScenes(){if(!user)return;const c=configCache.get(user.id)||{variant:0};document.querySelectorAll('.profile-scene[data-owner]').forEach(scene=>{if(scene.dataset.owner!==user.id||!scene.closest('.screen.active'))return;const signature=JSON.stringify(c);if(scene.dataset.signature!==signature){scene.dataset.signature=signature;apply(scene,c)}})}
+ function scene(){const el=document.createElement('div');el.className='profile-scene';el.dataset.owner=user.id;return el}
+ function decorate(){
+  if(!user)return;
+  const old=document.querySelector('#ubd-home .ubd-profile-card');
+  if(old&&!old.dataset.enhanced){const card=document.createElement('div');card.className='ubd-profile-card';card.dataset.enhanced='1';const main=document.createElement('div');main.className='profile-main';const avatar=document.createElement('span');avatar.className='ubd-profile-orbit';avatar.textContent=(user.name||'U').slice(0,1);const info=document.createElement('div');const label=document.createElement('small');label.textContent='ЖЕКЕ ПРОФИЛЬ';const name=document.createElement('strong');name.className='profile-card-name';name.textContent=user.name;const actions=document.createElement('div');actions.className='ubd-profile-actions';const profile=document.createElement('button');profile.type='button';profile.textContent='Профиль ↗';profile.onclick=()=>schoolOwnProfile();const logout=document.createElement('button');logout.type='button';logout.textContent='Шығу';logout.onclick=()=>doLogout();actions.append(profile,logout);if(user.isAdmin){const customize=document.createElement('button');customize.type='button';customize.textContent='Анимация';customize.onclick=()=>adminProfileAnimation(user.id);actions.appendChild(customize)}info.append(label,name,actions);main.append(avatar,info);card.append(main,scene());old.replaceWith(card)}
+  const host=document.querySelector('#s-profile .wrap');if(host&&!host.querySelector(':scope > .profile-scene')){const el=scene();host.insertBefore(el,host.querySelector('.card')||host.firstChild)}
+  refreshScenes();config();pauseInvisible();
+ }
+ function pauseInvisible(){document.querySelectorAll('.profile-scene').forEach(el=>{const active=!!el.closest('.screen.active')&&!document.hidden&&el.dataset.paused!=='1';el.querySelectorAll('.leaf').forEach(l=>l.style.animationPlayState=active?'running':'paused');const v=el.querySelector('video');if(v){if(active)v.play().catch(()=>{});else v.pause()}})}
+ window.adminProfileAnimation=async function(uid){if(!user?.isAdmin)return;const before=await window.__bridge.call('profile_animation_get',{uid});if(!before.ok){alert(before.msg);return}const url=prompt('Осы адамға тікелей HTTPS MP4/WebM сілтемесі. Бос қалдырсаңыз — дайын жапырақ анимациясы.',before.url||'');if(url===null)return;const r=await window.__bridge.call('profile_animation_set',{uid,url});if(!r.ok){alert(r.msg||'Сақталмады');return}configCache.delete(uid);decorate();alert('Анимация сақталды.')};
+ const view=adminViewUser;adminViewUser=function(uid){const r=view.apply(this,arguments);if(user?.isAdmin){const btn=document.createElement('button');btn.className='btn btn-s';btn.textContent='🎬 Профиль анимациясы';btn.onclick=()=>adminProfileAnimation(uid);document.getElementById('uv-actions').appendChild(btn)}return r};
+ const render=ubdRender;ubdRender=function(){const r=render.apply(this,arguments);decorate();return r};
+ const show=showScr;showScr=function(){const r=show.apply(this,arguments);decorate();return r};
+ const refresh=syncRefresh;syncRefresh=function(){const r=refresh.apply(this,arguments);if(user&&configCache.has(user.id)){const c=configCache.get(user.id);if(Date.now()-(c.checked||0)>60000)configCache.delete(user.id)}decorate();return r};
+ document.addEventListener('visibilitychange',pauseInvisible);decorate();
+ // Keyboard navigation applies to every test without completing the last question.
+ const testActive=()=>document.querySelector('.screen.active')?.id==='s-test'&&st.questions?.length;
+ document.addEventListener('keydown',e=>{if(!testActive()||e.defaultPrevented||e.ctrlKey||e.metaKey||e.altKey||e.shiftKey||e.repeat||inField(e.target)||document.querySelector('dialog[open],#lock-ov.show,#exam-window-guard.show'))return;if(e.key!=='ArrowLeft'&&e.key!=='ArrowRight')return;e.preventDefault();e.stopImmediatePropagation();if(e.key==='ArrowLeft')prevQ();else if(st.currentIndex<st.questions.length-1)nextQ()},true);
+ ['copy','cut','contextmenu','dragstart','selectstart'].forEach(type=>document.addEventListener(type,e=>{if(testActive()){e.preventDefault();e.stopImmediatePropagation()}},true));
+ // The browser cannot disable Android split screen; cover test content on detectable focus/size changes.
+ const guard=document.createElement('div');guard.id='exam-window-guard';guard.innerHTML='<div><h3>Тестті бір терезеде ашыңыз</h3><p>Басқа терезені жабыңыз немесе толық экранға оралыңыз. Тест уақыты жалғасады.</p><button type="button">Тестке оралу</button></div>';document.body.appendChild(guard);
+ let baseArea=0,blocked=false,resizeJob=0;const android=/Android/i.test(navigator.userAgent);
+ function check(){clearTimeout(resizeJob);resizeJob=setTimeout(()=>{if(!testActive()){guard.classList.remove('show');blocked=false;baseArea=0;return}if(!android)return;const area=innerWidth*innerHeight;if(!baseArea)baseArea=area;baseArea=Math.max(baseArea,area);const keyboard=inField(document.activeElement);if(!keyboard&&(document.hidden||area<baseArea*.62)){blocked=true;guard.classList.add('show')}},350)}
+ guard.querySelector('button').onclick=()=>{if(android&&innerWidth*innerHeight<baseArea*.62)return;blocked=false;guard.classList.remove('show');if(lock.on)returnToTest()};
+ window.addEventListener('resize',check,{passive:true});document.addEventListener('visibilitychange',check);
+ const originalShow=showScr;showScr=function(){const r=originalShow.apply(this,arguments);check();return r};
+ const previousEnd=lockEnd;lockEnd=function(){guard.classList.remove('show');baseArea=0;blocked=false;return previousEnd.apply(this,arguments)};
+})();
+
+(function(){
+ const wrap=document.querySelector('#s-login>.wrap');if(!wrap)return;
+ const panel=document.createElement('div');panel.id='auth-sliding-panel';
+ const forms=document.createElement('div');forms.className='auth-forms';
+ ['login-box','register-box','teacher-reg-box','forgot-box','contact-box'].forEach(id=>{const el=document.getElementById(id);if(el)forms.appendChild(el)});
+ const side=document.createElement('aside');side.className='auth-welcome-panel';side.innerHTML='<div class="auth-emblem" aria-hidden="true">✦</div><h2 id="auth-side-title">Қош келдіңіз!</h2><p id="auth-side-description">ҰБТ PLUS-пен бірге біліміңізді дамытып, мақсатыңызға жақындаңыз.</p><div class="auth-side-actions"><button type="button" id="auth-side-main">Тіркелу</button><button type="button" id="auth-side-contact">Админге жазу</button></div>';
+ panel.append(forms,side);wrap.appendChild(panel);
+ const title=document.createElement('h3');title.textContent='Кіріңіз';document.getElementById('login-box').prepend(title);
+ document.getElementById('login-pass').autocomplete='current-password';
+ let mode='login';
+ function setMode(next){mode=next;panel.classList.toggle('auth-alternate',next!=='login');panel.dataset.mode=next;document.getElementById('auth-side-title').textContent=next==='login'?'Қош келдіңіз!':next==='contact'?'Біз көмектесеміз!':'Қайта оралыңыз!';document.getElementById('auth-side-description').textContent=next==='login'?'ҰБТ PLUS-пен бірге біліміңізді дамытып, мақсатыңызға жақындаңыз.':next==='contact'?'Сұрағыңызды админге жазыңыз. Аккаунтқа кіру үшін төмендегі батырманы басыңыз.':'Аккаунтыңыз бар ма? Логин мен пароль арқылы кіріңіз.';document.getElementById('auth-side-main').textContent=next==='login'?'Тіркелу':'Кіру';document.getElementById('auth-side-contact').hidden=next==='contact';
+  forms.querySelectorAll(':scope > .card').forEach(card=>{const visible=card.style.display!=='none';card.inert=!visible;card.setAttribute('aria-hidden',String(!visible))});
+ }
+ document.getElementById('auth-side-main').onclick=()=>mode==='login'?showRegister():showLoginBox();
+ document.getElementById('auth-side-contact').onclick=()=>showContactAdmin();
+ const login=showLoginBox;showLoginBox=function(){const r=login.apply(this,arguments);setMode('login');return r};
+ const register=showRegister;showRegister=function(){const r=register.apply(this,arguments);setMode('register');return r};
+ const contact=showContactAdmin;showContactAdmin=function(){const r=contact.apply(this,arguments);setMode('contact');return r};
+ const teacher=showTeacherReg;showTeacherReg=function(){const r=teacher.apply(this,arguments);setMode('teacher');return r};
+ const logout=doLogout;doLogout=function(){const r=logout.apply(this,arguments);setMode('login');panel.classList.remove('auth-return');requestAnimationFrame(()=>{panel.classList.add('auth-return')});return r};
+ const observer=new MutationObserver(()=>{const current=Array.from(forms.children).find(el=>el.style.display!=='none');if(current){const next={'login-box':'login','register-box':'register','teacher-reg-box':'teacher','contact-box':'contact','forgot-box':'contact'}[current.id];if(next&&next!==mode)setMode(next)}});forms.querySelectorAll(':scope > .card').forEach(el=>observer.observe(el,{attributes:true,attributeFilter:['style']}));
+ setMode('login');
 })();
 </script>
 <script>
