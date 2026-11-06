@@ -4183,6 +4183,15 @@ html{text-rendering:optimizeSpeed}
 </style>
 
 <style>@media(max-width:700px){.screen:not(.active){display:none!important}.card{content-visibility:auto;contain-intrinsic-size:auto 180px}#ubt-icon-rail{backdrop-filter:none!important;-webkit-backdrop-filter:none!important}#ubt-icon-rail .ubt-glass-wave path{filter:drop-shadow(0 0 3px #6affcf)!important}}#visit-panel th{text-align:left;padding:10px}</style>
+<style>
+#s-login .ubt-welcome .sub{display:none}#s-login .ubt-welcome:after{content:'Кіріңіз';display:block;font-size:26px;font-weight:750;margin-top:18px;color:var(--t)}
+#ubt-intro{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;overflow:hidden;background:radial-gradient(ellipse at 25% 20%,#301365 0,transparent 55%),radial-gradient(ellipse at 85% 75%,#123b52 0,transparent 50%),#080617;color:#fff;font-family:inherit;animation:intro-out .45s 3.55s both;pointer-events:auto}
+#ubt-intro .intro-content{text-align:center;animation:intro-in .85s both;padding:24px}#ubt-intro .intro-icons{font-size:26px;letter-spacing:22px;color:#bb9aff;margin-bottom:24px}#ubt-intro h2{font-size:clamp(25px,6vw,48px);line-height:1.25;margin:0;font-weight:800}#ubt-intro h2 span{display:block;color:#a476ff;margin-top:10px;text-shadow:0 0 28px #9056fc65}#ubt-intro p{color:#b3abc9;margin-top:22px;font-size:13px}#ubt-intro .intro-loader{width:140px;height:3px;background:#ffffff15;border-radius:9px;margin:26px auto;overflow:hidden}#ubt-intro .intro-loader:before{content:'';display:block;height:100%;background:linear-gradient(90deg,#7850ff,#7df2dc);transform-origin:left;animation:intro-progress 3.55s linear both}
+@keyframes intro-in{from{opacity:0;transform:translateY(22px) scale(.97)}to{opacity:1;transform:none}}@keyframes intro-out{to{opacity:0;visibility:hidden;transform:scale(1.035)}}@keyframes intro-progress{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+#s-subj .subject-choice{position:relative;overflow:hidden;animation:subject-enter .5s both;animation-delay:calc(var(--subject-index,0)*45ms);transition:transform .25s,border-color .25s,box-shadow .25s}#s-subj .subject-choice:hover{transform:translateY(-3px)}#s-subj .subject-choice.selected{background:linear-gradient(120deg,#7947e51c,#38d5b51a);border-color:#9972ee;box-shadow:0 5px 20px #7245cd15}#s-subj .subject-choice .subject-mark{display:grid;place-items:center;width:36px;height:36px;flex-shrink:0;border-radius:12px;background:linear-gradient(135deg,#9d72f525,#60dbc025)}#s-subj .subject-choice.selected .subject-mark{animation:subject-pop .5s both}
+@keyframes subject-enter{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}@keyframes subject-pop{50%{transform:scale(1.2) rotate(-8deg)}to{transform:none}}
+@media(prefers-reduced-motion:reduce){#ubt-intro,#ubt-intro .intro-content,#ubt-intro .intro-loader:before,#s-subj .subject-choice,#s-subj .subject-choice.selected .subject-mark{animation:none}#s-subj .subject-choice{transition:none}}
+</style>
 <script type="text/plain" id="app-src">
 
 const ubtAssetPromises=new Map();
@@ -5441,7 +5450,7 @@ function renderBankSubjectList(){
   const icons={history:'🏛',reading:'📖',mathlit:'🔢',math:'📐',physics:'⚡',chemistry:'🧪',biology:'🧬',geography:'🌍',informatics:'💻',english:'🇬🇧',kazakh:'📝',worldhistory:'🌐',law:'⚖️',other:'📚'};
   document.getElementById('bs-subject-grid').innerHTML=Array.from(sel.options).filter(o=>o.value).map(o=>{
     const n=subjectCounts.get(o.value)||0;
-    return `<button type="button" class="subject-choice${key===o.value?' selected':''}" aria-pressed="${key===o.value}" onclick="selectBankSubject(${jsq(o.value)})"><span class="subject-mark">${icons[o.value]||'📚'}</span><span><strong>${esc(o.textContent)}</strong><small>${n} сұрақ</small></span></button>`;
+    return `<button type="button" style="--subject-index:${Array.from(sel.options).indexOf(o)}" class="subject-choice${key===o.value?' selected':''}" aria-pressed="${key===o.value}" onclick="selectBankSubject(${jsq(o.value)})"><span class="subject-mark">${icons[o.value]||'📚'}</span><span><strong>${esc(o.textContent)}</strong><small>${n} сұрақ</small></span></button>`;
   }).join('');
   document.getElementById('bs-heading').textContent='2. '+subjName(key)+' · сұрақтарды таңдаңыз';
   document.getElementById('bs-count-wrap').style.display=manual?'none':'';
@@ -10217,6 +10226,13 @@ async function schoolDeleteClass(cid,button){
   window.addEventListener('focus',syncOnReturn);
   setInterval(function(){if(connected&&document.visibilityState!=='hidden')send()},30000);
   setTimeout(boot,100);
+})();
+</script>
+<script>
+(function(){
+ const overlay=document.createElement('div');overlay.id='ubt-intro';overlay.setAttribute('role','status');overlay.setAttribute('aria-label','ҰБТ PLUS сайтына қош келдіңіз');overlay.innerHTML='<div class="intro-content"><div class="intro-icons" aria-hidden="true">✦ ⌘ ✧</div><h2>Welcome to<span>ҰБТ PLUS</span></h2><p>Біліміңіз — болашағыңыздың бастауы</p><div class="intro-loader" aria-hidden="true"></div></div>';
+ document.body.appendChild(overlay);const login=document.getElementById('s-login');if(login)login.inert=true;
+ setTimeout(function(){overlay.remove();if(login)login.inert=false},4000);
 })();
 </script>
 </body>
