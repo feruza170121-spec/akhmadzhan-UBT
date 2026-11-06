@@ -1418,9 +1418,25 @@ def _handle_req(state, sid, rq):
                 if not sess["admin"]:
                     return {"ok": False, "msg": "Тек админ өзгерте алады"}
                 url = str(d.get("url") or "").strip()
-                parsed = urllib.parse.urlsplit(url)
-                if url and (len(url) > 2000 or parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or not parsed.path.lower().endswith((".mp4", ".webm"))):
-                    return {"ok": False, "msg": "HTTPS арқылы ашылатын тікелей MP4 немесе WebM сілтемесін жазыңыз"}
+                video = d.get("video")
+                if video:
+                    if not isinstance(video, str) or len(video) > 4_200_000:
+                        return {"ok": False, "msg": "Видео 3 МБ-тан аспасын"}
+                    match = re.fullmatch(r"data:video/(mp4|webm);base64,([A-Za-z0-9+/=]+)", video)
+                    if not match:
+                        return {"ok": False, "msg": "MP4 немесе WebM файлын таңдаңыз"}
+                    try:
+                        raw_video = base64.b64decode(match.group(2), validate=True)
+                    except (ValueError, binascii.Error):
+                        return {"ok": False, "msg": "Видео файлы жарамсыз"}
+                    valid = (len(raw_video) >= 12 and raw_video[4:8] == b"ftyp") if match.group(1) == "mp4" else raw_video.startswith(b"\x1a\x45\xdf\xa3")
+                    if not valid or len(raw_video) > 3 * 1024 * 1024:
+                        return {"ok": False, "msg": "Жарамды MP4/WebM таңдаңыз (3 МБ-қа дейін)"}
+                    url = video
+                else:
+                    parsed = urllib.parse.urlsplit(url)
+                    if url and (len(url) > 2000 or parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or not parsed.path.lower().endswith((".mp4", ".webm"))):
+                        return {"ok": False, "msg": "HTTPS MP4/WebM сілтемесін жазыңыз немесе видео файл таңдаңыз"}
                 _put(state, key, _jdump({"url": url}))
                 _commit(state)
             config = _jload(state["db"].get(key, "{}"), dict, {})
@@ -10170,7 +10186,27 @@ async function schoolDeleteClass(cid,button){
   refreshScenes();config();pauseInvisible();
  }
  function pauseInvisible(){document.querySelectorAll('.profile-scene').forEach(el=>{const active=!!el.closest('.screen.active')&&!document.hidden&&el.dataset.paused!=='1';el.querySelectorAll('.leaf').forEach(l=>l.style.animationPlayState=active?'running':'paused');const v=el.querySelector('video');if(v){if(active)v.play().catch(()=>{});else v.pause()}})}
- window.adminProfileAnimation=async function(uid){if(!user?.isAdmin)return;const before=await window.__bridge.call('profile_animation_get',{uid});if(!before.ok){alert(before.msg);return}const url=prompt('Осы адамға тікелей HTTPS MP4/WebM сілтемесі. Бос қалдырсаңыз — дайын жапырақ анимациясы.',before.url||'');if(url===null)return;const r=await window.__bridge.call('profile_animation_set',{uid,url});if(!r.ok){alert(r.msg||'Сақталмады');return}configCache.delete(uid);decorate();alert('Анимация сақталды.')};
+ window.adminProfileAnimation=async function(uid){
+  if(!user?.isAdmin)return;
+  const before=await window.__bridge.call('profile_animation_get',{uid});if(!before.ok){alert(before.msg);return}
+  document.getElementById('profile-animation-dialog')?.remove();
+  const dialog=document.createElement('dialog');dialog.id='profile-animation-dialog';dialog.style.cssText='width:min(480px,92vw);padding:24px;border:1px solid #718ca5;border-radius:18px;background:var(--c,#142338);color:var(--t,#fff);max-height:90dvh;overflow:auto';
+  dialog.innerHTML='<h3 style="margin-bottom:16px">Профиль анимациясы</h3><label style="display:block;margin-bottom:8px">MP4 / WebM файл (3 МБ-қа дейін)</label><input type="file" accept="video/mp4,video/webm,.mp4,.webm" style="width:100%;margin-bottom:18px"><label style="display:block;margin-bottom:8px">Немесе HTTPS сілтемесі</label><input type="url" placeholder="https://example.com/video.mp4" style="width:100%;margin-bottom:12px"><p class="sub" style="margin-bottom:12px">Файл таңдасаңыз, сілтеме қажет емес. Бос сақтасаңыз, дайын жапырақ анимациясы қойылады.</p><p class="upload-status" role="status"></p><div class="row" style="gap:8px;margin-top:16px"><button type="button" class="btn btn-p upload-save">Сақтау</button><button type="button" class="btn btn-s upload-cancel">Болдырмау</button></div>';
+  const file=dialog.querySelector('input[type=file]'),url=dialog.querySelector('input[type=url]'),status=dialog.querySelector('.upload-status'),save=dialog.querySelector('.upload-save');
+  url.value=(before.url||'').startsWith('https://')?before.url:'';
+  if((before.url||'').startsWith('data:'))status.textContent='Қазір жүктелген видео қойылған. Өзгерту үшін басқа файл таңдаңыз.';
+  file.onchange=()=>{if(file.files.length){url.value='';status.textContent=file.files[0].name}};
+  let busy=false;dialog.querySelector('.upload-cancel').onclick=()=>{if(!busy)dialog.close()};dialog.addEventListener('cancel',e=>{if(busy)e.preventDefault()});dialog.addEventListener('close',()=>dialog.remove(),{once:true});
+  save.onclick=async()=>{
+   if(busy)return;const selected=file.files[0];if(selected&&selected.size>3*1024*1024){status.textContent='Видео 3 МБ-тан аспасын.';return}
+   busy=true;save.disabled=true;file.disabled=true;url.disabled=true;status.textContent='Сақталуда…';
+   try{const data={uid,url:url.value.trim()};if(selected){const kind=/\.webm$/i.test(selected.name)?'webm':'mp4';data.video=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onerror=()=>reject(Error('Файл оқылмады'));reader.onload=()=>resolve('data:video/'+kind+';base64,'+String(reader.result).split(',')[1]);reader.readAsDataURL(selected)})}
+    const r=await window.__bridge.call('profile_animation_set',data);if(!r.ok)throw Error(r.msg||'Сақталмады');configCache.delete(uid);decorate();dialog.close();alert('Видео профильге қойылды.')
+   }catch(e){status.textContent=e.message||'Қайта көріңіз'}finally{busy=false;save.disabled=false;file.disabled=false;url.disabled=false}
+  };
+  document.body.appendChild(dialog);dialog.showModal();
+ };
+
  const view=adminViewUser;adminViewUser=function(uid){const r=view.apply(this,arguments);if(user?.isAdmin){const btn=document.createElement('button');btn.className='btn btn-s';btn.textContent='🎬 Профиль анимациясы';btn.onclick=()=>adminProfileAnimation(uid);document.getElementById('uv-actions').appendChild(btn)}return r};
  const render=ubdRender;ubdRender=function(){const r=render.apply(this,arguments);decorate();return r};
  const show=showScr;showScr=function(){const r=show.apply(this,arguments);decorate();return r};
