@@ -4278,6 +4278,12 @@ html{text-rendering:optimizeSpeed}
 @media(max-width:600px){.ubd-profile-card{padding:25px!important;min-height:220px}.ubd-profile-card .profile-main{min-height:170px;gap:12px}.ubd-profile-card:after{background:linear-gradient(90deg,#081b2bdf,#10202b85)}.ubd-profile-card .ubd-profile-orbit{width:50px;height:50px;font-size:23px}.profile-scene svg{filter:none}}
 @media(prefers-reduced-motion:reduce){#s-profile .profile-scene .leaf{animation:none}}
 </style>
+<style id="lightweight-profile-welcome">
+.profile-scene.welcome-only-scene{background:radial-gradient(ellipse at 78% 40%,#713de344,transparent 62%),linear-gradient(120deg,#101b32,#21143b)!important;contain:layout paint;pointer-events:none}.profile-scene.welcome-only-scene:before{display:none}.profile-welcome-loop{position:absolute;right:7%;top:30%;text-align:center;color:#e8ddff;animation:profile-welcome-cycle 6s ease-in-out infinite;transform-origin:center;max-width:52%}.profile-welcome-loop span{display:block;font-size:clamp(13px,1.6vw,23px);letter-spacing:.1em;margin-bottom:10px}.profile-welcome-loop strong{display:block;font-family:inherit;font-size:clamp(25px,3.5vw,52px);font-weight:800;letter-spacing:-.03em;color:#b59aff;line-height:1.15}.profile-welcome-loop i{display:block;width:65px;height:2px;margin:18px auto 0;background:linear-gradient(90deg,#9774f7,#77d9cf);border-radius:3px}.ubd-profile-card:after{background:linear-gradient(90deg,#0b142ae8,#101a3055 50%,transparent)}#s-profile>.welcome-only-scene .profile-welcome-loop{position:fixed;right:6%;top:20%;opacity:.4}#s-profile:before{background:#08192688}
+@keyframes profile-welcome-cycle{0%,100%{opacity:.45;transform:translateY(5px) scale(.985)}50%{opacity:1;transform:translateY(-5px) scale(1)}}
+@media(max-width:600px){.profile-welcome-loop{right:5%;top:35%;max-width:43%}.profile-welcome-loop span{font-size:10px;letter-spacing:.02em}.profile-welcome-loop strong{font-size:24px!important;margin:0!important}.ubd-profile-card .profile-main{max-width:64%;align-items:flex-start;flex-wrap:wrap}.ubd-profile-card .profile-card-name{font-size:24px}.profile-welcome-loop i{width:40px;margin-top:12px}}
+@media(prefers-reduced-motion:reduce){.profile-welcome-loop{animation:none}}
+</style>
 <script type="text/plain" id="app-src">
 
 const ubtAssetPromises=new Map();
@@ -10169,11 +10175,9 @@ async function schoolDeleteClass(cid,button){
 
 (function(){
  const configCache=new Map();let currentUid=null,configJob=0;
- function fallback(scene,variant){scene.className='profile-scene scene-'+variant;scene.innerHTML='<svg viewBox="0 0 400 200" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><defs><radialGradient id="tree-glow-'+variant+'"><stop stop-color="#f2d08a" stop-opacity=".38"/><stop offset="1" stop-color="#f2d08a" stop-opacity="0"/></radialGradient></defs><circle cx="280" cy="65" r="110" fill="url(#tree-glow-'+variant+')"/><path d="M0 186 Q140 160 400 181V200H0Z" fill="#102821"/><path d="M95 192 Q119 127 99 57 M108 128 62 87 M111 105 155 65 M103 87 80 47" fill="none" stroke="#675044" stroke-width="12" stroke-linecap="round"/><g fill="#909c4c"><ellipse cx="65" cy="67" rx="47" ry="24"/><ellipse cx="110" cy="43" rx="57" ry="27"/><ellipse cx="156" cy="64" rx="47" ry="26"/></g><g fill="#bfaa57" opacity=".7"><ellipse cx="67" cy="52" rx="31" ry="15"/><ellipse cx="137" cy="39" rx="34" ry="16"/></g></svg>';
-  for(let i=0;i<8;i++){const leaf=document.createElement('i');leaf.className='leaf';leaf.style.cssText='--lx:'+(14+i*10)+'%;--ld:'+(5+i%3)+'s;--delay:'+(-i*.9)+'s';scene.appendChild(leaf)}
- }
- function apply(scene,c){fallback(scene,c.variant||0);if(c.url&&!matchMedia('(prefers-reduced-motion: reduce)').matches){const video=document.createElement('video');video.muted=true;video.loop=true;video.playsInline=true;video.preload='none';video.controls=false;video.disablePictureInPicture=true;video.setAttribute('disableRemotePlayback','');video.setAttribute('controlsList','nodownload nofullscreen noremoteplayback');video.setAttribute('aria-label','Профиль анимациясы');video.addEventListener('error',()=>{video.remove();scene.querySelectorAll('.leaf,svg').forEach(el=>el.style.display='')},{once:true});video.src=c.url;scene.querySelectorAll('.leaf,svg').forEach(el=>el.style.display='none');scene.appendChild(video);video.play().catch(()=>{video.remove();scene.querySelectorAll('.leaf,svg').forEach(el=>el.style.display='')})}
-
+ function apply(scene,c){
+  scene.className='profile-scene welcome-only-scene';
+  scene.innerHTML='<div class="profile-welcome-loop" aria-hidden="true"><span>Welcome to</span><strong>ҰБТ PLUS</strong><i></i></div>';
  }
  async function config(){if(!user||!window.__token)return;const uid=user.id;if(currentUid!==uid){currentUid=uid;configJob++}if(configCache.has(uid))return;const job=++configJob;const r=await window.__bridge.call('profile_animation_get',{});if(r.ok&&user&&user.id===uid&&job===configJob){r.checked=Date.now();configCache.set(uid,r);refreshScenes()}}
  function refreshScenes(){if(!user)return;const c=configCache.get(user.id)||{variant:0};document.querySelectorAll('.profile-scene[data-owner]').forEach(scene=>{if(scene.dataset.owner!==user.id||!scene.closest('.screen.active'))return;const signature=JSON.stringify(c);if(scene.dataset.signature!==signature){scene.dataset.signature=signature;apply(scene,c)}})}
@@ -10181,9 +10185,9 @@ async function schoolDeleteClass(cid,button){
  function decorate(){
   if(!user)return;
   const old=document.querySelector('#ubd-home .ubd-profile-card');
-  if(old&&!old.dataset.enhanced){const card=document.createElement('div');card.className='ubd-profile-card';card.dataset.enhanced='1';const main=document.createElement('div');main.className='profile-main';const avatar=document.createElement('span');avatar.className='ubd-profile-orbit';avatar.textContent=(user.name||'U').slice(0,1);const info=document.createElement('div');const label=document.createElement('small');label.textContent='ЖЕКЕ ПРОФИЛЬ';const name=document.createElement('strong');name.className='profile-card-name';name.textContent=user.name;const actions=document.createElement('div');actions.className='ubd-profile-actions';const profile=document.createElement('button');profile.type='button';profile.textContent='Профиль ↗';profile.onclick=()=>schoolOwnProfile();const logout=document.createElement('button');logout.type='button';logout.textContent='Шығу';logout.onclick=()=>doLogout();actions.append(profile,logout);if(user.isAdmin){const customize=document.createElement('button');customize.type='button';customize.textContent='Анимация';customize.onclick=()=>adminProfileAnimation(user.id);actions.appendChild(customize)}info.append(label,name,actions);main.append(avatar,info);card.append(main,scene());old.replaceWith(card)}
+  if(old&&!old.dataset.enhanced){const card=document.createElement('div');card.className='ubd-profile-card';card.dataset.enhanced='1';const main=document.createElement('div');main.className='profile-main';const avatar=document.createElement('span');avatar.className='ubd-profile-orbit';avatar.textContent=(user.name||'U').slice(0,1);const info=document.createElement('div');const label=document.createElement('small');label.textContent='ЖЕКЕ ПРОФИЛЬ';const name=document.createElement('strong');name.className='profile-card-name';name.textContent=user.name;const actions=document.createElement('div');actions.className='ubd-profile-actions';const profile=document.createElement('button');profile.type='button';profile.textContent='Профиль ↗';profile.onclick=()=>schoolOwnProfile();const logout=document.createElement('button');logout.type='button';logout.textContent='Шығу';logout.onclick=()=>doLogout();actions.append(profile,logout);info.append(label,name,actions);main.append(avatar,info);card.append(main,scene());old.replaceWith(card)}
   const host=document.getElementById('s-profile');if(host&&!host.querySelector(':scope > .profile-scene')){const el=scene();host.prepend(el)}
-  refreshScenes();config();pauseInvisible();
+  refreshScenes();pauseInvisible();
  }
  function pauseInvisible(){document.querySelectorAll('.profile-scene').forEach(el=>{const active=!!el.closest('.screen.active')&&!document.hidden&&el.dataset.paused!=='1';el.querySelectorAll('.leaf').forEach(l=>l.style.animationPlayState=active?'running':'paused');const v=el.querySelector('video');if(v){if(active)v.play().catch(()=>{});else v.pause()}})}
  window.adminProfileAnimation=async function(uid){
@@ -10207,7 +10211,7 @@ async function schoolDeleteClass(cid,button){
   document.body.appendChild(dialog);dialog.showModal();
  };
 
- const view=adminViewUser;adminViewUser=function(uid){const r=view.apply(this,arguments);if(user?.isAdmin){const btn=document.createElement('button');btn.className='btn btn-s';btn.textContent='🎬 Профиль анимациясы';btn.onclick=()=>adminProfileAnimation(uid);document.getElementById('uv-actions').appendChild(btn)}return r};
+
  const render=ubdRender;ubdRender=function(){const r=render.apply(this,arguments);decorate();return r};
  const show=showScr;showScr=function(){const r=show.apply(this,arguments);decorate();return r};
  const refresh=syncRefresh;syncRefresh=function(){const r=refresh.apply(this,arguments);if(user&&configCache.has(user.id)){const c=configCache.get(user.id);if(Date.now()-(c.checked||0)>60000)configCache.delete(user.id)}decorate();return r};
