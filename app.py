@@ -1451,6 +1451,110 @@ def _approved_limit(test):
 def _published_used(state,tid,uid):
     return _jload(state["db"].get("ubt_server_access_public_attempts","{}"),dict,{}).get(tid,{}).get(uid,0)
 
+def _content_key(row, kind):
+    def norm(v):
+        return " ".join(str(v or "").split()).casefold()
+    if kind == "question":
+        return _jdump([norm(row.get("text")), [norm(x) for x in row.get("options", [])], row.get("correct"), row.get("img"), row.get("tbl")])
+    if kind == "test":
+        return _jdump([row.get("subject"), sorted({_content_key(q,"question") for q in row.get("questions",[]) if isinstance(q,dict)})])
+    fields = ("c","t","d") if kind == "glossary" else ("subject","title","body")
+    return _jdump([norm(row.get(k)) for k in fields])
+
+
+def _owner_content_request(state, sess, d):
+    if not sess or not sess.get("admin") or sess.get("uid") != "admin" or sess.get("codeGuest"):
+        return {"ok":False,"msg":"Тек басты админге қолжетімді"}
+    kind=d.get("kind")
+    if kind not in ("tests","glossary","formulas","cleanup"):
+        return {"ok":False,"msg":"Материал түрін таңдаңыз"}
+    with state["lock"]:
+        tests=_jload(state["db"].get("ubt_tests","[]"),list,[])
+        formulas=_jload(state["db"].get("ubt_formulas","[]"),list,[])
+        glossary=_jload(state["db"].get("ubt_glossary","[]"),list,[])
+        removed=0
+        def unique(rows,typ):
+            nonlocal removed
+            seen=set();out=[]
+            for row in rows:
+                if not isinstance(row,dict):
+                    out.append(row);continue
+                key=_content_key(row,typ)
+                if key in seen:removed+=1;continue
+                seen.add(key);out.append(row)
+            return out
+        if kind=="cleanup":
+            # Keep test IDs and all attempt records; only remove identical questions.
+            for i,test in enumerate(tests):
+                if isinstance(test,dict) and test.get("authorId")=="admin" and not test.get("assignmentId") and not test.get("classId"):
+                    tests[i]={**test,"questions":unique(test.get("questions",[]),"question")}
+            formulas=unique(formulas,"formulas");glossary=unique(glossary,"glossary")
+            added=0
+        else:
+            subject=d.get("subject")
+            if subject not in _SUBJECT_NAMES:
+                return {"ok":False,"msg":"Материалдың пәнін таңдаңыз"}
+            data=d.get("data")
+            if isinstance(data,dict):
+                data=data.get(kind,data.get("items",data.get("questions",data))) if kind!="tests" or "questions" not in data else data
+            if isinstance(data,dict):data=[data]
+            if not isinstance(data,list) or not 1<=len(data)<=5000:
+                return {"ok":False,"msg":"JSON ішінде 1–5000 жазбадан тұратын тізім болуы керек"}
+            try:
+                if kind=="tests":
+                    if all(isinstance(q,dict) and ("text" in q or "question" in q) and "questions" not in q for q in data):
+                        data=[{"topic":str(d.get("title") or "JSON тест"),"questions":data}]
+                    if len(data)>20:raise ValueError("Бір файлда ең көбі 20 тест болсын")
+                    prepared=[]
+                    for item in data:
+                        if not isinstance(item,dict):raise ValueError("Тест объект болуы керек")
+                        item=dict(item,subject=subject)
+                        qs=item.get("questions")
+                        if not isinstance(qs,list):raise ValueError("questions тізімі жоқ")
+                        normalized=[]
+                        for q in qs:
+                            if not isinstance(q,dict):raise ValueError("Сұрақ объект болуы керек")
+                            q=dict(q)
+                            if "text" not in q:q["text"]=q.get("question")
+                            normalized.append(q)
+                        item["questions"]=normalized;prepared.append(item)
+                    incoming=_school_test_payload(prepared)
+                    existing={_content_key(t,"test") for t in tests if isinstance(t,dict) and t.get("authorId")=="admin"}
+                    added=0
+                    for t in incoming:
+                        t["questions"]=unique(t["questions"],"question")
+                        key=_content_key(t,"test")
+                        if key in existing:removed+=1;continue
+                        existing.add(key)
+                        t.update(id="json_"+secrets.token_hex(12),authorId="admin",authorName=sess.get("name") or "Админ",subjectName=_SUBJECT_NAMES[subject],status="private",isPublic=False,adminApproved=False,adminUploaded=True,createdAt=datetime.datetime.now(datetime.timezone.utc).isoformat())
+                        tests.append(t);added+=1
+                    if len(tests)>2000:raise ValueError("Базада ең көбі 2000 тест сақталады")
+                else:
+                    incoming=[]
+                    for item in data:
+                        if not isinstance(item,dict):raise ValueError("Әр жазба объект болуы керек")
+                        if kind=="glossary":
+                            row={"t":item.get("t",item.get("term",item.get("title"))),"d":item.get("d",item.get("definition",item.get("description"))),"c":item.get("c",item.get("category",_SUBJECT_NAMES[subject]))}
+                        else:
+                            row={"title":item.get("title",item.get("name")),"body":item.get("body",item.get("formula")),"subject":subject}
+                        if any(not isinstance(v,str) or not v.strip() or len(v)>12000 for v in row.values()):
+                            raise ValueError("Атауы мен мазмұны бос болмауы керек (12000 таңбаға дейін)")
+                        row={k:v.strip() for k,v in row.items()};row.update(authorId="admin",authorName=sess.get("name") or "Админ")
+                        incoming.append(row)
+                    target=glossary if kind=="glossary" else formulas
+                    existing={_content_key(row,kind) for row in target if isinstance(row,dict)};added=0
+                    for row in incoming:
+                        key=_content_key(row,kind)
+                        if key in existing:removed+=1;continue
+                        existing.add(key);target.append(row);added+=1
+                    if len(target)>20000:raise ValueError("Материал саны 20000-нан аспасын")
+            except (ValueError,TypeError) as error:
+                return {"ok":False,"msg":str(error)}
+        _put(state,"ubt_tests",_jdump(tests));_put(state,"ubt_formulas",_jdump(formulas));_put(state,"ubt_glossary",_jdump(glossary))
+        _catalog_sync(state);_commit(state)
+        return {"ok":True,"added":added,"duplicates":removed}
+
+
 def _publication_request(state,sess,typ,d):
     if not sess or sess.get("codeGuest"):
         return {"ok":False,"msg":"Аккаунтыңызға кіріңіз"}
@@ -1873,6 +1977,9 @@ def _handle_req(state, sid, rq):
 
     if typ=="exam_check_answer":
         return _check_exam_answer(state,sess,d)
+
+    if typ=="owner_content_import":
+        return _owner_content_request(state,sess,d)
 
     if typ in ("admin_publish_test", "approved_test_list", "notifications_list", "save_public_test", "remove_saved_public_test", "owner_publication_list", "owner_set_publication"):
         return _publication_request(state,sess,typ,d)
@@ -2953,6 +3060,8 @@ def _authorize(state, sess, k, v, chat_token=""):
         return _merge_profiles(state, sess, v)
     if k == "ubt_user_stats":
         return _merge_stats(state, sess, v)
+    if k == "ubt_glossary":
+        return None
     if k == "ubt_question_catalog":
         return None
     if k == "ubt_tests":
@@ -2972,7 +3081,9 @@ def _authorize(state, sess, k, v, chat_token=""):
         return None
     if k == "ubt_books":
         return None  
-    if k in ("ubt_formulas", "ubt_season_idx", "ubt_awarded", "ubt_trophies") or k.startswith("ubt_season_"):
+    if k == "ubt_formulas":
+        return v if sess["admin"] and sess["uid"]=="admin" else None
+    if k in ("ubt_season_idx", "ubt_awarded", "ubt_trophies") or k.startswith("ubt_season_"):
         return v if sess["admin"] else None
     if k == "ubt_seed_funksiya":
         return "true" if sess["admin"] and v == "true" else None
@@ -4012,6 +4123,12 @@ body:not(.primary-owner) input,body:not(.primary-owner) textarea,body:not(.prima
 #capture-cover{position:fixed;inset:0;z-index:2147483646;display:grid;place-items:center;background:#101829;color:#fff;padding:24px;text-align:center}#capture-cover .capture-card{max-width:600px;padding:30px;border:1px solid #c89b64;border-radius:22px;background:#1a2339}#capture-cover h2{margin-bottom:14px}#capture-cover p{line-height:1.8;font-size:15px}#capture-cover button{margin-top:18px}
 </style><style>
 .quick-public-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));gap:10px;margin:10px 0 14px}.quick-public-actions .quick-blue{background:linear-gradient(135deg,#2465cf,#347ee6)!important;border:1px solid #71a2ef!important;color:#fff!important;box-shadow:0 5px 16px #1263c525;min-height:48px;text-align:left}.quick-public-actions .quick-blue:hover{background:#4289ec!important}.quick-public-actions .quick-blue:focus-visible{outline:3px solid #91baff;outline-offset:3px}#tas-background{opacity:.23!important}body.dark #tas-background{opacity:.25!important}#owner-publication-panel .publication-tools{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:15px 0}#owner-publication-panel select{width:100%}#owner-publication-panel .publication-table{max-height:390px;overflow:auto;margin-top:16px}#owner-publication-panel .publication-row{display:flex;gap:12px;align-items:center;justify-content:space-between;border-top:1px solid var(--b);padding:13px 0}#owner-publication-panel .publication-row p{font-size:12px;margin-top:5px;color:var(--dm)}@media(max-width:520px){.quick-public-actions{grid-template-columns:1fr}#tas-background{opacity:.19!important}}
+
+.owner-json-only{display:none}body.primary-owner .owner-json-only{display:block}
+#owner-json-panel .json-controls{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+#owner-json-panel input,#owner-json-panel select{width:100%;min-width:0}
+.item .info,.card,.wrap{min-width:0}.gl-item p,#formula-list .info p{overflow-wrap:anywhere;white-space:pre-wrap}
+@media(max-width:640px){#owner-json-panel .json-controls,.grid2{grid-template-columns:1fr}#owner-json-panel .row,.publication-tools{align-items:stretch;flex-direction:column}#owner-json-panel .btn,.publication-tools .btn{width:100%}.publication-row{flex-wrap:wrap;gap:10px}.item{flex-wrap:wrap}.item .acts{flex-wrap:wrap;max-width:100%}input,select,textarea{font-size:16px!important}.wrap{padding-left:12px;padding-right:12px}#tas-background svg{min-width:100%}}
 </style></head>
 <body>
 
@@ -4764,19 +4881,6 @@ body:not(.primary-owner) input,body:not(.primary-owner) textarea,body:not(.prima
 <div id="s-formulas" class="screen">
   <div class="wrap">
     <div class="hdr"><h2>📐 Формулалар</h2><p class="sub">Формула енгізіңіз немесе қараңыз</p></div>
-    <div class="card">
-      <div class="fg"><label>Пән</label>
-        <select id="f-subject">
-          <option value="math">Математика</option>
-          <option value="physics">Физика</option>
-          <option value="chemistry">Химия</option>
-          
-        </select>
-      </div>
-      <div class="fg"><label>Формула атауы</label><input id="f-title" placeholder="Мыс: Квадрат теңдеу"></div>
-      <div class="fg"><label>Формула</label><textarea id="f-body" placeholder="x = (-b ± √(b²-4ac)) / 2a  немесе LaTeX: $x=\frac{-b\pm\sqrt{D}}{2a}$"></textarea></div>
-      <button class="btn btn-ok btn-sm" onclick="addFormula()">Сақтау</button>
-    </div>
     <div id="formula-list" class="list"></div>
     <div class="row" style="margin-top:16px"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
@@ -4940,6 +5044,19 @@ body:not(.primary-owner) input,body:not(.primary-owner) textarea,body:not(.prima
   <div class="wrap wide">
     <div class="hdr"><h2>🛠 Админ панелі</h2><p class="sub">Толық басқару</p></div>
     <button class="btn btn-p" style="width:100%;margin-bottom:16px" onclick="showAccessRequests()">📨 Өтініштер <span id="admin-requests-count"></span></button>
+    <div class="card owner-json-only" id="owner-formula-editor">
+      <div class="fg"><label>Пән</label>
+        <select id="f-subject">
+          <option value="math">Математика</option>
+          <option value="physics">Физика</option>
+          <option value="chemistry">Химия</option>
+          
+        </select>
+      </div>
+      <div class="fg"><label>Формула атауы</label><input id="f-title" placeholder="Мыс: Квадрат теңдеу"></div>
+      <div class="fg"><label>Формула</label><textarea id="f-body" placeholder="x = (-b ± √(b²-4ac)) / 2a  немесе LaTeX: $x=\frac{-b\pm\sqrt{D}}{2a}$"></textarea></div>
+      <button class="btn btn-ok btn-sm" onclick="addFormula()">Сақтау</button>
+    </div>
     <div class="grid2" id="admin-stats-grid" style="margin-bottom:16px"></div>
     <div class="card" style="padding:20px">
       <h3 style="margin-bottom:12px">⏳ Жариялау күтіп тұрған тесттер</h3>
@@ -5175,7 +5292,7 @@ html{text-rendering:optimizeSpeed}
 .approved-summary{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0 20px}.approved-summary span{padding:8px 12px;border:1px solid var(--b);border-radius:12px;font-size:12px}.approved-test-row,.notification-test-row{padding:18px;margin:0 0 12px;border:1px solid var(--b);border-radius:16px;background:var(--c);display:flex;justify-content:space-between;gap:18px;align-items:center}.approved-test-row h3,.notification-test-row h3{font-size:16px;margin:4px 0 8px;overflow-wrap:anywhere}.approved-test-row p,.notification-test-row p{font-size:12px;color:var(--m);line-height:1.7}.notification-source{font-size:10px;letter-spacing:.06em;color:var(--p);font-weight:700}.notification-test-row .notification-text{white-space:pre-wrap;color:var(--t);margin-top:10px}.notification-test-row .acts,.approved-test-row .acts{display:flex;flex-wrap:wrap;gap:7px;flex-shrink:0}.ubd-profile-actions .profile-message-open{color:#d8e9ff!important;border-color:#ac9ce366!important}.test-notification-count{font-size:10px;color:var(--p);font-weight:800}.notification-quota{display:inline-block;font-size:11px;color:var(--p);padding:4px 8px;background:#55c6a419;border-radius:8px}#approved-list,#notification-list{content-visibility:auto;contain-intrinsic-size:auto 500px}@media(max-width:600px){.approved-test-row,.notification-test-row{align-items:stretch;flex-direction:column;gap:12px;padding:16px}.approved-test-row .acts .btn,.notification-test-row .acts .btn{flex:1}.approved-summary{gap:6px}}
 </style>
 <style id="admin-whatsapp-style">
-#tas-background{position:fixed;inset:0;z-index:3;pointer-events:none;overflow:hidden;opacity:.065;user-select:none}#tas-background svg{display:block;width:100%;height:100%}body.dark #tas-background{opacity:.09}#s-admin-messenger>.wrap{max-width:1320px}.wa-shell{height:min(740px,calc(100dvh - 155px));min-height:430px;border:1px solid #35596b;border-radius:22px;background:#101d29;display:grid;grid-template-columns:300px minmax(0,1fr);overflow:hidden;color:#e9f1f5;box-shadow:0 12px 35px #0002}.wa-sidebar{display:flex;flex-direction:column;background:#142633;border-right:1px solid #35505e;min-height:0}.wa-brand{padding:20px 16px 12px;font-weight:800;font-size:18px;color:#81e4c6}.wa-search{margin:0 12px 12px!important;width:calc(100% - 24px)!important;padding:11px!important;background:#223b49!important;border:1px solid #385361!important;color:#edf5f8!important;border-radius:12px!important;font:inherit}.wa-contacts{overflow-y:auto;min-height:0;flex:1;scrollbar-width:thin}.wa-contact{width:100%;display:flex;gap:11px;padding:15px 13px;background:transparent;color:#ddecf1;border:0;border-bottom:1px solid #2b414c;text-align:left;cursor:pointer;align-items:center;font:inherit}.wa-contact:hover,.wa-contact.selected{background:#254837}.wa-avatar{width:40px;height:40px;flex:none;border-radius:50%;display:grid;place-items:center;background:#30635c;color:#bdf0df;font-size:18px;font-weight:750}.wa-contact-name{font-size:13px;font-weight:700;display:block;overflow-wrap:anywhere}.wa-contact-preview{display:block;color:#8fa9b6;font-size:11px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:180px;margin-top:5px}.wa-count{margin-left:auto;flex:none;background:#49d4aa;color:#103a31;border-radius:20px;padding:3px 7px;font-size:10px}.wa-chat{display:flex;flex-direction:column;min-width:0;min-height:0;background:radial-gradient(ellipse at 80% 20%,#16453645,transparent 65%),#0c1b24}.wa-head{display:flex;align-items:center;gap:12px;padding:15px 18px;border-bottom:1px solid #35505e;background:#1b303b;min-height:76px}.wa-head h3{font-size:15px;margin:0}.wa-head small{display:block;color:#a0b7c2;font-size:11px;margin-top:5px}.wa-back{display:none;border:0;background:transparent;color:#d5eeea;font-size:22px;cursor:pointer}.wa-messages{flex:1;overflow-y:auto;min-height:0;padding:20px;display:flex;flex-direction:column;gap:12px;scrollbar-width:thin;overscroll-behavior:contain}.wa-bubble{align-self:flex-start;max-width:84%;padding:12px 15px;border-radius:0 16px 16px 16px;background:#243c49;box-shadow:0 2px 4px #0001;overflow-wrap:anywhere}.wa-bubble.mine{align-self:flex-end;background:#195742;border-radius:16px 0 16px 16px}.wa-sender{font-size:10px;color:#9adfcd;font-weight:700;margin-bottom:6px}.wa-message-text{font-size:13px;line-height:1.7;white-space:pre-wrap}.wa-time{font-size:9px;color:#9db9bb;text-align:right;margin-top:7px}.wa-test-title{font-size:14px;font-weight:750;margin:6px 0}.wa-test-details{font-size:11px;color:#b1cec9;margin-bottom:10px;line-height:1.6}.wa-test-start{border:1px solid #6fa795;border-radius:10px;background:#65d9b3;color:#13392c;padding:8px 12px;font:inherit;font-size:12px;font-weight:700;cursor:pointer}.wa-test-start:disabled{opacity:.5;cursor:default}.wa-compose{display:flex;gap:8px;padding:12px;background:#1b303b;align-items:flex-end}.wa-compose textarea{flex:1;min-width:0;resize:vertical;min-height:43px;max-height:130px;background:#294550!important;color:#edf7f6!important;border:1px solid #49616b!important;border-radius:13px!important;padding:11px 12px!important;font:inherit;font-size:13px}.wa-compose button{border:0;border-radius:12px;background:#39bc98;color:#083b31;padding:11px 16px;min-height:43px;cursor:pointer;font:inherit;font-size:12px;font-weight:700}.wa-compose button.wa-attach{background:#31525b;color:#cfede8}.wa-status{padding:0 16px;font-size:11px;color:#f0c6ae;background:#1b303b}.wa-more{align-self:center;border:1px solid #4d6e79;border-radius:12px;background:#1c3540;color:#c9e0e5;padding:7px 12px;cursor:pointer;font:inherit;font-size:11px}.wa-own-only{grid-template-columns:1fr}.wa-own-only .wa-sidebar{display:none}.wa-screen-title{margin-bottom:16px}.wa-loading{color:#91b3bb;font-size:12px;text-align:center;padding:30px}.wa-test-modal{width:min(480px,92vw);max-height:85dvh;overflow:auto;background:var(--c);color:var(--t);border:1px solid var(--b);border-radius:18px;padding:24px}
+#tas-background{position:fixed;inset:0;z-index:3;pointer-events:none;overflow:hidden;opacity:.14;user-select:none}#tas-background svg{display:block;width:100%;height:100%}body.dark #tas-background{opacity:.2}#s-admin-messenger>.wrap{max-width:1320px}.wa-shell{height:min(740px,calc(100dvh - 155px));min-height:430px;border:1px solid #35596b;border-radius:22px;background:#101d29;display:grid;grid-template-columns:300px minmax(0,1fr);overflow:hidden;color:#e9f1f5;box-shadow:0 12px 35px #0002}.wa-sidebar{display:flex;flex-direction:column;background:#142633;border-right:1px solid #35505e;min-height:0}.wa-brand{padding:20px 16px 12px;font-weight:800;font-size:18px;color:#81e4c6}.wa-search{margin:0 12px 12px!important;width:calc(100% - 24px)!important;padding:11px!important;background:#223b49!important;border:1px solid #385361!important;color:#edf5f8!important;border-radius:12px!important;font:inherit}.wa-contacts{overflow-y:auto;min-height:0;flex:1;scrollbar-width:thin}.wa-contact{width:100%;display:flex;gap:11px;padding:15px 13px;background:transparent;color:#ddecf1;border:0;border-bottom:1px solid #2b414c;text-align:left;cursor:pointer;align-items:center;font:inherit}.wa-contact:hover,.wa-contact.selected{background:#254837}.wa-avatar{width:40px;height:40px;flex:none;border-radius:50%;display:grid;place-items:center;background:#30635c;color:#bdf0df;font-size:18px;font-weight:750}.wa-contact-name{font-size:13px;font-weight:700;display:block;overflow-wrap:anywhere}.wa-contact-preview{display:block;color:#8fa9b6;font-size:11px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:180px;margin-top:5px}.wa-count{margin-left:auto;flex:none;background:#49d4aa;color:#103a31;border-radius:20px;padding:3px 7px;font-size:10px}.wa-chat{display:flex;flex-direction:column;min-width:0;min-height:0;background:radial-gradient(ellipse at 80% 20%,#16453645,transparent 65%),#0c1b24}.wa-head{display:flex;align-items:center;gap:12px;padding:15px 18px;border-bottom:1px solid #35505e;background:#1b303b;min-height:76px}.wa-head h3{font-size:15px;margin:0}.wa-head small{display:block;color:#a0b7c2;font-size:11px;margin-top:5px}.wa-back{display:none;border:0;background:transparent;color:#d5eeea;font-size:22px;cursor:pointer}.wa-messages{flex:1;overflow-y:auto;min-height:0;padding:20px;display:flex;flex-direction:column;gap:12px;scrollbar-width:thin;overscroll-behavior:contain}.wa-bubble{align-self:flex-start;max-width:84%;padding:12px 15px;border-radius:0 16px 16px 16px;background:#243c49;box-shadow:0 2px 4px #0001;overflow-wrap:anywhere}.wa-bubble.mine{align-self:flex-end;background:#195742;border-radius:16px 0 16px 16px}.wa-sender{font-size:10px;color:#9adfcd;font-weight:700;margin-bottom:6px}.wa-message-text{font-size:13px;line-height:1.7;white-space:pre-wrap}.wa-time{font-size:9px;color:#9db9bb;text-align:right;margin-top:7px}.wa-test-title{font-size:14px;font-weight:750;margin:6px 0}.wa-test-details{font-size:11px;color:#b1cec9;margin-bottom:10px;line-height:1.6}.wa-test-start{border:1px solid #6fa795;border-radius:10px;background:#65d9b3;color:#13392c;padding:8px 12px;font:inherit;font-size:12px;font-weight:700;cursor:pointer}.wa-test-start:disabled{opacity:.5;cursor:default}.wa-compose{display:flex;gap:8px;padding:12px;background:#1b303b;align-items:flex-end}.wa-compose textarea{flex:1;min-width:0;resize:vertical;min-height:43px;max-height:130px;background:#294550!important;color:#edf7f6!important;border:1px solid #49616b!important;border-radius:13px!important;padding:11px 12px!important;font:inherit;font-size:13px}.wa-compose button{border:0;border-radius:12px;background:#39bc98;color:#083b31;padding:11px 16px;min-height:43px;cursor:pointer;font:inherit;font-size:12px;font-weight:700}.wa-compose button.wa-attach{background:#31525b;color:#cfede8}.wa-status{padding:0 16px;font-size:11px;color:#f0c6ae;background:#1b303b}.wa-more{align-self:center;border:1px solid #4d6e79;border-radius:12px;background:#1c3540;color:#c9e0e5;padding:7px 12px;cursor:pointer;font:inherit;font-size:11px}.wa-own-only{grid-template-columns:1fr}.wa-own-only .wa-sidebar{display:none}.wa-screen-title{margin-bottom:16px}.wa-loading{color:#91b3bb;font-size:12px;text-align:center;padding:30px}.wa-test-modal{width:min(480px,92vw);max-height:85dvh;overflow:auto;background:var(--c);color:var(--t);border:1px solid var(--b);border-radius:18px;padding:24px}
 @media(max-width:700px){.wa-shell{grid-template-columns:1fr;height:calc(100dvh - 150px);min-height:400px;border-radius:15px}.wa-shell:not(.wa-own-only):not(.wa-mobile-thread) .wa-chat{display:none}.wa-shell.wa-mobile-thread .wa-sidebar{display:none}.wa-shell.wa-mobile-thread .wa-back{display:block}.wa-shell.wa-own-only .wa-back{display:none}.wa-messages{padding:14px}.wa-bubble{max-width:93%}.wa-contact-preview{max-width:240px}.wa-compose{gap:6px;padding:9px}.wa-compose button{padding:11px 10px}.wa-head{padding:12px;min-height:68px}#s-admin-messenger>.wrap{padding-left:12px;padding-right:12px}.wa-screen-title h2{font-size:22px}}
 </style>
 <style>
@@ -5225,6 +5342,8 @@ function syncRefresh(){
     const bankChanged=!keys.length||keys.some(k=>k==='ubt_tests'||k==='ubt_profiles'||k.startsWith('ubt_question_catalog')||k.startsWith('ubt_qbank_')||k.startsWith('ubt_ubt140_selection_'));
     if(id==='s-ubt140'||id==='s-question-bank'){if(bankChanged)renderUbt140()}
     else if(id==='s-subj'){if(bankChanged)renderBankSubjectList()}
+    else if(id==='s-formulas')renderFormulas();
+    else if(id==='s-gloss')showGloss();
     else if(id==='s-home')renderHomeExtras();
     else if(id==='s-registered'&&user&&user.isAdmin){renderAdminUsers();renderSiteControls()}
     else if(id==='s-admin-inbox')renderAdminInbox();
@@ -5237,7 +5356,7 @@ function syncRefresh(){
   }catch(e){}
 }
 function personalBackupKey(k){
-  return ['ubt_tests','ubt_formulas','ubt_schemes','ubt_lessons','ubt_books'].includes(k)||
+  return ['ubt_tests','ubt_formulas','ubt_glossary','ubt_schemes','ubt_lessons','ubt_books'].includes(k)||
     ['ubt_flashcards_','ubt_qbank_','ubt_qbank_hidden_','ubt_mistakes_','ubt_hist_',
      'ubt_prog_','ubt_bm_','ubt_plan_','ubt_plan_done_','ubt_streak_','ubt_avatar_',
      'ubt_ubt140_selection_','ubt_subject_selection_'].some(p=>k===p+'admin');
@@ -6163,13 +6282,14 @@ function showFormulas(){
 }
 function renderFormulas(){
   const list=document.getElementById('formula-list');
-  const all=LS.get('ubt_formulas',[]);
+  const all=uniqueContent(LS.get('ubt_formulas',[]),['subject','title','body']);
   if(!all.length){list.innerHTML='<div class="empty"><div class="ic">📐</div><p>Әзірге формула жоқ</p></div>';return}
   list.innerHTML=all.map(f=>`<div class="item"><div class="info"><h4>${esc(f.title)}</h4>
     <p style="font-family:monospace;font-size:14px;color:var(--t);margin:6px 0">${esc(f.body)}</p>
     <p>${esc(f.subject)} · ${esc(f.authorName||'')}</p></div></div>`).join('');
 }
 function addFormula(){
+  if(!user?.isAdmin||user.id!=='admin')return;
   const title=document.getElementById('f-title').value.trim();
   const body=document.getElementById('f-body').value.trim();
   const subject=document.getElementById('f-subject').value;
@@ -9464,7 +9584,7 @@ function flashImportFile(input){
 }
 function flashCards(k){
   if(k.indexOf('flash:')===0){const deck=flashOwnDecks().find(d=>d.id===k.slice(6));return deck?deck.cards.map(c=>({f:c.f,b:c.b})):[]}
-  if(k==='gloss')return GLOSS.map(g=>({f:g.t,b:g.d}));
+  if(k==='gloss')return allGlossary().map(g=>({f:g.t,b:g.d}));
   if(k==='formulas')return LS.get('ubt_formulas',[]).map(f=>({f:f.title,b:f.body}));
   if(k==='mist')return LS.get('ubt_mistakes_'+user.id,[]).map(qCard);
   if(k==='bm')return getBm().map(qCard);
@@ -9599,15 +9719,17 @@ function renderFlash(){
 function flFlip(){if(!fl.deck.length)return;fl.flip=!fl.flip;renderFlash()}
 function flKnow(){if(!fl.deck.length)return;fl.deck.shift();fl.known++;fl.flip=false;renderFlash()}
 function flAgain(){if(!fl.deck.length)return;fl.deck.push(fl.deck.shift());fl.flip=false;renderFlash()}
+function uniqueContent(rows,fields){const seen=new Set();return rows.filter(row=>{const key=JSON.stringify(fields.map(k=>String(row[k]||'').replace(/\s+/g,' ').trim().toLocaleLowerCase()));if(seen.has(key))return false;seen.add(key);return true})}
+function allGlossary(){return uniqueContent(GLOSS.concat(LS.get('ubt_glossary',[])),['c','t','d'])}
 let glCat='';
 function showGloss(){
-  const cats=[''].concat(GLOSS.map(g=>g.c).filter((c,i,a)=>a.indexOf(c)===i));
+  const cats=[''].concat(allGlossary().map(g=>g.c).filter((c,i,a)=>a.indexOf(c)===i));
   document.getElementById('gl-cats').innerHTML=cats.map(c=>`<button class="btn ${glCat===c?'btn-p':'btn-s'} btn-sm" onclick="glCat=${jsq(c)};showGloss()">${c?esc(c):'Барлығы'}</button>`).join('');
   renderGloss();showScr('s-gloss');
 }
 function renderGloss(){
   const q=(document.getElementById('gl-q').value||'').trim().toLowerCase();
-  const list=GLOSS.filter(g=>(!glCat||g.c===glCat)&&(!q||(g.t+' '+g.d).toLowerCase().indexOf(q)>=0));
+  const list=allGlossary().filter(g=>(!glCat||g.c===glCat)&&(!q||(g.t+' '+g.d).toLowerCase().indexOf(q)>=0));
   document.getElementById('gl-count').textContent='Табылды: '+list.length;
   const el=document.getElementById('gl-list');
   el.innerHTML=list.length?list.map(g=>`<div class="gl-item"><div class="gl-cat">${esc(g.c)}</div><h4>${esc(g.t)}</h4><p>${esc(g.d)}</p></div>`).join(''):'<div class="empty"><div class="ic">🔍</div><p>Ештеңе табылмады</p></div>';
@@ -11285,7 +11407,7 @@ async function schoolDeleteClass(cid,button){
 
 (function(){
  const screen=document.createElement('div');screen.id='s-admin-messenger';screen.className='screen';screen.innerHTML='<div class="wrap wide"><div class="topback"><button type="button" class="btn btn-s" onclick="goHome()">← Артқа</button></div><div class="hdr wa-screen-title"><h2 id="wa-page-title">Админ WhatsApp</h2><p class="sub">Сайт ішіндегі хабарламалар мен жіберілген тесттер</p></div><div class="wa-shell" id="wa-shell"><aside class="wa-sidebar"><div class="wa-brand">Админ WhatsApp</div><input type="search" id="wa-search" class="wa-search" placeholder="Адамның атын іздеу" aria-label="Контактіні іздеу"><div class="wa-contacts" id="wa-contacts"></div><button type="button" class="wa-more" id="wa-contact-more" hidden>Тағы адамдар</button></aside><section class="wa-chat"><header class="wa-head"><button type="button" class="wa-back" id="wa-mobile-back" aria-label="Контактілерге оралу">←</button><div class="wa-avatar" id="wa-chat-avatar">А</div><div><h3 id="wa-chat-name">Админнен келген хабарламалар</h3><small>Хабарламалар және тесттер</small></div></header><div class="wa-messages" id="wa-messages" role="log" aria-label="Чат хабарламалары"></div><p class="wa-status" id="wa-status" role="status"></p><div class="wa-compose"><button type="button" class="wa-attach" id="wa-send-test">+ Тест</button><textarea id="wa-text" rows="1" maxlength="2000" placeholder="Хабарлама жазыңыз…" aria-label="Хабарлама мәтіні"></textarea><button type="button" id="wa-send">Жіберу ➤</button></div></section></div></div>';document.body.appendChild(screen);
- const background=document.createElement('div');background.id='tas-background';background.setAttribute('aria-hidden','true');background.innerHTML='<svg viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice"><defs><pattern id="tas-dot-pattern" x="0" y="0" width="9" height="9" patternUnits="userSpaceOnUse"><circle cx="3" cy="3" r="1.8" fill="#9fbbdb"/></pattern></defs><g fill="url(#tas-dot-pattern)" font-family="Arial,sans-serif" font-size="240" font-weight="900" text-anchor="middle" letter-spacing="24"><text x="600" y="230">T.A.S.</text><text x="600" y="560">T.A.S.</text><text x="600" y="890">T.A.S.</text></g></svg>';document.body.appendChild(background);
+ const background=document.createElement('div');background.id='tas-background';background.setAttribute('aria-hidden','true');background.innerHTML='<svg viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice"><defs><pattern id="tas-dot-pattern" x="0" y="0" width="9" height="9" patternUnits="userSpaceOnUse"><circle cx="3" cy="3" r="1.8" fill="#1671eb"/></pattern></defs><g fill="url(#tas-dot-pattern)" font-family="Arial,sans-serif" font-size="240" font-weight="900" text-anchor="middle" letter-spacing="24"><text x="600" y="230">T.A.S</text><text x="600" y="560">T.A.S</text><text x="600" y="890">T.A.S</text></g></svg>';document.body.appendChild(background);
  let selected='',owner='',contactOffset=0,threadOffset=0,contactJob=0,threadJob=0,searchTimer=0,refreshTimer=0,sending=false;
  const active=()=>document.querySelector('.screen.active')?.id==='s-admin-messenger';
  const allowed=()=>!!user&&!user.isCodeGuest;
@@ -11464,6 +11586,36 @@ select.onchange=()=>{subjectSelect.value='';const t=r.items.find(x=>x.id===selec
  window.openOwnerPublication=function(){if(!owner())return;showAdmin();document.getElementById('owner-publication-panel')?.scrollIntoView({behavior:'smooth',block:'start'})};
  const admin=showAdmin;showAdmin=function(){const r=admin.apply(this,arguments);panel();return r};
  const show=showScr;showScr=function(){const r=show.apply(this,arguments);if(!owner()){job++;document.getElementById('owner-publication-panel')?.remove()}return r};
+})();
+
+(function(){
+const isOwner=()=>!!user?.isAdmin&&user.id==='admin';
+function mountContentPanel(){
+ if(!isOwner()){document.getElementById('owner-json-panel')?.remove();return}
+ if(document.getElementById('owner-json-panel'))return;
+ const host=document.createElement('section');host.id='owner-json-panel';host.className='card owner-json-only';
+ host.innerHTML='<h3>JSON файлдан материал енгізу</h3><p class="sub">Тест, глоссарий немесе формула қосыңыз. Дәл қайталанған жазбалар қосылмайды. Тесттер алдымен жеке базаға сақталады.</p><div class="json-controls" style="margin-top:14px"><div class="fg"><label>Материал түрі</label><select id="owner-json-kind"><option value="tests">Тесттер</option><option value="glossary">Глоссарий</option><option value="formulas">Формулалар</option></select></div><div class="fg"><label>Пән *</label><select id="owner-json-subject"><option value="">Пәнді таңдаңыз</option></select></div></div><div class="fg"><label>JSON файл (5 МБ дейін)</label><input id="owner-json-file" type="file" accept=".json,application/json"></div><p id="owner-json-preview" class="sub" role="status" aria-live="polite"></p><div class="row" style="margin-top:12px"><button type="button" class="btn btn-p" id="owner-json-save">Базаға енгізу</button><button type="button" class="btn btn-s" id="owner-json-example">JSON үлгісі</button><button type="button" class="btn btn-s" id="owner-json-clean">Қайталанғандарын тазалау</button></div><details style="margin-top:12px"><summary>JSON форматы</summary><p class="sub">Тест: questions ішіндегі text, options, correct (дұрыс жауап индексі 0-ден басталады). Глоссарий: term, definition. Формула: title, formula. Бір объектіні немесе объектілер тізімін енгізуге болады.</p></details>';
+ document.querySelector('#s-admin .wrap').prepend(host);
+ const subjects=['history','reading','mathlit','math','physics','chemistry','biology','geography','informatics','english','kazakh','worldhistory','law'];
+ const sel=host.querySelector('#owner-json-subject');subjects.forEach(key=>sel.add(new Option(subjName(key),key)));
+ const status=host.querySelector('#owner-json-preview'),fileInput=host.querySelector('#owner-json-file');let pending=false;
+ fileInput.onchange=()=>{const file=fileInput.files[0];status.textContent=file?file.name+' · '+Math.ceil(file.size/1024)+' КБ':''};
+ async function submit(cleanup){
+  if(!isOwner()||pending)return;
+  let data=null;const kind=host.querySelector('#owner-json-kind').value,file=fileInput.files[0];
+  try{
+   if(!cleanup){if(!sel.value)throw Error('Алдымен пәнді таңдаңыз');if(!file)throw Error('JSON файлды таңдаңыз');if(file.size>5*1024*1024)throw Error('Файл 5 МБ-тан аспасын');try{data=JSON.parse((await file.text()).replace(/^\uFEFF/,''))}catch(e){throw Error('JSON синтаксисі қате. Тырнақша, үтір және жақшаларды тексеріңіз')}}
+   pending=true;host.querySelectorAll('button').forEach(b=>b.disabled=true);status.textContent='Сақталып жатыр…';
+   const r=await authCall('owner_content_import',{kind:cleanup?'cleanup':kind,subject:sel.value,data,title:file?.name.replace(/\.json$/i,'')});
+   if(!r.ok)throw Error(r.msg||'Сақталмады');
+   await window.__bridge.refresh();status.textContent='Қосылды: '+r.added+' · Қайталанғаны: '+r.duplicates;if(!cleanup)fileInput.value='';
+  }catch(e){status.textContent=e.message||'Қате пайда болды'}finally{pending=false;host.querySelectorAll('button').forEach(b=>b.disabled=false)}
+ }
+ host.querySelector('#owner-json-save').onclick=()=>submit(false);host.querySelector('#owner-json-clean').onclick=()=>submit(true);
+ host.querySelector('#owner-json-example').onclick=()=>{const kind=host.querySelector('#owner-json-kind').value,examples={tests:[{topic:'Үлгі тест',questions:[{text:'2 + 2 = ?',options:['3','4','5','6'],correct:1}]}],glossary:[{term:'Алгоритм',definition:'Есепті шешуге арналған әрекеттер тізбегі.'}],formulas:[{title:'Жылдамдық',formula:'v = s / t'}]};const url=URL.createObjectURL(new Blob([JSON.stringify(examples[kind],null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=kind+'_example.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};
+}
+const admin=showAdmin;showAdmin=function(){const r=admin.apply(this,arguments);mountContentPanel();return r};
+const show=showScr;showScr=function(id){const r=show.apply(this,arguments);if(!isOwner())document.getElementById('owner-json-panel')?.remove();return r};
 })();
 </script>
 <script>
