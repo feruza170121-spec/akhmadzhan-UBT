@@ -1331,6 +1331,24 @@ def _publication_request(state,sess,typ,d):
         return {"ok":False,"msg":"Аккаунтыңызға кіріңіз"}
     with state["lock"]:
         tests=_jload(state["db"].get("ubt_tests","[]"),list,[])
+        if typ in ("save_public_test", "remove_saved_public_test"):
+            tid = str(d.get("testId") or "")
+            saved = _jload(state["db"].get("ubt_server_access_saved_public", "{}"), dict, {})
+            ids = saved.get(sess["uid"], [])
+            ids = ids if isinstance(ids, list) else []
+            if typ == "save_public_test":
+                test = next((t for t in tests if isinstance(t, dict) and t.get("id") == tid and _approved_test(t)), None)
+                if not test or not test.get("questions"):
+                    return {"ok":False,"msg":"Жария тест табылмады"}
+                if tid not in ids:
+                    if len(ids) >= 2000:
+                        return {"ok":False,"msg":"Базаға ең көбі 2000 жария тест сақталады"}
+                    ids.append(tid)
+            else:
+                ids = [i for i in ids if i != tid]
+            saved[sess["uid"]] = ids
+            _put(state,"ubt_server_access_saved_public",_jdump(saved));_commit(state)
+            return {"ok":True}
         if typ == "admin_publish_test":
             if not sess["admin"]:
                 return {"ok":False,"msg":"Тестті тек админ мақұлдайды"}
@@ -1637,7 +1655,7 @@ def _handle_req(state, sid, rq):
     if typ=="exam_check_answer":
         return _check_exam_answer(state,sess,d)
 
-    if typ in ("admin_publish_test", "approved_test_list", "notifications_list"):
+    if typ in ("admin_publish_test", "approved_test_list", "notifications_list", "save_public_test", "remove_saved_public_test"):
         return _publication_request(state,sess,typ,d)
 
     if typ in ("messenger_contacts","messenger_thread","messenger_send","messenger_send_test"):
@@ -1717,8 +1735,8 @@ def _handle_req(state, sid, rq):
             teacher_owner = owner and _is_teacher(state, sess["uid"])
             published = (test.get("isPublic") is True and test.get("status") == "approved"
                          and not test.get("accessCode") and not test.get("classId") and not test.get("assignmentId"))
-            if not (sess["admin"] or owner):
-                return {"ok": False, "msg": "JSON жүктеуге рұқсат жоқ"}
+            if not sess["admin"]:
+                return {"ok": False, "msg": "Файл жүктеу тек админге қолжетімді"}
             payload = {"title": test.get("topic") or "Тест", "topic": test.get("topic") or "Тест",
                        "subject": test.get("subjectName") or test.get("subject") or "",
                        "questions": [{"text": q.get("text"), "options": q.get("options"), "correct": q.get("correct")}
@@ -2947,6 +2965,44 @@ def _award_finished_seasons(state):
         _put(state, "ubt_awarded", _jdump(awarded))
         _commit(state)
 
+def _daily_motivation(now=None):
+    """One verified, translated excerpt per Kazakhstan calendar day; 15-day cycle."""
+    zone = datetime.timezone(datetime.timedelta(hours=5))
+    current = datetime.datetime.fromtimestamp(time.time() if now is None else now, zone)
+    authors = [
+        ("Наполеон Бонапарт", "Мемлекет қайраткері", "Napoleon crop.jpg", "https://www.gutenberg.org/files/50750/50750-h/50750-h.htm", [
+            "Алғашқы қасиет — қиындық пен шаршауға төзім. Батылдық — екінші орында."]),
+        ("Хелен Келлер", "Жазушы, қоғам қайраткері", "Helen KellerA.jpg", "https://www.gutenberg.org/files/31622/31622-h/31622-h.htm", [
+            "Оптимизм — жетістікке бастайтын сенім. Үмітсіз ештеңе жасалмайды.",
+            "Идеялар от пен қылыштан да қуатты.",
+            "Өзімізге де, өзгеге де жігер беру — қасиетті міндет деп сенемін.",
+            "Мен рухтың күшіне сенемін.",
+            "Қараңғылық мені қайта тұтқындай алмайды. Мен жағалауды бір көрдім, енді оған жетемін деген үмітпен өмір сүре аламын."]),
+        ("Марк Аврелий", "Философ, Рим императоры", "Marcus Aurelius MET DP-615-004.jpg", "https://gutenberg-test.ibiblio.org/cache/epub/55317/pg55317-images.html", [
+            "Қолыңдағы істі жақсы орындау — соның өзі жеткілікті.",
+            "Өзіңе үңіл. Еш нәрсенің шынайы мәні мен құндылығын назардан тыс қалдырма.",
+            "Ең жақсы кек — саған жамандық жасаған адамға ұқсамау."]),
+        ("Теодор Рузвельт", "АҚШ-тың 26-президенті", "President Theodore Roosevelt, 1904.jpg", "https://www.theodorerooseveltcenter.org/encyclopedia/culture-and-society/man-in-the-arena/", [
+            "Құрмет шын мәнінде аренаға шыққан адамға тиесілі.",
+            "Қателік пен кемшіліксіз талпыныс болмайды.",
+            "Жеңілсе де, ең болмаса батыл әрекет етіп жеңілсін."]),
+        ("Фредерик Дуглас", "Қоғам қайраткері, жазушы", "Frederick Douglass (1840s).jpg", "https://home.nps.gov/frdo/learn/historyculture/thoughts-for-all-time.htm", [
+            "Күрес жоқ жерде ілгерілеу де жоқ.",
+            "Билік талап қойылмаса, ештеңе бермейді. Бұрын да бермеген, болашақта да бермейді.",
+            "Өзімізді құрметтемейінше, бізді де, өзге ешбір халықты да құрметтемейді."])
+    ]
+    # Interleave authors so neighbouring days show different people.
+    bank = [(author, text) for i in range(max(len(a[4]) for a in authors))
+            for author in authors for text in author[4][i:i+1]]
+    index = (current.date() - datetime.date(2026, 11, 7)).days % len(bank)
+    author, text = bank[index]
+    name, role, filename, source, _ = author
+    image_page = "https://commons.wikimedia.org/wiki/File:" + urllib.parse.quote(filename.replace(" ", "_"))
+    return {"day": current.date().isoformat(), "name": name, "role": role,
+            "text": text, "source": source, "portraitSource": image_page,
+            "image": "https://commons.wikimedia.org/wiki/Special:FilePath/" + urllib.parse.quote(filename.replace(" ", "_")) + "?width=240",
+            "translation": "Қазақша мағыналық аударма · үзінді", "cycleDays": len(bank)}
+
 def _snapshot(tok="", claim=""):
     """Браузерге жіберілетін дерек: хэштер жоқ, бөтен чаттар жоқ, кірмеген адамға — ештеңе жоқ."""
     state = _store()
@@ -2998,6 +3054,10 @@ def _snapshot(tok="", claim=""):
                 cache.pop(next(iter(cache)))
             cache[scope] = cached
         db["ubt_question_catalog"], db["ubt_question_catalog_deleted"] = cached[1], cached[2]
+    saved_ids = _jload(state["db"].get("ubt_server_access_saved_public","{}"),dict,{}).get(sess["uid"],[])
+    db["ubt_saved_public_tests"] = _jdump([{"id":t["id"],"title":t.get("topic") or "Тест","subject":t.get("subjectName") or t.get("subject") or "","count":len(t.get("questions",[]))}
+        for t in _jload(db.get("ubt_tests","[]"),list,[]) if isinstance(t,dict) and t.get("id") in saved_ids and _approved_test(t)])
+    db["ubt_daily_motivation"] = _jdump(_daily_motivation())
     db["ubt_chat"] = chat
     deliveries = _jload(db.get("ubt_teacher_deliveries", "[]"), list, [])
     db["ubt_teacher_deliveries"] = _jdump(deliveries if sess["admin"] else [x for x in deliveries if isinstance(x, dict) and x.get("uid") == sess["uid"]])
@@ -3688,6 +3748,10 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
 #s-test #qnav .qn{flex:0 0 34px;width:34px!important;height:34px!important;min-height:34px!important;aspect-ratio:auto!important;border-radius:9px;line-height:1}
 @media(max-width:520px){#s-test #qnav{gap:5px!important}#s-test #qnav .qn{flex-basis:30px;width:30px!important;height:30px!important;min-height:30px!important;font-size:11px}}
 </style>
+<style>
+.daily-motivation{display:flex;align-items:center;gap:26px;position:relative;overflow:hidden;margin:0 0 22px;padding:26px 30px;border:1px solid #b999554d;border-radius:22px;background:linear-gradient(120deg,#151c34,#17233b 70%,#2c2935);color:#f4f3ee;box-shadow:0 12px 32px #00000018;animation:quote-arrive .55s ease both}
+.daily-motivation[hidden]{display:none}.daily-motivation .daily-portrait{flex:0 0 104px;width:104px;height:124px;border-radius:15px;overflow:hidden;background:#30344a;position:relative;border:1px solid #d9bc7360;display:grid;place-items:center;color:#e4cb92;font-size:28px;font-weight:800}.daily-portrait img{width:100%;height:100%;object-fit:cover;object-position:center 22%;position:absolute;inset:0}.daily-copy{min-width:0;flex:1}.daily-kicker{font-size:10px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:#e4cb92}.daily-motivation blockquote{font-size:clamp(17px,2vw,23px);line-height:1.5;font-weight:650;margin:10px 0 14px;padding:0;border:0;color:#faf6eb}.daily-author{font-size:13px;font-weight:800}.daily-role{font-size:11px;color:#b2bace;margin-top:3px}.daily-meta{display:flex;flex-wrap:wrap;gap:8px 15px;font-size:10px;color:#a9b1c6;margin-top:12px}.daily-meta a{color:#d9c18a;text-decoration:none}.daily-meta a:hover{text-decoration:underline}@keyframes quote-arrive{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}@media(max-width:550px){.daily-motivation{padding:19px 16px;gap:14px;align-items:flex-start;border-radius:18px}.daily-motivation .daily-portrait{flex-basis:68px;width:68px;height:90px}.daily-motivation blockquote{font-size:16px;line-height:1.45}.daily-kicker{letter-spacing:1px;font-size:9px}}@media(prefers-reduced-motion:reduce){.daily-motivation{animation:none}}
+</style>
 </head>
 <body>
 
@@ -3821,6 +3885,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
   </div>
   <div class="wrap">
     <div class="hdr"><h2>Басты бет</h2><p class="sub">Тест тапсырыңыз немесе өз тестіңізді құрыңыз</p></div>
+    <section id="daily-motivation" class="daily-motivation" hidden aria-label="Күннің мотивациясы"></section>
     <div id="ubd-home" class="ubd" aria-label="Жеке статистика"></div>
     <div id="home-extras"></div>
   </div>
@@ -5482,7 +5547,7 @@ function renderAdminUsers(){
 function siteControls(){return LS.get('ubt_site_controls',{})}
 function canDownloadJson(){
   if(!user)return false;
-  const c=siteControls();return !!(user.isAdmin||isTeacherUser()||c.jsonAll||(c.jsonUsers&&c.jsonUsers[user.id]));
+  return !!user.isAdmin;
 }
 function syncMaintenance(){
   const overlay=document.getElementById('maintenance-overlay');if(!overlay)return;
@@ -5908,7 +5973,7 @@ function showMyTests(more=false){
       `<details class="ubt-subject-folder" ${i===0?'open':''} style="border:1px solid var(--bd,#334155);border-radius:16px;margin:12px 0;padding:12px;background:var(--card,#171e32)">
        <summary style="cursor:pointer;font-weight:800;padding:8px">📁 ${esc(name)} <span style="opacity:.7;font-size:13px">(${items.length} тест)</span></summary>
        <div style="padding-top:10px">${items.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic)}</h4><p>${t.questions.length} сұрақ · ${t.isPublic?'🌐 Жария':'🔒 Жеке'}</p></div>
-       <div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest(${jsq(t.id)})">Бастау</button>${isTeacherUser()?`<button class="btn btn-ok btn-sm" onclick="schoolClassSendDialog('',${jsq(t.id)})">Сыныпқа жіберу</button>`:''}<button class="btn btn-s btn-sm" onclick="previewTest(${jsq(t.id)})">👁</button><button class="btn btn-s btn-sm" onclick="editTest(${jsq(t.id)})">+ Сұрақ қосу</button><button class="btn btn-s btn-sm" onclick="exportTest(${jsq(t.id)})">⬇ TXT</button><button class="btn btn-s btn-sm" onclick="exportJsonTest(${jsq(t.id)})">⬇ JSON</button><button class="btn btn-d btn-sm" onclick="delTest(${jsq(t.id)})">✕</button></div></div>`).join('')}</div></details>`).join('');
+       <div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest(${jsq(t.id)})">Бастау</button>${isTeacherUser()?`<button class="btn btn-ok btn-sm" onclick="schoolClassSendDialog('',${jsq(t.id)})">Сыныпқа жіберу</button>`:''}<button class="btn btn-s btn-sm" onclick="previewTest(${jsq(t.id)})">👁</button><button class="btn btn-s btn-sm" onclick="editTest(${jsq(t.id)})">+ Сұрақ қосу</button>${user.isAdmin?`<button class="btn btn-s btn-sm" onclick="exportTest(${jsq(t.id)})">⬇ TXT</button><button class="btn btn-s btn-sm" onclick="exportJsonTest(${jsq(t.id)})">⬇ JSON</button>`:''}<button class="btn btn-d btn-sm" onclick="delTest(${jsq(t.id)})">✕</button></div></div>`).join('')}</div></details>`).join('');
   }
   if(all.length>schoolOwnedTestsShown)list.insertAdjacentHTML('beforeend','<button class="btn btn-s" onclick="showMyTests(true)">Тағы 50 тест</button>');
   showScr('s-mytests');
@@ -5919,7 +5984,7 @@ function requestPub(id){
   if(user.isAdmin||isTeacherUser()){t.isPublic=true;t.status='approved';if(user.isAdmin)t.adminApproved=true;saveAllTests(all);alert('Жарияланды!');showMyTests();return}
   t.status='pending';t.isPublic=false;saveAllTests(all);alert('Админге жіберілді. Мақұлдаған соң жарияланады.');showMyTests();
 }
-function delTest(id){const t=allTests().find(x=>x.id===id);if(!t||!user||!(user.isAdmin||t.authorId===user.id))return;if(!confirm('Тестті өшіру керек пе?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showMyTests()}
+function delTest(id){const t=allTests().find(x=>x.id===id);if(!t||!user||!user.isAdmin)return;if(!confirm('Тестті өшіру керек пе?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showMyTests()}
 
 function showPublicTests(){
   const list=document.getElementById('public-list');const tests=publicTests();
@@ -6490,7 +6555,7 @@ function aqSave(){
 }
 function previewTest(id){
   const t=allTests().find(x=>x.id===id);if(!t)return;
-  if(!user||!(user.isAdmin||t.authorId===user.id))return;
+  if(!user||!user.isAdmin)return;
   const L=['A','B','C','D','E'];
   const old=document.getElementById('ovl-prev');if(old)old.remove();
   const o=document.createElement('div');o.className='ovl';o.id='ovl-prev';
@@ -6635,7 +6700,7 @@ function renderAdminSchemes(){
 function schRequest(id){schMut(id,t=>{t.status='pending';t.isPublic=false});alert('Админге жіберілді. Мақұлдаған соң жарияланады.')}
 function schDel(id){
   const t=allSchemes().find(x=>x.id===id);
-  if(!t||!user||!(user.isAdmin||t.authorId===user.id)||!confirm('Схеманы біржола өшіру керек пе?'))return;
+  if(!t||!user||!user.isAdmin||!confirm('Схеманы біржола өшіру керек пе?'))return;
   saveSchemes(allSchemes().filter(x=>x.id!==id));renderSchemes();
 }
 function schDeleteMine(){
@@ -7987,7 +8052,7 @@ function downloadText(name,text){
 }
 function exportTest(id){
   const t=allTests().find(x=>x.id===id);
-  if(!t||!user||!(user.isAdmin||t.authorId===user.id)){alert('Басқаның тестін тек админ жүктей алады');return}
+  if(!t||!user||!user.isAdmin){alert('Басқаның тестін тек админ жүктей алады');return}
   if(!t.questions.length){alert('Сұрақ жоқ');return}
   downloadText(safeName(t.topic)+'.txt',testToText(t.topic,t.subjectName,t.questions));
 }
@@ -8007,13 +8072,13 @@ function exportDocumentHtml(t,withAnswers){
 }
 function exportWordTest(id){
   const t=allTests().find(x=>x.id===id);
-  if(!t||!user||!(user.isAdmin||t.authorId===user.id))return alert('Рұқсат жоқ');
+  if(!t||!user||!user.isAdmin)return alert('Рұқсат жоқ');
   const blob=new Blob(['\ufeff'+exportDocumentHtml(t,confirm('Word файлына жауап кілтін қосасыз ба?'))],{type:'application/msword'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=safeName(t.topic)+'.doc';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1000);
 }
 function exportPdfTest(id){
   const t=allTests().find(x=>x.id===id);
-  if(!t||!user||!(user.isAdmin||t.authorId===user.id))return alert('Рұқсат жоқ');
+  if(!t||!user||!user.isAdmin)return alert('Рұқсат жоқ');
   const w=window.open('','_blank');if(!w)return alert('Браузер жаңа терезені бұғаттады');
   w.document.open();w.document.write(exportDocumentHtml(t,confirm('PDF нұсқасына жауап кілтін қосасыз ба?')));w.document.close();
   w.onload=()=>{w.focus();w.print()};
@@ -9786,7 +9851,7 @@ function classOptionsHTML(sel){
 function renderTestSettings(){
   const el=document.getElementById('e-settings');if(!el)return;
   const t=allTests().find(x=>x.id===editingId);
-  if(!t||!isTeacherUser()||!(user.isAdmin||t.authorId===user.id)){el.innerHTML='';return}
+  if(!t||!isTeacherUser()||!user.isAdmin){el.innerHTML='';return}
   el.innerHTML=`<div class="card"><h3 style="margin-bottom:10px">⚙ Тест баптаулары</h3>
     <div class="fg"><label>Кімге арналған?</label><select id="es-class">${classOptionsHTML(t.classId||'')}</select></div>
     <div class="fg"><label>⏱ Таймер (минут) <span class="sub">(бос = автоматты)</span></label><input type="number" id="es-timer" min="1" max="300" value="${t.timerMin||''}"></div>
@@ -9796,7 +9861,7 @@ function renderTestSettings(){
 }
 function saveTestSettings(){
   const all=allTests(),t=all.find(x=>x.id===editingId);if(!t)return;
-  if(!isTeacherUser()||!(user.isAdmin||t.authorId===user.id))return;
+  if(!isTeacherUser()||!user.isAdmin)return;
   const tm=parseInt(document.getElementById('es-timer').value,10),lm=parseInt(document.getElementById('es-limit').value,10);
   if(tm>0)t.timerMin=Math.min(tm,300);else delete t.timerMin;
   if(lm>0)t.limit=Math.min(lm,20);else delete t.limit;
@@ -9854,7 +9919,7 @@ function showPublicTests(subj){
     h+=`<div class="card"><h3>🎲 ${esc(nm)}: аралас тест</h3><p class="sub" style="margin:4px 0 10px">Осы пәннің барлық жария тесттерінен кездейсоқ ${Math.min(20,n)} сұрақ (қолжетімді: ${n})</p><button class="btn btn-p btn-sm" onclick="startSubjectMix(${jsq(pubSubj)})">▶ Бастау</button></div>`;
   }
   if(!tests.length)h+='<div class="empty"><div class="ic">🌐</div><p>Әзірге жария тест жоқ.<br>Тест құрып, «Жариялауға жіберу» белгілеңіз — админ мақұлдаған соң осында шығады.</p></div>';
-  else h+=tests.map(t=>`<div class="item"><label style="display:flex;align-items:center;gap:8px;margin-right:9px"><input type="checkbox" aria-label="${esc(t.topic)} тестін аралас тестке қосу" ${publicMixSelected.has(t.id)?'checked':''} ${t.accessCode||!t.subject?'disabled':''} onchange="togglePublicMix(${jsq(t.id)},this.checked)"></label><div class="info"><h4>${esc(t.topic)}</h4><p>${esc(t.subjectName||subjName(t.subject)||'')} · ${t.questions.length} сұрақ${t.timerMin?' · ⏱ '+t.timerMin+' мин':''}${t.limit?' · лимит: '+t.limit:''} · Автор: ${esc(t.authorName||'Аноним')}${t.desc?' · '+esc(t.desc):''}${t.accessCode?' · 🔒 Аралас тестке қосылмайды':''}</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest(${jsq(t.id)})">Тапсыру</button>${user&&user.isAdmin&&t.authorId!==user.id?`<button class="btn btn-s btn-sm" onclick="adminCopyTest(${jsq(t.id)})">📥 Өзіме жүктеу</button>`:''}${user&&user.isAdmin?`<button class="btn btn-d btn-sm" onclick="adminDelPublished(${jsq(t.id)})">🗑 Өшіру</button>`:''}</div></div>`).join('');
+  else h+=tests.map(t=>`<div class="item"><label style="display:flex;align-items:center;gap:8px;margin-right:9px"><input type="checkbox" aria-label="${esc(t.topic)} тестін аралас тестке қосу" ${publicMixSelected.has(t.id)?'checked':''} ${t.accessCode||!t.subject?'disabled':''} onchange="togglePublicMix(${jsq(t.id)},this.checked)"></label><div class="info"><h4>${esc(t.topic)}</h4><p>${esc(t.subjectName||subjName(t.subject)||'')} · ${t.questions.length} сұрақ${t.timerMin?' · ⏱ '+t.timerMin+' мин':''}${t.limit?' · лимит: '+t.limit:''} · Автор: ${esc(t.authorName||'Аноним')}${t.desc?' · '+esc(t.desc):''}${t.accessCode?' · 🔒 Аралас тестке қосылмайды':''}</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest(${jsq(t.id)})">Тапсыру</button><button class="btn btn-s btn-sm" onclick="savePublicToMyBank(${jsq(t.id)})">＋ Өз базама қосу</button>${user&&user.isAdmin&&t.authorId!==user.id?`<button class="btn btn-s btn-sm" onclick="adminCopyTest(${jsq(t.id)})">📥 Өзіме жүктеу</button>`:''}${user&&user.isAdmin?`<button class="btn btn-d btn-sm" onclick="adminDelPublished(${jsq(t.id)})">🗑 Өшіру</button>`:''}</div></div>`).join('');
   list.innerHTML=h;
   renderPublicMix();
   showScr('s-public');
@@ -10919,7 +10984,7 @@ async function schoolDeleteClass(cid,button){
   if(!canUse())return;if(reset)approvedOffset=0;const job=++approvedJob,uid=user.id,host=document.getElementById('approved-list');if(reset)host.textContent='Тесттер жүктелуде…';
   const r=await authCall('approved_test_list',{offset:approvedOffset});if(job!==approvedJob||uid!==user?.id)return;if(!r.ok){host.textContent=r.msg||'Жүктелмеді';return}
   document.getElementById('approved-total').textContent=r.total+' мақұлданған тест';
-  const html=r.items.map(t=>`<article class="approved-test-row"><div><span class="notification-source">АДМИН МАҚҰЛДАҒАН</span><h3>${esc(t.title)}</h3><p>${esc(t.subject)} · ${t.count} сұрақ${t.timerMin?' · '+esc(t.timerMin)+' минут':''}</p><span class="notification-quota">Тапсырғаны: ${t.used} / ${t.limit} · Қалды: ${Math.max(0,t.limit-t.used)}</span></div><div class="acts"><button type="button" class="btn btn-p" ${t.used>=t.limit?'disabled':''} onclick="startUserTest(${jsq(t.id)})">${t.used>=t.limit?'Лимит аяқталды':'▶ Тестті бастау'}</button>${user.isAdmin?`<button type="button" class="btn btn-s btn-sm" onclick="publishApprovedTest(${jsq(t.id)})">Лимитті өзгерту</button>`:''}</div></article>`).join('');
+  const html=r.items.map(t=>`<article class="approved-test-row"><div><span class="notification-source">АДМИН МАҚҰЛДАҒАН</span><h3>${esc(t.title)}</h3><p>${esc(t.subject)} · ${t.count} сұрақ${t.timerMin?' · '+esc(t.timerMin)+' минут':''}</p><span class="notification-quota">Тапсырғаны: ${t.used} / ${t.limit} · Қалды: ${Math.max(0,t.limit-t.used)}</span></div><div class="acts"><button type="button" class="btn btn-p" ${t.used>=t.limit?'disabled':''} onclick="startUserTest(${jsq(t.id)})">${t.used>=t.limit?'Лимит аяқталды':'▶ Тестті бастау'}</button><button type="button" class="btn btn-s btn-sm" onclick="savePublicToMyBank(${jsq(t.id)})">＋ Өз базама қосу</button>${user.isAdmin?`<button type="button" class="btn btn-s btn-sm" onclick="publishApprovedTest(${jsq(t.id)})">Лимитті өзгерту</button>`:''}</div></article>`).join('');
   if(reset)host.innerHTML=html||'<div class="empty"><p>Админ мақұлдаған тесттер әзірге жоқ.</p></div>';else host.insertAdjacentHTML('beforeend',html);
   approvedOffset+=r.items.length;document.getElementById('approved-more').hidden=approvedOffset>=r.total;
  }
@@ -11013,6 +11078,39 @@ async function schoolDeleteClass(cid,button){
  const originalRender=renderQ;
  renderQ=function(){const r=originalRender.apply(this,arguments);let bar=document.getElementById('all-instant-feedback-bar');if(!bar){bar=document.createElement('div');bar.id='all-instant-feedback-bar';bar.className='instant-feedback-toolbar';bar.innerHTML='<label><input id="all-instant-feedback" type="checkbox"> Жауапты бірден шығару</label><span class="instant-feedback-status" role="status"></span>';const host=document.querySelector('#s-test .tmain');host.prepend(bar);bar.querySelector('input').onchange=function(){st.instantFeedback=this.checked;const q=st.questions[st.currentIndex],answer=st.answers[q?.id];if(this.checked&&st.secureExam&&Number.isInteger(answer)&&!Number.isInteger(q.correct)){selOpt(answer);return}renderQ()}}bar.querySelector('input').checked=!!st.instantFeedback;return r};
  const show=showScr;showScr=function(){const r=show.apply(this,arguments);ownerUI();return r};const sync=syncRefresh;syncRefresh=function(){const r=sync.apply(this,arguments);ownerUI();return r};ownerUI();
+})();
+
+// Daily inspiration: server-selected date, no video, no continuous animation.
+(function(){
+ let signature='',timer=null;
+ function renderDailyMotivation(){
+  const host=document.getElementById('daily-motivation');if(!host)return;
+  const q=LS.get('ubt_daily_motivation',null);
+  if(!user||user.isCodeGuest||!q||!q.text){host.hidden=true;signature='';return}
+  host.hidden=false;const key=q.day+'|'+q.text;if(signature===key)return;signature=key;
+  host.replaceChildren();
+  const picture=document.createElement('a');picture.className='daily-portrait';picture.href=q.portraitSource;picture.target='_blank';picture.rel='noopener noreferrer';picture.title='Портреттің дереккөзі · Wikimedia Commons';picture.textContent=q.name.split(' ').map(s=>s[0]).slice(0,2).join('');
+  const img=document.createElement('img');img.alt=q.name;img.width=104;img.height=124;img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.onerror=()=>img.remove();img.src=q.image;picture.append(img);host.append(picture);
+  const copy=document.createElement('div');copy.className='daily-copy';
+  function line(tag,cls,text){const node=document.createElement(tag);node.className=cls;node.textContent=text;copy.append(node);return node}
+  line('div','daily-kicker','Күннің мотивациясы · '+q.day.split('-').reverse().join('.'));
+  line('blockquote','','«'+q.text+'»');line('div','daily-author',q.name);line('div','daily-role',q.role);
+  const meta=line('div','daily-meta','');const note=document.createElement('span');note.textContent=q.translation;meta.append(note);const link=document.createElement('a');link.href=q.source;link.target='_blank';link.rel='noopener noreferrer';link.textContent='Дереккөз ↗';meta.append(link);host.append(copy);
+ }
+ const show=showScr;showScr=function(){const r=show.apply(this,arguments);renderDailyMotivation();return r};
+ const sync=syncRefresh;syncRefresh=function(){const r=sync.apply(this,arguments);renderDailyMotivation();return r};
+ function schedule(){clearTimeout(timer);const shifted=Date.now()+5*3600000;const delay=86400000-shifted%86400000+1500;timer=setTimeout(()=>{window.__bridge?.refresh?.();renderDailyMotivation();schedule()},delay)}
+ document.addEventListener('visibilitychange',()=>{if(!document.hidden){renderDailyMotivation();schedule()}});schedule();renderDailyMotivation();
+})();
+
+// Saved public tests retain their original server permissions and attempt limits.
+(function(){
+ window.savePublicToMyBank=async function(id){const r=await authCall('save_public_test',{testId:id});if(!r.ok)return alert(r.msg);await window.__bridge.refresh();alert('Тест өз базаңызға қосылды. «Менің тесттерім» бөлімінен ашыңыз.')};
+ window.removeSavedPublic=async function(id){const r=await authCall('remove_saved_public_test',{testId:id});if(!r.ok)return alert(r.msg);await window.__bridge.refresh();showMyTests()};
+ function savedRows(){if(!user)return;const host=document.getElementById('my-list');if(!host)return;host.querySelector('#saved-public-tests')?.remove();const saved=LS.get('ubt_saved_public_tests',[]);if(!saved.length)return;
+ const section=document.createElement('section');section.id='saved-public-tests';section.innerHTML='<h3 style="margin:20px 0 10px">Базама қосылған жария тесттер</h3><p class="sub">Сайт ішінде тапсырылады · бастапқы лимит сақталады</p>'+saved.map(t=>`<div class="item"><div class="info"><h4>${esc(t.title)}</h4><p>${esc(t.subject)} · ${t.count} сұрақ</p></div><div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest(${jsq(t.id)})">▶ Бастау</button><button class="btn btn-s btn-sm" onclick="removeSavedPublic(${jsq(t.id)})">Базамнан алып тастау</button></div></div>`).join('');host.prepend(section)}
+ const show=showMyTests;showMyTests=function(){const r=show.apply(this,arguments);savedRows();return r};
+ const sync=syncRefresh;syncRefresh=function(){const r=sync.apply(this,arguments);if(document.getElementById('s-mytests')?.classList.contains('active'))savedRows();return r};
 })();
 </script>
 <script>
@@ -11237,7 +11335,7 @@ _sid = str(_cur.get("sid") or "")
 with _st["lock"]:
     _catalog_sync(_st)
     _rev = _st["rev"]
-_sent = (_sid, _tok, _claim, _tk, _rev)
+_sent = (_sid, _tok, _claim, _tk, _rev, _daily_motivation()["day"])
 _previous_sent = st.session_state.get("_ubt_sent")
 _force_full = _cur.get("fullSync") is True
 _unchanged = _previous_sent == _sent and not _force_full
