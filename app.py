@@ -1304,6 +1304,100 @@ def _publication_request(state,sess,typ,d):
     return {"ok":False,"msg":"Әрекет жоқ"}
 
 
+
+def _messenger_request(state,sess,typ,d):
+    if not sess or sess.get("codeGuest"):
+        return {"ok":False,"msg":"Аккаунтыңызға кіріңіз"}
+    with state["lock"]:
+        people={p["id"]:dict(p,login=login) for login,p in _profiles(state).items() if isinstance(p,dict) and p.get("id") and p.get("accessApproved") is True}
+        people["admin"]={"id":"admin","name":_jload(state["db"].get("ubt_owner_name",'"Басты админ"'),str,"Басты админ"),"login":"admin"}
+        letters=_jload(state["db"].get("ubt_admin_letters","[]"),list,[])
+        if typ == "messenger_contacts":
+            if not sess["admin"]:
+                return {"ok":False,"msg":"Адамдар тізімі тек админге ашық"}
+            search=str(d.get("search") or "").strip().casefold()[:100]
+            offset=d.get("offset",0);offset=offset if type(offset) is int and 0<=offset<=100000 else 0
+            latest={};unread={}
+            for m in letters:
+                if not isinstance(m,dict):
+                    continue
+                uid=m.get("toUid");stamp=m.get("time",0)
+                if isinstance(stamp,(int,float)) and stamp>=latest.get(uid,{}).get("time",0):
+                    latest[uid]={"time":stamp,"text":str(m.get("text") or "")[:80]}
+                if m.get("role")=="user" and not m.get("read"):
+                    unread[uid]=unread.get(uid,0)+1
+            rows=[{"id":uid,"name":person.get("name") or "Қолданушы","isAdmin":uid=="admin" or uid in _admin_uids(state),
+                "preview":latest.get(uid,{}).get("text","Хабарлама жазыңыз немесе тест жіберіңіз"),"last":latest.get(uid,{}).get("time",0),"unread":unread.get(uid,0)}
+                for uid,person in people.items() if not search or search in str(person.get("name") or "").casefold()]
+            rows.sort(key=lambda x:(x["id"]!=sess["uid"],-x["last"],x["name"].casefold()))
+            return {"ok":True,"items":rows[offset:offset+100],"total":len(rows)}
+        uid=str(d.get("uid") or sess["uid"])
+        if not sess["admin"] and uid!=sess["uid"]:
+            return {"ok":False,"msg":"Тек өз хатыңызды қарай аласыз"}
+        person=people.get(uid)
+        if not person:
+            return {"ok":False,"msg":"Қолданушы табылмады"}
+        if typ == "messenger_send":
+            text=str(d.get("text") or "").strip()
+            if not text or len(text)>2000:
+                return {"ok":False,"msg":"Хабарлама 1–2000 таңба болсын"}
+            if len(letters)>=3000:
+                return {"ok":False,"msg":"Хабарламалар қоймасы толған"}
+            letters.append({"id":secrets.token_hex(12),"role":"admin" if sess["admin"] else "user","toUid":uid,"toName":person["name"],
+                "fromUid":sess["uid"],"fromName":sess["name"],"text":text,"time":int(time.time()),"read":False})
+            _put(state,"ubt_admin_letters",_jdump(letters));_commit(state)
+            return {"ok":True}
+        if typ == "messenger_send_test":
+            if not sess["admin"]:
+                return {"ok":False,"msg":"Тестті тек админ жібереді"}
+            tid=str(d.get("testId") or "");limit=d.get("limit")
+            if type(limit) is not int or not 1<=limit<=100:
+                return {"ok":False,"msg":"Лимит 1–100 рет болсын"}
+            tests=_jload(state["db"].get("ubt_tests","[]"),list,[])
+            test=next((t for t in tests if isinstance(t,dict) and t.get("id")==tid and not t.get("assignmentId")),None)
+            if not test or not test.get("questions"):
+                return {"ok":False,"msg":"Сұрақтары бар тестті таңдаңыз"}
+            aid="as_"+secrets.token_hex(12);private_id="sent_"+secrets.token_hex(12)
+            clone=dict(test);clone.update(id=private_id,authorId=sess["uid"],authorName=sess["name"],assignmentId=aid,status="private",isPublic=False,adminApproved=False)
+            clone.pop("classId",None);clone.pop("className",None);clone.pop("accessCode",None)
+            tests.append(clone)
+            if len(_jdump(tests))>=7_800_000:
+                return {"ok":False,"msg":"Тесттер қоймасы толған"}
+            assignments=_jload(state["db"].get("ubt_assigned_tests","[]"),list,[])
+            assignments.append({"id":aid,"uid":uid,"login":person["login"],"testId":private_id,"title":str(test.get("topic") or "Тест")[:150],
+                "limit":limit,"used":0,"created":int(time.time()),"fromUid":sess["uid"],"fromName":sess["name"]})
+            _put(state,"ubt_tests",_jdump(tests));_put(state,"ubt_assigned_tests",_jdump(assignments));_commit(state)
+            return {"ok":True}
+        if typ == "messenger_thread":
+            rows=[];changed=False
+            for m in letters:
+                if not isinstance(m,dict) or m.get("toUid")!=uid:
+                    continue
+                mine=(m.get("role")=="admin" and (uid!=sess["uid"] or m.get("fromUid")==sess["uid"])) if sess["admin"] else m.get("role")=="user"
+                rows.append({"id":"letter:"+str(m.get("id")),"kind":"letter","text":str(m.get("text") or ""),"created":m.get("time",0),"mine":mine,
+                    "sender":m.get("fromName") or ("Админ" if m.get("role")=="admin" else person["name"])})
+                reading=(sess["admin"] and uid!=sess["uid"] and m.get("role")=="user") or (uid==sess["uid"] and not mine)
+                if reading and not m.get("read"):
+                    m["read"]=True;changed=True
+            # Recipient-specific test cards use the same assignments and server limits as notifications.
+            offset=0
+            while True:
+                feed=_publication_request(state,{**sess,"uid":uid},"notifications_list",{"offset":offset})
+                for item in feed.get("items",[]):
+                    if item.get("kind")!="letter":
+                        rows.append({**item,"mine":bool(sess["admin"] and uid!=sess["uid"]),"sender":item.get("source") or "Админ"})
+                offset+=len(feed.get("items",[]))
+                if offset>=feed.get("total",0) or not feed.get("items"):
+                    break
+            rows.sort(key=lambda x:x.get("created") if isinstance(x.get("created"),(int,float)) else 0)
+            skip=d.get("offset",0);skip=skip if type(skip) is int and 0<=skip<=100000 else 0
+            end=max(0,len(rows)-skip);start=max(0,end-50)
+            if changed:
+                _put(state,"ubt_admin_letters",_jdump(letters));_commit(state)
+            return {"ok":True,"uid":uid,"name":person["name"],"items":rows[start:end],"hasMore":start>0,"total":len(rows)}
+    return {"ok":False,"msg":"Әрекет табылмады"}
+
+
 def _handle_req(state, sid, rq):
     typ = rq.get("type")
     d = rq.get("data") if isinstance(rq.get("data"), dict) else {}
@@ -1333,6 +1427,9 @@ def _handle_req(state, sid, rq):
 
     if typ in ("admin_publish_test", "approved_test_list", "notifications_list"):
         return _publication_request(state,sess,typ,d)
+
+    if typ in ("messenger_contacts","messenger_thread","messenger_send","messenger_send_test"):
+        return _messenger_request(state,sess,typ,d)
 
     if typ.startswith("school_"):
         return _school_request(state, sess, typ, d)
@@ -4284,13 +4381,6 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
   <div class="wrap wide">
     <div class="hdr"><h2>🛠 Админ панелі</h2><p class="sub">Толық басқару</p></div>
     <button class="btn btn-p" style="width:100%;margin-bottom:16px" onclick="showAccessRequests()">📨 Өтініштер <span id="admin-requests-count"></span></button>
-    <div class="card" style="padding:20px">
-      <h3 style="margin-bottom:12px">📩 Оқушыға немесе мұғалімге хабарлама жіберу <span id="admin-letter-unread" class="badge" style="background:#ef4444;color:white;display:none"></span></h3>
-      <div class="fg"><label>Алушының логині</label><input id="admin-letter-login" list="admin-letter-logins" placeholder="Логинді жазыңыз немесе тізімнен таңдаңыз" autocomplete="off"><datalist id="admin-letter-logins"></datalist></div>
-      <div class="fg"><label>Хабарлама</label><textarea id="admin-letter-text" rows="4" maxlength="2000" placeholder="Хабарламаңызды жазыңыз"></textarea></div>
-      <button class="btn btn-p btn-sm" id="admin-letter-send" onclick="adminSendLetter()">📨 Жіберу</button>
-      <div id="admin-letter-history" class="list" style="margin-top:14px"></div>
-    </div>
     <div class="grid2" id="admin-stats-grid" style="margin-bottom:16px"></div>
     <div class="card" style="padding:20px">
       <h3 style="margin-bottom:12px">⏳ Жариялау күтіп тұрған тесттер</h3>
@@ -4524,6 +4614,10 @@ html{text-rendering:optimizeSpeed}
 </style>
 <style>
 .approved-summary{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0 20px}.approved-summary span{padding:8px 12px;border:1px solid var(--b);border-radius:12px;font-size:12px}.approved-test-row,.notification-test-row{padding:18px;margin:0 0 12px;border:1px solid var(--b);border-radius:16px;background:var(--c);display:flex;justify-content:space-between;gap:18px;align-items:center}.approved-test-row h3,.notification-test-row h3{font-size:16px;margin:4px 0 8px;overflow-wrap:anywhere}.approved-test-row p,.notification-test-row p{font-size:12px;color:var(--m);line-height:1.7}.notification-source{font-size:10px;letter-spacing:.06em;color:var(--p);font-weight:700}.notification-test-row .notification-text{white-space:pre-wrap;color:var(--t);margin-top:10px}.notification-test-row .acts,.approved-test-row .acts{display:flex;flex-wrap:wrap;gap:7px;flex-shrink:0}.ubd-profile-actions .profile-message-open{color:#d8e9ff!important;border-color:#ac9ce366!important}.test-notification-count{font-size:10px;color:var(--p);font-weight:800}.notification-quota{display:inline-block;font-size:11px;color:var(--p);padding:4px 8px;background:#55c6a419;border-radius:8px}#approved-list,#notification-list{content-visibility:auto;contain-intrinsic-size:auto 500px}@media(max-width:600px){.approved-test-row,.notification-test-row{align-items:stretch;flex-direction:column;gap:12px;padding:16px}.approved-test-row .acts .btn,.notification-test-row .acts .btn{flex:1}.approved-summary{gap:6px}}
+</style>
+<style id="admin-whatsapp-style">
+#tas-background{position:fixed;inset:0;z-index:3;pointer-events:none;overflow:hidden;opacity:.065;user-select:none}#tas-background svg{display:block;width:100%;height:100%}body.dark #tas-background{opacity:.09}#s-admin-messenger>.wrap{max-width:1320px}.wa-shell{height:min(740px,calc(100dvh - 155px));min-height:430px;border:1px solid #35596b;border-radius:22px;background:#101d29;display:grid;grid-template-columns:300px minmax(0,1fr);overflow:hidden;color:#e9f1f5;box-shadow:0 12px 35px #0002}.wa-sidebar{display:flex;flex-direction:column;background:#142633;border-right:1px solid #35505e;min-height:0}.wa-brand{padding:20px 16px 12px;font-weight:800;font-size:18px;color:#81e4c6}.wa-search{margin:0 12px 12px!important;width:calc(100% - 24px)!important;padding:11px!important;background:#223b49!important;border:1px solid #385361!important;color:#edf5f8!important;border-radius:12px!important;font:inherit}.wa-contacts{overflow-y:auto;min-height:0;flex:1;scrollbar-width:thin}.wa-contact{width:100%;display:flex;gap:11px;padding:15px 13px;background:transparent;color:#ddecf1;border:0;border-bottom:1px solid #2b414c;text-align:left;cursor:pointer;align-items:center;font:inherit}.wa-contact:hover,.wa-contact.selected{background:#254837}.wa-avatar{width:40px;height:40px;flex:none;border-radius:50%;display:grid;place-items:center;background:#30635c;color:#bdf0df;font-size:18px;font-weight:750}.wa-contact-name{font-size:13px;font-weight:700;display:block;overflow-wrap:anywhere}.wa-contact-preview{display:block;color:#8fa9b6;font-size:11px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:180px;margin-top:5px}.wa-count{margin-left:auto;flex:none;background:#49d4aa;color:#103a31;border-radius:20px;padding:3px 7px;font-size:10px}.wa-chat{display:flex;flex-direction:column;min-width:0;min-height:0;background:radial-gradient(ellipse at 80% 20%,#16453645,transparent 65%),#0c1b24}.wa-head{display:flex;align-items:center;gap:12px;padding:15px 18px;border-bottom:1px solid #35505e;background:#1b303b;min-height:76px}.wa-head h3{font-size:15px;margin:0}.wa-head small{display:block;color:#a0b7c2;font-size:11px;margin-top:5px}.wa-back{display:none;border:0;background:transparent;color:#d5eeea;font-size:22px;cursor:pointer}.wa-messages{flex:1;overflow-y:auto;min-height:0;padding:20px;display:flex;flex-direction:column;gap:12px;scrollbar-width:thin;overscroll-behavior:contain}.wa-bubble{align-self:flex-start;max-width:84%;padding:12px 15px;border-radius:0 16px 16px 16px;background:#243c49;box-shadow:0 2px 4px #0001;overflow-wrap:anywhere}.wa-bubble.mine{align-self:flex-end;background:#195742;border-radius:16px 0 16px 16px}.wa-sender{font-size:10px;color:#9adfcd;font-weight:700;margin-bottom:6px}.wa-message-text{font-size:13px;line-height:1.7;white-space:pre-wrap}.wa-time{font-size:9px;color:#9db9bb;text-align:right;margin-top:7px}.wa-test-title{font-size:14px;font-weight:750;margin:6px 0}.wa-test-details{font-size:11px;color:#b1cec9;margin-bottom:10px;line-height:1.6}.wa-test-start{border:1px solid #6fa795;border-radius:10px;background:#65d9b3;color:#13392c;padding:8px 12px;font:inherit;font-size:12px;font-weight:700;cursor:pointer}.wa-test-start:disabled{opacity:.5;cursor:default}.wa-compose{display:flex;gap:8px;padding:12px;background:#1b303b;align-items:flex-end}.wa-compose textarea{flex:1;min-width:0;resize:vertical;min-height:43px;max-height:130px;background:#294550!important;color:#edf7f6!important;border:1px solid #49616b!important;border-radius:13px!important;padding:11px 12px!important;font:inherit;font-size:13px}.wa-compose button{border:0;border-radius:12px;background:#39bc98;color:#083b31;padding:11px 16px;min-height:43px;cursor:pointer;font:inherit;font-size:12px;font-weight:700}.wa-compose button.wa-attach{background:#31525b;color:#cfede8}.wa-status{padding:0 16px;font-size:11px;color:#f0c6ae;background:#1b303b}.wa-more{align-self:center;border:1px solid #4d6e79;border-radius:12px;background:#1c3540;color:#c9e0e5;padding:7px 12px;cursor:pointer;font:inherit;font-size:11px}.wa-own-only{grid-template-columns:1fr}.wa-own-only .wa-sidebar{display:none}.wa-screen-title{margin-bottom:16px}.wa-loading{color:#91b3bb;font-size:12px;text-align:center;padding:30px}.wa-test-modal{width:min(480px,92vw);max-height:85dvh;overflow:auto;background:var(--c);color:var(--t);border:1px solid var(--b);border-radius:18px;padding:24px}
+@media(max-width:700px){.wa-shell{grid-template-columns:1fr;height:calc(100dvh - 150px);min-height:400px;border-radius:15px}.wa-shell:not(.wa-own-only):not(.wa-mobile-thread) .wa-chat{display:none}.wa-shell.wa-mobile-thread .wa-sidebar{display:none}.wa-shell.wa-mobile-thread .wa-back{display:block}.wa-shell.wa-own-only .wa-back{display:none}.wa-messages{padding:14px}.wa-bubble{max-width:93%}.wa-contact-preview{max-width:240px}.wa-compose{gap:6px;padding:9px}.wa-compose button{padding:11px 10px}.wa-head{padding:12px;min-height:68px}#s-admin-messenger>.wrap{padding-left:12px;padding-right:12px}.wa-screen-title h2{font-size:22px}}
 </style>
 <script type="text/plain" id="app-src">
 
@@ -5187,7 +5281,7 @@ function showAdmin(){
   const approved=tests.filter(t=>t.isPublic||t.status==='approved');
   const users=Object.values(profiles).filter(p=>p&&p.accessApproved===true);
   updateAccessRequestCounts();
-  document.getElementById('admin-letter-logins').innerHTML=users.filter(p=>p&&p.name).map(p=>`<option value="${esc(p.name)}">${p.role==='teacher'?'Мұғалім':'Оқушы'}</option>`).join('');
+
   renderAdminLetterHistory();
 
   document.getElementById('admin-stats-grid').innerHTML=`
@@ -5215,9 +5309,7 @@ function showAdmin(){
 
   showScr('s-admin');
   window.__bridge.refresh().then(()=>{if(document.getElementById('s-admin').classList.contains('active')){renderAdminLetterHistory();renderAdminUsers();updateAccessRequestCounts()}}).catch(()=>{});
-  if(LS.get('ubt_admin_letters',[]).some(m=>m.role==='user'&&!m.read)){
-    authCall('admin_read_replies',{}).then(async r=>{if(r.ok){await window.__bridge.refresh();renderAdminLetterHistory()}});
-  }
+
 }
 function accessRequests(){
   if(!user||!user.isAdmin)return [];
@@ -10136,7 +10228,7 @@ function ubtRailSync(){
   document.body.classList.toggle('ubt-has-rail',visible);
   rail.setAttribute('aria-hidden',String(!visible));rail.inert=!visible||document.body.classList.contains('app-menu-open');
   const schoolKind=screen&&screen.dataset&&screen.dataset.kind;
-  const groups={approved:['s-approved-tests'],notifications:['s-notifications'],teachers:(['s-school-people','s-school-person'].includes(id)&&schoolKind==='teachers')?[id]:[],students:(['s-school-people','s-school-person'].includes(id)&&schoolKind==='students')?[id]:[],classes:['s-school-classes','s-school-class','s-class-send','s-teacher'],home:['s-home'],analytics:['s-analytics','s-knowledge-map','s-score-forecast'],profile:['s-profile'],exam:['s-ubt140'],subjects:['s-subj'],bank:['s-question-bank'],flash:['s-flash'],history:['s-hist'],create:['s-create','s-addq','s-schemes'],admin:['s-admin','s-registered','s-access-requests']};
+  const groups={approved:['s-approved-tests'],notifications:['s-notifications','s-admin-messenger'],teachers:(['s-school-people','s-school-person'].includes(id)&&schoolKind==='teachers')?[id]:[],students:(['s-school-people','s-school-person'].includes(id)&&schoolKind==='students')?[id]:[],classes:['s-school-classes','s-school-class','s-class-send','s-teacher'],home:['s-home'],analytics:['s-analytics','s-knowledge-map','s-score-forecast'],profile:['s-profile'],exam:['s-ubt140'],subjects:['s-subj'],bank:['s-question-bank'],flash:['s-flash'],history:['s-hist'],create:['s-create','s-addq','s-schemes'],admin:['s-admin','s-registered','s-access-requests']};
   let matched=false;
   rail.querySelectorAll('[data-rail-group]').forEach(button=>{
     const on=visible&&!!groups[button.dataset.railGroup]&&groups[button.dataset.railGroup].includes(id);
@@ -10608,6 +10700,33 @@ async function schoolDeleteClass(cid,button){
  const render=ubdRender;ubdRender=function(){const r=render.apply(this,arguments);profileMessageButton();badge();return r};
  const show=showScr;showScr=function(id){const r=show.apply(this,arguments);profileMessageButton();badge();if(id==='s-approved-tests'&&canUse())loadApproved(true);if(id==='s-notifications'&&canUse())loadNotifications(true);return r};
  const sync=syncRefresh;syncRefresh=function(){const r=sync.apply(this,arguments);if(!canUse())return r;const keys=window.__ubtChangedKeys||[];if(keys.some(k=>['ubt_assigned_tests','ubt_teacher_deliveries','ubt_tests','ubt_admin_letters','ubt_classes'].includes(k))){const id=document.querySelector('.screen.active')?.id;if(id==='s-notifications')loadNotifications(true);if(id==='s-approved-tests')loadApproved(true);badgeTime=0;badge()}return r};
+})();
+
+(function(){
+ const screen=document.createElement('div');screen.id='s-admin-messenger';screen.className='screen';screen.innerHTML='<div class="wrap wide"><div class="topback"><button type="button" class="btn btn-s" onclick="goHome()">← Артқа</button></div><div class="hdr wa-screen-title"><h2 id="wa-page-title">Админ WhatsApp</h2><p class="sub">Сайт ішіндегі хабарламалар мен жіберілген тесттер</p></div><div class="wa-shell" id="wa-shell"><aside class="wa-sidebar"><div class="wa-brand">Админ WhatsApp</div><input type="search" id="wa-search" class="wa-search" placeholder="Адамның атын іздеу" aria-label="Контактіні іздеу"><div class="wa-contacts" id="wa-contacts"></div><button type="button" class="wa-more" id="wa-contact-more" hidden>Тағы адамдар</button></aside><section class="wa-chat"><header class="wa-head"><button type="button" class="wa-back" id="wa-mobile-back" aria-label="Контактілерге оралу">←</button><div class="wa-avatar" id="wa-chat-avatar">А</div><div><h3 id="wa-chat-name">Админнен келген хабарламалар</h3><small>Хабарламалар және тесттер</small></div></header><div class="wa-messages" id="wa-messages" role="log" aria-label="Чат хабарламалары"></div><p class="wa-status" id="wa-status" role="status"></p><div class="wa-compose"><button type="button" class="wa-attach" id="wa-send-test">+ Тест</button><textarea id="wa-text" rows="1" maxlength="2000" placeholder="Хабарлама жазыңыз…" aria-label="Хабарлама мәтіні"></textarea><button type="button" id="wa-send">Жіберу ➤</button></div></section></div></div>';document.body.appendChild(screen);
+ const background=document.createElement('div');background.id='tas-background';background.setAttribute('aria-hidden','true');background.innerHTML='<svg viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice"><defs><pattern id="tas-dot-pattern" x="0" y="0" width="9" height="9" patternUnits="userSpaceOnUse"><circle cx="3" cy="3" r="1.6" fill="#8196a6"/></pattern></defs><g fill="url(#tas-dot-pattern)" font-family="Arial,sans-serif" font-size="240" font-weight="900" text-anchor="middle" letter-spacing="24"><text x="600" y="230">T.A.S.</text><text x="600" y="560">T.A.S.</text><text x="600" y="890">T.A.S.</text></g></svg>';document.body.appendChild(background);
+ let selected='',owner='',contactOffset=0,threadOffset=0,contactJob=0,threadJob=0,searchTimer=0,refreshTimer=0,sending=false;
+ const active=()=>document.querySelector('.screen.active')?.id==='s-admin-messenger';
+ const allowed=()=>!!user&&!user.isCodeGuest;
+ function labels(){if(!allowed())return;const title=user.isAdmin?'Админ WhatsApp':'Админнен келген хабарламалар';document.getElementById('wa-page-title').textContent=title;document.querySelectorAll('#app-menu .app-menu-home').forEach(b=>{if(/showNotifications|showAdminMessenger/.test(b.getAttribute('onclick')||''))b.textContent=title});const rail=document.querySelector('[data-rail-group="notifications"]');if(rail){rail.setAttribute('aria-label',title);rail.querySelector('.ubt-rail-caption').textContent=title}document.querySelectorAll('.profile-message-open').forEach(b=>b.textContent=title)}
+ window.showAdminMessenger=function(uid){if(!allowed())return;if(owner!==user.id){owner=user.id;selected='';document.getElementById('wa-search').value='';document.getElementById('wa-text').value=''}selected=user.isAdmin?(uid||selected||user.id):user.id;const shell=document.getElementById('wa-shell');shell.classList.toggle('wa-own-only',!user.isAdmin);shell.classList.remove('wa-mobile-thread');document.getElementById('wa-send-test').hidden=!user.isAdmin;showScr('s-admin-messenger');if(user.isAdmin)loadContacts(true);loadThread(true);labels()};
+ window.showNotifications=function(){showAdminMessenger()};window.showAssignedTests=function(){showAdminMessenger()};window.showAdminInbox=function(){showAdminMessenger()};
+ window.waSelectContact=function(uid){if(!user?.isAdmin)return;if(selected!==uid){document.getElementById('wa-text').value='';document.getElementById('wa-messages').innerHTML='<p class="wa-loading">Хаттар жүктелуде…</p>';document.getElementById('wa-messages').dataset.thread='';document.getElementById('wa-chat-name').textContent='Жүктелуде…'}selected=uid;document.getElementById('wa-shell').classList.add('wa-mobile-thread');document.querySelectorAll('.wa-contact').forEach(b=>b.classList.toggle('selected',b.dataset.uid===uid));loadThread(true)};
+ document.getElementById('wa-mobile-back').onclick=()=>document.getElementById('wa-shell').classList.remove('wa-mobile-thread');
+ async function loadContacts(reset){if(!allowed()||!user.isAdmin)return;if(reset)contactOffset=0;const job=++contactJob,uid=user.id,host=document.getElementById('wa-contacts'),scroll=host.scrollTop;if(reset&&!host.children.length)host.textContent='Жүктелуде…';const r=await authCall('messenger_contacts',{search:document.getElementById('wa-search').value,offset:contactOffset});if(job!==contactJob||uid!==user?.id)return;if(!r.ok){document.getElementById('wa-status').textContent=r.msg;return}const html=r.items.map(c=>`<button type="button" class="wa-contact${c.id===selected?' selected':''}" data-uid="${esc(c.id)}" onclick="waSelectContact(${jsq(c.id)})"><span class="wa-avatar">${esc(c.name.slice(0,1))}</span><span style="min-width:0"><span class="wa-contact-name">${c.id===user.id?'Маған келгендер':esc(c.name)}${c.isAdmin?' · Админ':''}</span><span class="wa-contact-preview">${esc(c.preview)}</span></span>${c.unread?`<span class="wa-count">${c.unread}</span>`:''}</button>`).join('');if(reset){host.innerHTML=html||'<p class="wa-loading">Адам табылмады.</p>';host.scrollTop=scroll}else host.insertAdjacentHTML('beforeend',html);contactOffset+=r.items.length;document.getElementById('wa-contact-more').hidden=contactOffset>=r.total}
+ document.getElementById('wa-search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>loadContacts(true),200)};document.getElementById('wa-contact-more').onclick=()=>loadContacts(false);
+ async function loadThread(reset){if(!allowed()||!selected)return;if(reset)threadOffset=0;const target=selected,uid=user.id,job=++threadJob,host=document.getElementById('wa-messages'),nearBottom=host.scrollHeight-host.scrollTop-host.clientHeight<90,oldHeight=host.scrollHeight,oldTop=host.scrollTop;const r=await authCall('messenger_thread',{uid:target,offset:threadOffset});if(job!==threadJob||uid!==user?.id||target!==selected)return;if(!r.ok){document.getElementById('wa-status').textContent=r.msg||'Чат ашылмады';return}document.getElementById('wa-chat-name').textContent=user.isAdmin?(target===user.id?'Маған келгендер':r.name):'Админнен келген хабарламалар';document.getElementById('wa-chat-avatar').textContent=r.name.slice(0,1);const previous=host.dataset.thread;host.dataset.thread=target;const own=target===user.id;
+ const html=r.items.map(m=>{const test=m.kind!=='letter';const exhausted=Number.isFinite(m.limit)&&m.limit>0&&m.used>=m.limit;const action=m.kind==='assignment'?`startAssignedTest(${jsq(m.assignmentId)})`:`startUserTest(${jsq(m.testId)})`;return `<article class="wa-bubble${m.mine?' mine':''}"><div class="wa-sender">${esc(m.sender||'Админ')}</div>${test?`<div class="wa-test-title">📋 ${esc(m.title)}</div><div class="wa-test-details">${Number.isFinite(m.limit)&&m.limit>0?'Тапсырғаны: '+m.used+' / '+m.limit:'Жіберілген тест'}</div>${own?`<button type="button" class="wa-test-start" ${exhausted?'disabled':''} onclick="${action}">${exhausted?'Лимит аяқталды':'▶ Тестті бастау'}</button>`:'<div class="wa-test-details">Қатысушы осы жерден бастайды</div>'}`:`<div class="wa-message-text">${esc(m.text)}</div>`}<div class="wa-time">${m.created?esc(new Date(m.created*1000).toLocaleString('kk-KZ',{timeZone:'Asia/Almaty'})):''}</div></article>`}).join('');host.querySelector('.wa-load-older')?.remove();
+ if(reset){const signature=JSON.stringify(r.items);if(host.dataset.signature!==signature||previous!==target){host.innerHTML=html||'<p class="wa-loading">Хабарлама жоқ. Жаңа хабарлама жазыңыз.</p>';host.dataset.signature=signature;if(nearBottom||previous!==target)host.scrollTop=host.scrollHeight;else host.scrollTop=oldTop}}
+ else{host.insertAdjacentHTML('afterbegin',html);host.scrollTop=host.scrollHeight-oldHeight+oldTop}
+ threadOffset+=r.items.length;if(r.hasMore){const more=document.createElement('button');more.type='button';more.className='wa-more wa-load-older';more.textContent='Бұрынғы хабарламалар';more.onclick=()=>loadThread(false);host.prepend(more)}
+ }
+ document.getElementById('wa-send').onclick=async()=>{if(!allowed()||!selected||sending)return;const input=document.getElementById('wa-text'),text=input.value.trim(),target=selected;if(!text)return;sending=true;document.getElementById('wa-send').disabled=true;document.getElementById('wa-status').textContent='Жіберілуде…';try{const r=await authCall('messenger_send',{uid:target,text});if(!r.ok)throw Error(r.msg||'Жіберілмеді');if(selected===target){input.value='';document.getElementById('wa-status').textContent='';await loadThread(true);document.getElementById('wa-messages').scrollTop=999999}if(user.isAdmin)loadContacts(true);window.__bridge.refresh().catch(()=>{})}catch(e){document.getElementById('wa-status').textContent=e.message}finally{sending=false;document.getElementById('wa-send').disabled=false}};
+ document.getElementById('wa-text').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();document.getElementById('wa-send').click()}};
+ document.getElementById('wa-send-test').onclick=()=>{if(!user?.isAdmin||!selected)return;const tests=allTests().filter(t=>!t.assignmentId&&t.questions?.length);if(!tests.length){alert('Жіберілетін тест жоқ. Алдымен тест сақтаңыз.');return}document.getElementById('wa-test-dialog')?.remove();const target=selected,dialog=document.createElement('dialog');dialog.id='wa-test-dialog';dialog.className='wa-test-modal';dialog.innerHTML='<h3 style="margin-bottom:18px">Чатқа тест жіберу</h3><div class="fg"><label>Тест</label><select id="wa-test-choice">'+tests.map(t=>'<option value="'+esc(t.id)+'">'+esc(t.topic||'Тест')+'</option>').join('')+'</select></div><div class="fg"><label>Тапсыру лимиті</label><input id="wa-test-limit" type="number" min="1" max="100" value="1"></div><p id="wa-test-status" class="sub" role="status"></p><div class="row"><button type="button" class="btn btn-s wa-test-close">Жабу</button><button type="button" class="btn btn-p wa-test-confirm">Жіберу</button></div>';dialog.querySelector('.wa-test-close').onclick=()=>dialog.close();dialog.addEventListener('close',()=>dialog.remove(),{once:true});dialog.querySelector('.wa-test-confirm').onclick=async function(){this.disabled=true;const status=dialog.querySelector('#wa-test-status');status.textContent='Жіберілуде…';const r=await authCall('messenger_send_test',{uid:target,testId:dialog.querySelector('#wa-test-choice').value,limit:Number(dialog.querySelector('#wa-test-limit').value)});if(!r.ok){status.textContent=r.msg||'Жіберілмеді';this.disabled=false;return}dialog.close();await window.__bridge.refresh();if(selected===target)loadThread(true)};document.body.appendChild(dialog);dialog.showModal()};
+ function scheduleRefresh(){if(!active()||!allowed()||document.hidden)return;clearTimeout(refreshTimer);refreshTimer=setTimeout(()=>{loadThread(true);if(user?.isAdmin)loadContacts(true)},200)}
+ const show=showScr;showScr=function(){const r=show.apply(this,arguments);labels();return r};const sync=syncRefresh;syncRefresh=function(){const r=sync.apply(this,arguments);labels();const keys=window.__ubtChangedKeys||[];if(!keys.length||keys.some(k=>['ubt_admin_letters','ubt_assigned_tests','ubt_teacher_deliveries','ubt_classes','ubt_tests'].includes(k)))scheduleRefresh();return r};
+ setInterval(()=>{if(active()&&allowed()&&!document.hidden){loadThread(true);if(user.isAdmin)loadContacts(true)}},12000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)scheduleRefresh()});labels();
 })();
 </script>
 <script>
