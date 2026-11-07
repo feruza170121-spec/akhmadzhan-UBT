@@ -613,7 +613,7 @@ def _start_exam(state, sess, d):
         if any(not e.get("completed") and e.get("uid") == uid and e.get("testId") == tid and e.get("expires", 0) > time.time()
                for e in state["exams"].values()):
             return {"ok": False, "msg": "Бұл тест қазір ашық. Оны аяқтаңыз"}
-        owner = bool(sess["admin"] or test.get("authorId") == uid or test.get("authorId") == "system")
+        owner = bool((sess["admin"] and uid=="admin") or test.get("authorId") == uid or test.get("authorId") == "system")
         code_key = "code:" + uid + ":" + tid
         if not owner and not d.get("assignmentId") and test.get("accessCode"):
             if _locked(state, code_key):
@@ -995,7 +995,7 @@ def _migrate_subjects(state):
 def _security_request(state,sess,d):
     if not sess or sess.get("codeGuest"):
         return {"ok":False,"msg":"Аккаунтқа кіріңіз"}
-    if sess["admin"]:
+    if sess["admin"] and sess["uid"]=="admin":
         return {"ok":True,"count":0,"exempt":True}
     event=d.get("event");eid=d.get("eventId")
     if event not in ("screenshot_shortcut","copy","print") or not isinstance(eid,str) or not re.fullmatch(r"[a-zA-Z0-9_-]{12,80}",eid):
@@ -1100,7 +1100,7 @@ def _catalog_sync(state):
                 if isinstance(q, dict) and str(q.get("subject")) + "|" + str(q.get("text", "")).strip().lower() not in hidden:
                     add(q, uid, q.get("subject", "other"), q.get("origin") or "Базаға қосылған")
     for t in _jload(state["db"].get("ubt_tests", "[]"), list, []) + _BUILTIN_BANK_TESTS:
-        if not isinstance(t, dict):
+        if not isinstance(t, dict) or t.get("assignmentId") or t.get("receivedFromAdmin"):
             continue
         for q in t.get("questions", []):
             add(q, t.get("authorId") or "admin", t.get("subject", "other"), t.get("topic") or "Тест", t.get("authorName"))
@@ -1768,6 +1768,16 @@ def _handle_req(state, sid, rq):
         return {"ok":False,"msg":"Сайт уақытша жабық. Тек басты админ кіре алады"}
     if typ in ("support_open","support_read","support_send","support_list"):
         return _support_request(state,sess,typ,d)
+    if typ=="public_profile":
+        if not sess or sess.get("codeGuest"):return {"ok":False,"msg":"Аккаунтқа кіріңіз"}
+        uid=str(d.get("uid") or "")
+        with state["lock"]:
+            profile=next((p for p in _profiles(state).values() if isinstance(p,dict) and p.get("id")==uid and p.get("accessApproved") is True),None)
+            if uid=="admin":profile={"id":"admin","name":_jload(state["db"].get("ubt_owner_name",'"Админ"'),str,"Админ")}
+            if not profile:return {"ok":False,"msg":"Профиль табылмады"}
+            stats=_jload(state["db"].get("ubt_user_stats","{}"),dict,{}).get(uid,{})
+            avatar=_jload(state["db"].get("ubt_avatar_"+uid,"null"),str,"")
+            return {"ok":True,"profile":{"id":uid,"name":profile.get("name") or "Қолданушы","role":profile.get("role") or "student","avatar":avatar if isinstance(avatar,str) and re.fullmatch(r"data:image/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+",avatar) else "","points":stats.get("points",0),"stars":stats.get("stars",0),"title":stats.get("title", ""),"verified":stats.get("verified") is True}}
     if typ=="content_security_event":
         return _security_request(state,sess,d)
     if typ in ("owner_unassigned_subjects","owner_assign_subject"):
@@ -1903,8 +1913,8 @@ def _handle_req(state, sid, rq):
             teacher_owner = owner and _is_teacher(state, sess["uid"])
             published = (test.get("isPublic") is True and test.get("status") == "approved"
                          and not test.get("accessCode") and not test.get("classId") and not test.get("assignmentId"))
-            if not sess["admin"]:
-                return {"ok": False, "msg": "Файл жүктеу тек админге қолжетімді"}
+            if not sess["admin"] or sess["uid"]!="admin":
+                return {"ok": False, "msg": "Файл жүктеу тек басты админге қолжетімді"}
             payload = {"title": test.get("topic") or "Тест", "topic": test.get("topic") or "Тест",
                        "subject": test.get("subjectName") or test.get("subject") or "",
                        "questions": [{"text": q.get("text"), "options": q.get("options"), "correct": q.get("correct")}
@@ -2636,8 +2646,12 @@ def _merge_tests(state, sess, v):
         return None
     existing_rows = _jload(state["db"].get("ubt_tests","[]"),list,[])
     existing_by_id = {t.get("id"):t for t in existing_rows if isinstance(t,dict)}
-    for t in inc:
+    for index,t in enumerate(inc):
         old = existing_by_id.get(t["id"])
+        if old and sess["uid"]!="admin" and (old.get("authorId")!=sess["uid"] or old.get("assignmentId") or old.get("receivedFromAdmin")):
+            # Preserve foreign contents; moderation is handled by dedicated server actions.
+            inc[index]=dict(old)
+            continue
         if t.get("subject") not in _SUBJECT_NAMES and (old is None or any(t.get(k)!=old.get(k) for k in ("subject","questions","topic"))):
             return None
         if old and sess["uid"]!="admin":
@@ -3305,6 +3319,15 @@ def _snapshot(tok="", claim=""):
                 elif relevant.get("classId") not in managed:
                     data = _jload(db[k], list if k.startswith("ubt_tres_") else dict, [] if k.startswith("ubt_tres_") else {})
                     db[k] = _jdump([r for r in data if isinstance(r, dict) and r.get("uid") == sess["uid"]] if isinstance(data, list) else {sess["uid"]: data.get(sess["uid"], 0)})
+    if sess["uid"]!="admin":
+        rows=_jload(db.get("ubt_tests","[]"),list,[])
+        db["ubt_tests"]=_jdump([t if t.get("authorId")==sess["uid"] and not t.get("assignmentId") and not t.get("receivedFromAdmin") else {**t,"accessCode":"","requiresCode":bool(t.get("accessCode") or t.get("requiresCode")),"questions":[{"id":"meta_"+str(i)} for i,q in enumerate(t.get("questions",[])) if isinstance(q,dict)]} for t in rows if isinstance(t,dict)])
+        catalog=_jload(db.get("ubt_question_catalog","[]"),list,[])
+        own_texts={q.get("text") for t in _jload(state["db"].get("ubt_tests","[]"),list,[]) if isinstance(t,dict) and t.get("authorId")==sess["uid"] and not t.get("assignmentId") and not t.get("receivedFromAdmin") for q in t.get("questions",[]) if isinstance(q,dict)}
+        own_texts.update(q.get("text") for q in _jload(state["db"].get("ubt_qbank_"+sess["uid"],"[]"),list,[]) if isinstance(q,dict))
+        db["ubt_question_catalog"]=_jdump([q for q in catalog if isinstance(q,dict) and (q.get("authorId")=="system" or (q.get("authorId")==sess["uid"] and q.get("text") in own_texts))])
+        for key in list(db):
+            if key.startswith(_PRIVATE_PREFIXES) and not any(key==prefix+sess["uid"] for prefix in _PRIVATE_PREFIXES):db.pop(key,None)
     return db
 
 def _snapshot_delta(current, previous):
@@ -3589,8 +3612,8 @@ html,body{overflow-x:hidden}
 }
 
 body.locked{user-select:none;-webkit-user-select:none}
-body:not(.is-admin){user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
-body:not(.is-admin) input,body:not(.is-admin) textarea{user-select:text;-webkit-user-select:text}
+body:not(.primary-owner){user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+body:not(.primary-owner) input,body:not(.primary-owner) textarea{user-select:text;-webkit-user-select:text}
 img,svg{-webkit-user-drag:none}
 body.shield #app-shield-target,body.shield .screen{filter:blur(28px) brightness(.4);pointer-events:none}
 .name-warn{background:#fef2f2;border:2px solid #dc2626;color:#7f1d1d;border-radius:22px;padding:14px 16px;font-size:16px;line-height:1.5;margin-bottom:16px}
@@ -3940,9 +3963,9 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
 .daily-motivation{display:flex;align-items:center;gap:26px;position:relative;overflow:hidden;margin:0 0 22px;padding:26px 30px;border:1px solid #b999554d;border-radius:22px;background:linear-gradient(120deg,#151c34,#17233b 70%,#2c2935);color:#f4f3ee;box-shadow:0 12px 32px #00000018;animation:quote-arrive .55s ease both}
 .daily-motivation[hidden]{display:none}.daily-motivation .daily-portrait{flex:0 0 104px;width:104px;height:124px;border-radius:15px;overflow:hidden;background:#30344a;position:relative;border:1px solid #d9bc7360;display:grid;place-items:center;color:#e4cb92;font-size:28px;font-weight:800}.daily-portrait img{width:100%;height:100%;object-fit:cover;object-position:center 22%;position:absolute;inset:0}.daily-copy{min-width:0;flex:1}.daily-kicker{font-size:10px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:#e4cb92}.daily-motivation blockquote{font-size:clamp(17px,2vw,23px);line-height:1.5;font-weight:650;margin:10px 0 14px;padding:0;border:0;color:#faf6eb}.daily-author{font-size:13px;font-weight:800}.daily-role{font-size:11px;color:#b2bace;margin-top:3px}.daily-meta{display:flex;flex-wrap:wrap;gap:8px 15px;font-size:10px;color:#a9b1c6;margin-top:12px}.daily-meta a{color:#d9c18a;text-decoration:none}.daily-meta a:hover{text-decoration:underline}@keyframes quote-arrive{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}@media(max-width:550px){.daily-motivation{padding:19px 16px;gap:14px;align-items:flex-start;border-radius:18px}.daily-motivation .daily-portrait{flex-basis:68px;width:68px;height:90px}.daily-motivation blockquote{font-size:16px;line-height:1.45}.daily-kicker{letter-spacing:1px;font-size:9px}}@media(prefers-reduced-motion:reduce){.daily-motivation{animation:none}}
 </style>
-<style>@media print{body:not(.is-admin) .screen,body:not(.is-admin) .app-header,body:not(.is-admin) #wm{display:none!important}body:not(.is-admin)::before{content:"Қорғалған мазмұнды басып шығаруға рұқсат жоқ";display:block!important}}</style><style>
-body:not(.is-admin) .screen,body:not(.is-admin) .screen *,body:not(.is-admin) dialog,body:not(.is-admin) dialog *{-webkit-user-select:none!important;user-select:none!important;-webkit-touch-callout:none!important;-webkit-user-drag:none!important}
-body:not(.is-admin) input,body:not(.is-admin) textarea,body:not(.is-admin) [contenteditable="true"],body:not(.is-admin) [contenteditable="true"] *{-webkit-user-select:text!important;user-select:text!important;-webkit-touch-callout:default!important}
+<style>@media print{body:not(.primary-owner) .screen,body:not(.primary-owner) .app-header,body:not(.primary-owner) #wm{display:none!important}body:not(.primary-owner)::before{content:"Қорғалған мазмұнды басып шығаруға рұқсат жоқ";display:block!important}}</style><style>
+body:not(.primary-owner) .screen,body:not(.primary-owner) .screen *,body:not(.primary-owner) dialog,body:not(.primary-owner) dialog *{-webkit-user-select:none!important;user-select:none!important;-webkit-touch-callout:none!important;-webkit-user-drag:none!important}
+body:not(.primary-owner) input,body:not(.primary-owner) textarea,body:not(.primary-owner) [contenteditable="true"],body:not(.primary-owner) [contenteditable="true"] *{-webkit-user-select:text!important;user-select:text!important;-webkit-touch-callout:default!important}
 #capture-cover{position:fixed;inset:0;z-index:2147483646;display:grid;place-items:center;background:#101829;color:#fff;padding:24px;text-align:center}#capture-cover .capture-card{max-width:600px;padding:30px;border:1px solid #c89b64;border-radius:22px;background:#1a2339}#capture-cover h2{margin-bottom:14px}#capture-cover p{line-height:1.8;font-size:15px}#capture-cover button{margin-top:18px}
 </style></head>
 <body>
@@ -5739,7 +5762,7 @@ function renderAdminUsers(){
 function siteControls(){return LS.get('ubt_site_controls',{})}
 function canDownloadJson(){
   if(!user)return false;
-  return !!user.isAdmin;
+  return !!(user.isAdmin&&user.id==='admin');
 }
 function syncMaintenance(){
   const overlay=document.getElementById('maintenance-overlay');if(!overlay)return;
@@ -5923,7 +5946,7 @@ function adminUnpublishTest(id){
   saveAllTests(all);showAdmin();
 }
 function adminCopyTest(id){
-  if(!user||!user.isAdmin)return;
+  if(!user||!user.isAdmin||user.id!=='admin')return;
   const all=allTests(),source=all.find(x=>x.id===id);
   if(!source||!Array.isArray(source.questions)||source.authorId===user.id)return;
   const copy=JSON.parse(JSON.stringify(source));
@@ -6177,7 +6200,7 @@ function requestPub(id){
   if(user.isAdmin||isTeacherUser()){t.isPublic=true;t.status='approved';if(user.isAdmin)t.adminApproved=true;saveAllTests(all);alert('Жарияланды!');showMyTests();return}
   t.status='pending';t.isPublic=false;saveAllTests(all);alert('Админге жіберілді. Мақұлдаған соң жарияланады.');showMyTests();
 }
-function delTest(id){if(!user?.isAdmin||user.id!=='admin')return alert('Тек басты админ өшіре алады');const t=allTests().find(x=>x.id===id);if(!t||!user||!user.isAdmin)return;if(!confirm('Тестті өшіру керек пе?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showMyTests()}
+function delTest(id){if(!user?.isAdmin||user.id!=='admin')return alert('Тек басты админ өшіре алады');const t=allTests().find(x=>x.id===id);if(!t||!user||!user.isAdmin||user.id!=='admin')return;if(!confirm('Тестті өшіру керек пе?'))return;saveAllTests(allTests().filter(t=>t.id!==id));showMyTests()}
 
 function showPublicTests(){
   const list=document.getElementById('public-list');const tests=publicTests();
@@ -8245,7 +8268,7 @@ function downloadText(name,text){
 }
 function exportTest(id){
   const t=allTests().find(x=>x.id===id);
-  if(!t||!user||!user.isAdmin){alert('Басқаның тестін тек админ жүктей алады');return}
+  if(!t||!user||!user.isAdmin||user.id!=='admin'){alert('Басқаның тестін тек админ жүктей алады');return}
   if(!t.questions.length){alert('Сұрақ жоқ');return}
   downloadText(safeName(t.topic)+'.txt',testToText(t.topic,t.subjectName,t.questions));
 }
@@ -8265,13 +8288,13 @@ function exportDocumentHtml(t,withAnswers){
 }
 function exportWordTest(id){
   const t=allTests().find(x=>x.id===id);
-  if(!t||!user||!user.isAdmin)return alert('Рұқсат жоқ');
+  if(!t||!user||!user.isAdmin||user.id!=='admin')return alert('Рұқсат жоқ');
   const blob=new Blob(['\ufeff'+exportDocumentHtml(t,confirm('Word файлына жауап кілтін қосасыз ба?'))],{type:'application/msword'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=safeName(t.topic)+'.doc';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1000);
 }
 function exportPdfTest(id){
   const t=allTests().find(x=>x.id===id);
-  if(!t||!user||!user.isAdmin)return alert('Рұқсат жоқ');
+  if(!t||!user||!user.isAdmin||user.id!=='admin')return alert('Рұқсат жоқ');
   const w=window.open('','_blank');if(!w)return alert('Браузер жаңа терезені бұғаттады');
   w.document.open();w.document.write(exportDocumentHtml(t,confirm('PDF нұсқасына жауап кілтін қосасыз ба?')));w.document.close();
   w.onload=()=>{w.focus();w.print()};
@@ -8419,7 +8442,7 @@ function onBeforeUnload(e){if(lock.on){e.preventDefault();e.returnValue='Тес�
 window.addEventListener('beforeunload',onBeforeUnload);
 try{window.parent.addEventListener('beforeunload',onBeforeUnload)}catch(e){}
 window.addEventListener('popstate',()=>{if(lock.on){try{history.pushState({lock:1},'',location.href)}catch(e){}}});
-const isAdminNow=()=>!!(user&&user.isAdmin);
+const isAdminNow=()=>!!(user&&user.isAdmin&&user.id==='admin');
 function syncAdminClass(){document.body.classList.toggle('is-admin',isAdminNow())}
 function inField(t){return !!(t&&t.closest&&t.closest('input,textarea,[contenteditable="true"]'))}
 ['contextmenu','copy','cut','dragstart'].forEach(n=>document.addEventListener(n,e=>{
@@ -10125,7 +10148,7 @@ function adminDelPublished(id){
   showPublicTests(pubSubj);
 }
 function importPublicTestToBank(id){
-  if(!user||!user.isAdmin){alert('Басқалардың тестін тек админ жүктей алады.');return}
+  if(!user||!user.isAdmin||user.id!=='admin'){alert('Бөтен тестті тек басты админ ала алады.');return}
   const t=publicTests().find(x=>x.id===id&&x.isPublic===true&&x.status==='approved'&&x.adminApproved===true);
   if(!t||!t.subject||!Array.isArray(t.questions)||!t.questions.length){alert('Бұл тестті жүктеуге рұқсат жоқ.');return}
   const before=ubtQuestionBank().length;
@@ -11313,11 +11336,12 @@ async function schoolDeleteClass(cid,button){
  let shotAt=0,warningTimer=null,captureTimer=null;
  function warning(text){let node=document.getElementById('content-security-warning');if(!node){node=document.createElement('div');node.id='content-security-warning';node.setAttribute('role','alert');Object.assign(node.style,{position:'fixed',bottom:'22px',left:'50%',transform:'translateX(-50%)',width:'min(92vw,620px)',padding:'17px 21px',border:'1px solid #d5ae60',borderRadius:'16px',background:'#202237',color:'#f7e4b4',fontSize:'13px',lineHeight:'1.7',zIndex:'100003',boxShadow:'0 10px 40px #0005'});document.body.append(node)}node.textContent=text;clearTimeout(warningTimer);warningTimer=setTimeout(()=>node.remove(),10000)}
  function captureCover(text,blocked=false){clearTimeout(captureTimer);let cover=document.getElementById('capture-cover');if(!cover){cover=document.createElement('div');cover.id='capture-cover';cover.setAttribute('role','alert');document.body.append(cover)}cover.dataset.blocked=blocked?'1':'0';cover.replaceChildren();const card=document.createElement('div');card.className='capture-card';const title=document.createElement('h2');title.textContent=blocked?'Аккаунт бұғатталған':'Мазмұн қорғалған';const note=document.createElement('p');note.textContent=text;card.append(title,note);if(blocked){const button=document.createElement('button');button.className='btn btn-p';button.textContent='Кіру бетіне';button.onclick=()=>cover.remove();card.append(button)}else captureTimer=setTimeout(()=>{if(cover.dataset.blocked!=='1')cover.remove()},4500);cover.append(card)}
- async function record(event){if(!user||user.isAdmin||user.isCodeGuest)return;const actor=user.id;const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);const id=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');const r=await authCall('content_security_event',{event,eventId:id});if(!r.ok||(user&&user.id!==actor))return;if(Number.isInteger(r.count)){try{localStorage.setItem('ubt_content_security_status',JSON.stringify({uid:actor,count:r.count}))}catch(e){}}const text=r.msg||'Қорғаныс үшін мазмұнды көшірмеңіз';warning(text);if(event==='screenshot_shortcut')captureCover(text,!!r.blocked);if(r.blocked){captureCover(text,true);doLogout()}}
- function screenshot(){if(!user||user.isAdmin||user.isCodeGuest||Date.now()-shotAt<2500)return;shotAt=Date.now();captureCover('Скриншот пернесі әрекеті анықталды. Ескерту: 20 рет болса аккаунт бұғатталады. Тестті рұқсатсыз көшіру және тарату сайт ережесі бойынша тест ұрлауға талпыныс болып есептеледі.');record('screenshot_shortcut')}
- document.addEventListener('keydown',e=>{if(!user||user.isAdmin||e.repeat)return;const k=String(e.key||'').toLowerCase();if(e.key==='PrintScreen'||e.code==='PrintScreen'||(e.metaKey&&e.shiftKey&&(/Mac|iPhone|iPad/.test(navigator.platform)?['3','4','5'].includes(k):k==='s')))screenshot()},true);
+ async function record(event){if(!user||(user.isAdmin&&user.id==='admin')||user.isCodeGuest)return;const actor=user.id;const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);const id=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');const r=await authCall('content_security_event',{event,eventId:id});if(!r.ok||(user&&user.id!==actor))return;if(Number.isInteger(r.count)){try{localStorage.setItem('ubt_content_security_status',JSON.stringify({uid:actor,count:r.count}))}catch(e){}}const text=r.msg||'Қорғаныс үшін мазмұнды көшірмеңіз';warning(text);if(event==='screenshot_shortcut')captureCover(text,!!r.blocked);if(r.blocked){captureCover(text,true);doLogout()}}
+ function screenshot(){if(!user||(user.isAdmin&&user.id==='admin')||user.isCodeGuest||Date.now()-shotAt<2500)return;shotAt=Date.now();captureCover('Скриншот пернесі әрекеті анықталды. Ескерту: 20 рет болса аккаунт бұғатталады. Тестті рұқсатсыз көшіру және тарату сайт ережесі бойынша тест ұрлауға талпыныс болып есептеледі.');record('screenshot_shortcut')}
+ window.ubtCaptureShortcut=screenshot;
+ document.addEventListener('keydown',e=>{if(!user||(user.isAdmin&&user.id==='admin')||e.repeat)return;const k=String(e.key||'').toLowerCase();if(e.key==='PrintScreen'||e.code==='PrintScreen'||(e.metaKey&&e.shiftKey&&(/Mac|iPhone|iPad/.test(navigator.platform)?['3','4','5'].includes(k):k==='s')))screenshot()},true);
  document.addEventListener('keyup',e=>{if(e.key==='PrintScreen'||e.code==='PrintScreen')screenshot()},true);
- document.addEventListener('copy',e=>{if(user&&!user.isAdmin&&!inField(e.target)){e.preventDefault();record('copy')}},true);
+ document.addEventListener('copy',e=>{if(user&&!(user.isAdmin&&user.id==='admin')&&!inField(e.target)){e.preventDefault();record('copy')}},true);
  window.addEventListener('beforeprint',()=>{if(user&&!user.isAdmin)record('print')});
  function owner(){return !!(user?.isAdmin&&user.id==='admin')}
  const subjects={history:'Қазақстан тарихы',reading:'Оқу сауаттылығы',mathlit:'Математикалық сауаттылық',math:'Математика',physics:'Физика',chemistry:'Химия',biology:'Биология',geography:'География',informatics:'Информатика',english:'Ағылшын тілі',kazakh:'Қазақ тілі',worldhistory:'Дүниежүзі тарихы',law:'Құқық негіздері'};
@@ -11345,9 +11369,31 @@ async function schoolDeleteClass(cid,button){
 
 (function(){
  let clearing=false;
- document.addEventListener('selectionchange',()=>{if(clearing||user?.isAdmin||inField(document.activeElement))return;const selected=window.getSelection();if(selected&&!selected.isCollapsed){clearing=true;selected.removeAllRanges();clearing=false}},true);
- ['selectstart','dragstart','contextmenu'].forEach(kind=>document.addEventListener(kind,e=>{if(user?.isAdmin||inField(e.target))return;e.preventDefault();window.getSelection()?.removeAllRanges()},true));
- document.addEventListener('copy',e=>{if(user?.isAdmin||inField(e.target))return;e.preventDefault();e.clipboardData?.setData('text/plain','');window.getSelection()?.removeAllRanges()},true);
+ document.addEventListener('selectionchange',()=>{if(clearing||(user?.isAdmin&&user.id==='admin')||inField(document.activeElement))return;const selected=window.getSelection();if(selected&&!selected.isCollapsed){clearing=true;selected.removeAllRanges();clearing=false}},true);
+ ['selectstart','dragstart','contextmenu'].forEach(kind=>document.addEventListener(kind,e=>{if((user?.isAdmin&&user.id==='admin')||inField(e.target))return;e.preventDefault();window.getSelection()?.removeAllRanges()},true));
+ document.addEventListener('copy',e=>{if((user?.isAdmin&&user.id==='admin')||inField(e.target))return;e.preventDefault();e.clipboardData?.setData('text/plain','');window.getSelection()?.removeAllRanges()},true);
+})();
+
+(function(){
+ const owner=()=>!!(user?.isAdmin&&user.id==='admin');
+ let profileJob=0;
+ const originalProfile=openPubProfile;
+ openPubProfile=async function(id){if(!user)return;if(id===user.id)return showMyProfile();if(owner())return adminViewUser(id);const job=++profileJob,r=await authCall('public_profile',{uid:id});if(job!==profileJob)return;if(!r.ok)return alert(r.msg);const p=r.profile;ppId=id;
+ const avatar=document.getElementById('pp-avatar');avatar.style.backgroundImage='';avatar.textContent=(p.name||'?')[0];if(p.avatar){avatar.style.backgroundImage='url('+p.avatar+')';avatar.style.backgroundSize='cover';avatar.style.backgroundPosition='center';avatar.textContent=''}
+ document.getElementById('pp-name').textContent=p.name+(p.verified?' ✓':'');document.getElementById('pp-title').textContent=p.title||'Атақ жоқ';document.getElementById('pp-stars').textContent=starStr(p.stars||0);document.getElementById('pp-points').textContent=p.points||0;document.getElementById('pp-rank').textContent=p.role==='teacher'?'Мұғалім':'Қолданушы';
+ ['pp-chart','pp-topics','pp-hist'].forEach(key=>{const node=document.getElementById(key);if(node){node.replaceChildren();const card=node.closest('.card');if(card)card.hidden=true}});showScr('s-pubprof')};
+ const adminProfile=adminViewUser;adminViewUser=function(id){if(!owner())return openPubProfile(id);return adminProfile.apply(this,arguments)};
+ // Window capture runs before document handlers so blocked shortcuts cannot reach page actions.
+ let leaving=false,entered=Date.now();
+ function active(){return !!user&&!owner()&&document.getElementById('s-test')?.classList.contains('active')&&!st.examSubmitting}
+ function exitForSystemKey(){if(!active()||leaving)return;leaving=true;stopTimer();lockEnd();logViol('Жүйелік перне немесе тест терезесінен шығу');Promise.resolve(finishTest(true)).finally(()=>{leaving=false})}
+ window.addEventListener('keydown',e=>{if(!active())return;const key=String(e.key||'');if(key==='PrintScreen'||e.code==='PrintScreen'){window.ubtCaptureShortcut?.();e.preventDefault();e.stopImmediatePropagation();return}if(document.getElementById('finish-dialog')?.open&&e.target.id==='finish-puzzle-answer'&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&(/^[0-9]$/.test(key)||['Backspace','Delete','Enter','ArrowLeft','ArrowRight'].includes(key)))return;if(key==='Meta'||key==='OS'||/^Meta(Left|Right)$/.test(e.code||'')){e.preventDefault();e.stopImmediatePropagation();exitForSystemKey();return}
+ if(e.ctrlKey||e.metaKey||e.altKey||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(key)){e.preventDefault();e.stopImmediatePropagation();return}},true);
+ window.addEventListener('blur',()=>{if(Date.now()-entered<1500)return;setTimeout(()=>{if(active()&&!document.hasFocus()&&!document.querySelector('dialog[open]'))exitForSystemKey()},150)});
+ document.addEventListener('visibilitychange',()=>{if(document.hidden&&Date.now()-entered>=1500)exitForSystemKey()});
+ const show=showScr;showScr=function(id){if(id==='s-test')entered=Date.now();const r=show.apply(this,arguments);document.body.classList.toggle('primary-owner',owner());if(!owner())document.querySelectorAll('[onclick]').forEach(el=>{if(/^(exportTest|exportJsonTest|exportWordTest|exportPdfTest|adminCopyTest|importPublicTestToBank)\(/.test(el.getAttribute('onclick')||''))el.hidden=true});return r};
+ ['copy','cut','contextmenu','dragstart','selectstart'].forEach(kind=>window.addEventListener(kind,e=>{if(!user||owner()||inField(e.target))return;e.preventDefault();e.stopImmediatePropagation();e.clipboardData?.setData('text/plain','');window.getSelection()?.removeAllRanges()},true));
+ ['exportTest','exportJsonTest','exportWordTest','exportPdfTest','adminCopyTest','importPublicTestToBank'].forEach(name=>{const fn=window[name];if(typeof fn==='function')window[name]=function(){if(!owner())return alert('Тек басты админге қолжетімді');return fn.apply(this,arguments)}});
 })();
 </script>
 <script>
