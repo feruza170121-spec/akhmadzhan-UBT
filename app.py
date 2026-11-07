@@ -533,6 +533,9 @@ def _start_exam(state, sess, d):
             not 0 <= q["correct"] < len(q["options"]) for q in qs):
             return {"ok": False, "msg": "Тест сұрақтарын түзету қажет"}
         uid = sess["uid"]
+        published = _approved_test(test)
+        if published and _published_used(state,tid,uid) >= _approved_limit(test):
+            return {"ok":False,"msg":"Бұл мақұлданған тесттің тапсыру лимиті аяқталды"}
         if not _exam_capacity(state, uid):
             return {"ok": False, "msg": "Алдымен ашық тесттеріңізді аяқтаңыз (ең көбі 3)"}
         if any(not e.get("completed") and e.get("uid") == uid and e.get("testId") == tid and e.get("expires", 0) > time.time()
@@ -573,7 +576,7 @@ def _start_exam(state, sess, d):
                 limit = test.get("limit")
                 if isinstance(limit, int) and limit > 0 and int(attempts.get(uid, 0)) >= limit:
                     return {"ok": False, "msg": "Тапсыру лимиті аяқталды"}
-        elif not (owner or test.get("isPublic") is True or test.get("status") == "approved"):
+        elif not (owner or published):
             return {"ok": False, "msg": "Тест жарияланбаған"}
         if len(state["exams"]) > 2000:
             now = time.time()
@@ -586,7 +589,7 @@ def _start_exam(state, sess, d):
         timer = min(max(timer if timer > 0 else max(len(qs) * 90, 600), 60), 18000)
         state["exams"][nonce] = {"uid": uid, "testId": tid, "assignmentId": aid, "classId": test.get("classId"),
                                  "owner": owner, "reward": bool(aid or test.get("classId") or test.get("adminApproved")),
-                                 "limit": test.get("limit"), "questions": [dict(q) for q in qs],
+                                 "limit": test.get("limit"), "publishedQuota": published, "publishedLimit": _approved_limit(test), "questions": [dict(q) for q in qs],
                                  "topic": (str(test.get("subjectName") or "") + " · " + str(test.get("topic") or "Тест")).strip(" ·"),
                                  "expires": time.time() + timer + 90}
         _save_exam(state, nonce)
@@ -600,48 +603,7 @@ def _start_exam(state, sess, d):
                 "topic": state["exams"][nonce]["topic"], "timer": timer}
 
 def _start_public_mix(state, sess, d):
-    if not sess:
-        return {"ok": False, "msg": "Алдымен аккаунтыңызға кіріңіз"}
-    ids, subject, count = d.get("testIds"), d.get("subject"), d.get("count")
-    if (not isinstance(ids, list) or not 1 <= len(ids) <= 20 or
-            any(not isinstance(x, str) or len(x) > 100 for x in ids) or
-            len(set(ids)) != len(ids) or not isinstance(subject, str) or
-            not 1 <= len(subject) <= 50 or type(count) is not int or not 1 <= count <= 120):
-        return {"ok": False, "msg": "Пәнді, тесттерді және сұрақ санын тексеріңіз"}
-    with state["lock"]:
-        if not _exam_capacity(state, sess["uid"]):
-            return {"ok": False, "msg": "Алдымен ашық тесттеріңізді аяқтаңыз (ең көбі 3)"}
-        tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
-        chosen = [next((t for t in tests if isinstance(t, dict) and t.get("id") == tid), None) for tid in ids]
-        if any(not t or t.get("classId") or t.get("assignmentId") or t.get("accessCode") or
-               t.get("subject") != subject or not (t.get("isPublic") is True or t.get("status") == "approved")
-               for t in chosen):
-            return {"ok": False, "msg": "Тек осы пәннің ашық жария тесттерін таңдаңыз"}
-        pool, seen = [], set()
-        for test in chosen:
-            for q in test.get("questions", []):
-                if not isinstance(q, dict) or not isinstance(q.get("text"), str) or not q["text"].strip() or \
-                   not isinstance(q.get("options"), list) or type(q.get("correct")) is not int or \
-                   not 0 <= q["correct"] < len(q["options"]):
-                    continue
-                key = q["text"].strip().casefold()
-                if key not in seen:
-                    seen.add(key)
-                    pool.append(dict(q))
-        if len(pool) < count:
-            return {"ok": False, "msg": "Таңдалған тесттерде осы пәннен " + str(count) + " бірегей сұрақ жоқ"}
-        qs = secrets.SystemRandom().sample(pool, count)
-        nonce = secrets.token_urlsafe(32)
-        timer = min(max(count * 90, 600), 18000)
-        topic = str(chosen[0].get("subjectName") or subject)[:80] + " · жария тесттерден аралас"
-        state["exams"][nonce] = {"uid": sess["uid"], "testId": "public_mix_" + nonce,
-                                 "assignmentId": None, "classId": None, "owner": False,
-                                 "reward": False, "limit": None, "questions": qs,
-                                 "topic": topic, "expires": time.time() + timer + 90}
-        _save_exam(state, nonce)
-        visible = [{**{k: v for k, v in q.items() if k != "correct"}, "id": "examq" + str(i)}
-                   for i, q in enumerate(qs)]
-        return {"ok": True, "exam": nonce, "questions": visible, "topic": topic, "timer": timer}
+    return {"ok":False,"msg":"Мақұлданған тесттерді өз лимитімен «Админ мақұлдаған тесттер» бөлімінен жеке тапсырыңыз"}
 
 def _finish_exam(state, sess, d):
     token = d.get("exam")
@@ -656,6 +618,11 @@ def _finish_exam(state, sess, d):
             return exam["completed"]
         if exam["expires"] < time.time():
             return {"ok": False, "msg": "Тест мерзімі өтті"}
+        if exam.get("publishedQuota"):
+            current=next((t for t in _jload(state["db"].get("ubt_tests","[]"),list,[]) if isinstance(t,dict) and t.get("id")==exam["testId"]),None)
+            limit=_approved_limit(current) if current else exam.get("publishedLimit",1)
+            if _published_used(state,exam["testId"],sess["uid"]) >= limit:
+                return {"ok":False,"msg":"Тапсыру лимиті аяқталды"}
         qs = exam["questions"]
         allowed = {"examq" + str(i): i for i in range(len(qs))}
         if any(k not in allowed or type(v) is not int or not 0 <= v < len(qs[allowed[k]]["options"])
@@ -728,6 +695,11 @@ def _finish_exam(state, sess, d):
         review = [{**q, "id": "examq" + str(i)} for i, q in enumerate(qs)]
         result = {"ok": True, "score": score, "max": maximum, "gained": gained, "owner": exam["owner"],
                   "reward": exam["reward"], "questions": review}
+        if exam.get("publishedQuota"):
+            usage=_jload(state["db"].get("ubt_server_access_public_attempts","{}"),dict,{})
+            bucket=usage.setdefault(exam["testId"],{})
+            bucket[sess["uid"]]=int(bucket.get(sess["uid"],0))+1
+            _put(state,"ubt_server_access_public_attempts",_jdump(usage))
         exam["completed"] = result
         exam["expires"] = time.time() + 86400
         _save_exam(state, token)
@@ -935,10 +907,10 @@ def _catalog_sync(state):
                 if isinstance(q, dict) and str(q.get("subject")) + "|" + str(q.get("text", "")).strip().lower() not in hidden:
                     add(q, uid, q.get("subject", "other"), q.get("origin") or "Базаға қосылған")
     for t in _jload(state["db"].get("ubt_tests", "[]"), list, []) + _BUILTIN_BANK_TESTS:
-        if not isinstance(t, dict) or t.get("assignmentId"):
+        if not isinstance(t, dict):
             continue
         for q in t.get("questions", []):
-            add(q, t.get("authorId"), t.get("subject", "other"), t.get("topic") or "Тест", t.get("authorName"))
+            add(q, t.get("authorId") or "admin", t.get("subject", "other"), t.get("topic") or "Тест", t.get("authorName"))
     if changed:
         _put(state, "ubt_question_catalog", _jdump(catalog))
         _commit(state)
@@ -1266,6 +1238,72 @@ def _access_request(state, sess, typ, d, sid, token):
     return {"ok":False,"msg":"Әрекет табылмады"}
 
 
+
+def _approved_test(test):
+    return bool(isinstance(test,dict) and test.get("status")=="approved" and test.get("adminApproved") is True and not test.get("assignmentId") and not test.get("classId"))
+
+def _approved_limit(test):
+    limit=test.get("limit")
+    return max(1,min(100,limit)) if type(limit) is int else 1
+
+def _published_used(state,tid,uid):
+    return _jload(state["db"].get("ubt_server_access_public_attempts","{}"),dict,{}).get(tid,{}).get(uid,0)
+
+def _publication_request(state,sess,typ,d):
+    if not sess or sess.get("codeGuest"):
+        return {"ok":False,"msg":"Аккаунтыңызға кіріңіз"}
+    with state["lock"]:
+        tests=_jload(state["db"].get("ubt_tests","[]"),list,[])
+        if typ == "admin_publish_test":
+            if not sess["admin"]:
+                return {"ok":False,"msg":"Тестті тек админ мақұлдайды"}
+            test=next((t for t in tests if isinstance(t,dict) and t.get("id")==d.get("testId")),None)
+            limit=d.get("limit")
+            if not test or test.get("assignmentId") or test.get("classId") or not test.get("questions"):
+                return {"ok":False,"msg":"Жариялауға арналған сұрақтары бар жеке тест таңдаңыз"}
+            if type(limit) is not int or not 1 <= limit <= 100:
+                return {"ok":False,"msg":"Лимит 1–100 рет болсын"}
+            test.update(status="approved",isPublic=True,adminApproved=True,limit=limit)
+            test.pop("accessCode",None)
+            _put(state,"ubt_tests",_jdump(tests));_commit(state)
+            return {"ok":True}
+        if typ == "approved_test_list":
+            rows=[]
+            for test in tests:
+                if not _approved_test(test) or not test.get("questions"):
+                    continue
+                rows.append({"id":test["id"],"title":test.get("topic") or "Тест","subject":test.get("subjectName") or test.get("subject") or "",
+                    "count":len(test["questions"]),"limit":_approved_limit(test),"used":_published_used(state,test["id"],sess["uid"]),"timerMin":test.get("timerMin") or 0})
+            offset=d.get("offset",0)
+            offset=offset if type(offset) is int and 0 <= offset <= 100000 else 0
+            return {"ok":True,"items":rows[offset:offset+50],"total":len(rows)}
+        if typ == "notifications_list":
+            rows=[];uid=sess["uid"]
+            for a in _jload(state["db"].get("ubt_assigned_tests","[]"),list,[]):
+                if not isinstance(a,dict) or a.get("uid")!=uid:
+                    continue
+                rows.append({"id":"assignment:"+a["id"],"kind":"assignment","assignmentId":a["id"],"testId":a["testId"],"title":a.get("title") or "Тест",
+                    "created":a.get("created",0),"source":"Сыныпқа жіберілген тест" if a.get("classId") else "Жеке жіберілген тест","used":a.get("used",0),"limit":a.get("limit",1)})
+            for a in _jload(state["db"].get("ubt_teacher_deliveries","[]"),list,[]):
+                if isinstance(a,dict) and a.get("uid")==uid:
+                    rows.append({"id":"delivery:"+a["id"],"kind":"delivery","testId":a["testId"],"title":a.get("title") or "Тест","created":a.get("created",0),"source":"Админнен келген тест","used":0,"limit":None})
+            classes=_jload(state["db"].get("ubt_classes","[]"),list,[])
+            joined={c.get("id"):c for c in classes if isinstance(c,dict) and uid in c.get("students",[])}
+            for test in tests:
+                if not isinstance(test,dict) or test.get("assignmentId") or test.get("classId") not in joined:
+                    continue
+                attempts=_jload(state["db"].get("ubt_att_"+test["id"],"{}"),dict,{})
+                rows.append({"id":"class:"+test["id"],"kind":"class","testId":test["id"],"title":test.get("topic") or "Тест","created":test.get("notificationCreated",0),
+                    "source":str(joined[test["classId"]].get("name") or "Сынып")+" · сынып тесті","used":attempts.get(uid,0),"limit":test.get("limit")})
+            for m in _jload(state["db"].get("ubt_admin_letters","[]"),list,[]):
+                if isinstance(m,dict) and m.get("toUid")==uid and m.get("role")!="user":
+                    rows.append({"id":"letter:"+str(m.get("id")),"kind":"letter","title":"Админнен хабарлама","text":str(m.get("text") or "")[:2000],"created":m.get("time",0),"source":"Хабарлама"})
+            rows.sort(key=lambda x:x.get("created") if isinstance(x.get("created"),(int,float)) else 0,reverse=True)
+            offset=d.get("offset",0);offset=offset if type(offset) is int and 0 <= offset <= 100000 else 0
+            return {"ok":True,"items":rows[offset:offset+50],"total":len(rows),"latest":max([x.get("created",0) if isinstance(x.get("created"),(int,float)) else 0 for x in rows] or [0])}
+    return {"ok":False,"msg":"Әрекет жоқ"}
+
+
 def _handle_req(state, sid, rq):
     typ = rq.get("type")
     d = rq.get("data") if isinstance(rq.get("data"), dict) else {}
@@ -1292,6 +1330,9 @@ def _handle_req(state, sid, rq):
         return {"ok":False,"msg":"Админ аккаунтын тек басты админ өзгертеді"}
     if typ in ("code_login", "code_start", "admin_code_list", "admin_code_create", "admin_code_delete", "admin_assign_admin", "admin_create_admin"):
         return _access_request(state,sess,typ,d,sid,rq.get("tok"))
+
+    if typ in ("admin_publish_test", "approved_test_list", "notifications_list"):
+        return _publication_request(state,sess,typ,d)
 
     if typ.startswith("school_"):
         return _school_request(state, sess, typ, d)
@@ -2600,15 +2641,29 @@ def _snapshot(tok="", claim=""):
         cache = state.setdefault("visible_catalog_cache", {})
         scope = (sess["uid"], bool(sess["admin"]))
         raw = db.get("ubt_question_catalog", "[]")
+        shared_cache=state.get("approved_shared_ids")
+        shared_source=db.get("ubt_tests","[]")
+        if shared_cache and shared_cache[0] == shared_source:
+            shared=shared_cache[1]
+        else:
+            shared=set()
+            for test in _jload(shared_source,list,[]):
+                if _approved_test(test):
+                    for q in test.get("questions",[]):
+                        if isinstance(q,dict) and isinstance(q.get("text"),str):
+                            identity=_jdump([test.get("authorId") or "admin",test.get("subject","other"),q["text"].strip().lower()])
+                            shared.add("catalog:"+hashlib.sha256(identity.encode()).hexdigest())
+            state["approved_shared_ids"]=(shared_source,shared)
+        visibility_key=(raw,db.get("ubt_tests","[]"))
         cached = cache.get(scope)
-        if cached is None or cached[0] != raw:
+        if cached is None or cached[0] != visibility_key:
             catalog = _jload(raw, list, [])
             visible = _jdump([q for q in catalog if not q.get("deleted") and
-                (sess["admin"] or q.get("authorId") in (sess["uid"], "system"))])
+                (sess["admin"] or q.get("id") in shared or q.get("authorId") in (sess["uid"], "system"))])
             deleted = _jdump([
                 json.dumps([q.get("authorId") or "", q.get("subject") or "other", str(q.get("text") or "").strip().lower()], ensure_ascii=False, separators=(",", ":"))
                 for q in catalog if q.get("deleted") and (sess["admin"] or q.get("authorId") in (sess["uid"], "system"))])
-            cached = (raw, visible, deleted)
+            cached = (visibility_key, visible, deleted)
             if len(cache) >= 4 and scope not in cache:
                 cache.pop(next(iter(cache)))
             cache[scope] = cached
@@ -2654,7 +2709,7 @@ def _snapshot(tok="", claim=""):
         db["ubt_tests"] = _jdump([t for t in tests if isinstance(t, dict) and
             (t.get("authorId") == sess["uid"] or
              t.get("id") in assigned_ids or
-             (t.get("classId") in joined if t.get("classId") else (t.get("isPublic") or t.get("status") == "approved")))])
+             (t.get("classId") in joined if t.get("classId") else _approved_test(t)))])
         visible_tests = _jload(db.get("ubt_tests", "[]"), list, [])
         db["ubt_tests"] = _jdump([
             t if t.get("authorId") == sess["uid"] or t.get("classId") in managed or not (t.get("classId") or t.get("assignmentId") or t.get("accessCode")) else
@@ -3456,6 +3511,8 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
 <button type="button" class="ubt-rail-link ubt-rail-desktop" data-rail-group="teachers" title="Мұғалімдер" aria-label="Мұғалімдер" onclick="showSchoolPeople('teachers')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h14v10H3zM10 4v10m0 0v4m-4 3 4-3 4 3"/><circle cx="20" cy="8" r="2"/><path d="M18 20v-7h4v7"/></svg><span class="ubt-rail-caption">Мұғалімдер</span></button>
 <button type="button" class="ubt-rail-link ubt-rail-desktop" data-rail-group="students" title="Оқушылар" aria-label="Оқушылар" onclick="showSchoolPeople('students')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="7" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M17 4a3 3 0 0 1 0 6m1 4a5 5 0 0 1 3 5v2"/></svg><span class="ubt-rail-caption">Оқушылар</span></button>
 <button type="button" class="ubt-rail-link ubt-rail-desktop" data-rail-group="classes" title="Сыныптар тізімі" aria-label="Сыныптар тізімі" onclick="showSchoolClasses()"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h2m4 0h2M8 11h2m4 0h2M9 21v-6h6v6"/></svg><span class="ubt-rail-caption">Сыныптар тізімі</span></button>
+<button type="button" class="ubt-rail-link ubt-rail-desktop" data-rail-group="approved" aria-label="Админ мақұлдаған тесттер" onclick="showApprovedTests()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14v18H5zM8 8l2 2 5-5M8 15h8"/></svg><span class="ubt-rail-caption">Админ мақұлдаған тесттер</span></button>
+<button type="button" class="ubt-rail-link ubt-rail-desktop" data-rail-group="notifications" aria-label="Хабарламалар" onclick="showNotifications()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v14H3zM3 5l9 8 9-8"/></svg><span class="ubt-rail-caption">Хабарламалар</span></button>
 <button type="button" class="ubt-rail-link" data-rail-group="more" title="Мәзір" aria-label="Мәзір" onclick="openAppMenu()" id="ubt-rail-more" aria-controls="app-menu" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg><span class="ubt-rail-caption">Мәзір</span></button></div>
 <div class="ubt-rail-footer"><button type="button" class="ubt-rail-link" data-rail-group="admin" title="Админ панелі" aria-label="Админ панелі" onclick="showAdmin()" id="ubt-rail-admin" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 3-1 3-3 1-2 5 2 5 3 1 1 3h6l1-3 3-1 2-5-2-5-3-1-1-3Z"/><circle cx="12" cy="12" r="3"/></svg><span class="ubt-rail-caption">Админ панелі</span></button><button type="button" class="ubt-rail-link" data-rail-group="profile" title="Профиль" aria-label="Профиль" onclick="schoolOwnProfile()" id="ubt-rail-profile"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span class="ubt-rail-caption">Профиль</span></button></div></nav>
 <div id="app-menu-backdrop" hidden onclick="closeAppMenu()"></div>
@@ -3467,7 +3524,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
     <button type="button" class="app-menu-home" onclick="showSchoolPeople('teachers')">Мұғалімдер</button>
     <button type="button" class="app-menu-home" onclick="showSchoolPeople('students')">Оқушылар</button>
     <button type="button" class="app-menu-home" onclick="showSchoolClasses()">Сыныптар тізімі</button>
-    <button type="button" class="app-menu-home" onclick="showAssignedTests()">Маған жіберілген тесттер</button>
+    <button type="button" class="app-menu-home" onclick="showApprovedTests()">Админ мақұлдаған тесттер</button><button type="button" class="app-menu-home" onclick="showNotifications()">Хабарламалар <span class="test-notification-count"></span></button>
     <button class="mode" onclick="showUbt140()"><span class="ic">🎓</span><h3>140 формат</h3><p>Сұрақтарды базадан таңдаңыз немесе кездейсоқ алыңыз</p></button>
     <button class="mode" onclick="startQuickSubject()"><span class="ic">📘</span><h3>Пән тесттерім</h3><p>Әр пән бөлек · базадан өзім таңдау немесе кездейсоқ бастау</p></button>
     <details class="app-menu-group" open><summary>Сабақ</summary><div class="app-menu-items">      <div class="mode" onclick="showLessons()"><div class="ic">🎬</div><h3>Анимация сабақтар</h3><p>Анимация + код</p></div></div></details>
@@ -4465,6 +4522,9 @@ html{text-rendering:optimizeSpeed}
 .quick-launcher .ubd-card-head{margin-bottom:12px}.quick-essential,.quick-frequent{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.quick-essential{margin-top:18px}.quick-frequent{margin-top:9px}.quick-link{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:49px;width:100%;text-align:left;padding:11px 12px;border-radius:12px;line-height:1.4;white-space:normal}.quick-link>span:first-child{overflow-wrap:anywhere}.quick-link>span:last-child{color:#89b8ad;flex:none}.quick-essential .quick-link{font-weight:750;background:linear-gradient(115deg,#66dfbd,#9ae9d5);color:#102f29;border-color:#9ce6d3}.quick-essential .quick-link>span:last-child{color:#206254}.quick-scroll-title{display:flex;justify-content:space-between;color:var(--dm);font-size:11px;padding:18px 2px 10px}.quick-scroll{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;max-height:215px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#4e857c #16293b;padding:2px 7px 6px 0;align-content:start}.quick-scroll .quick-link{font-size:11px;background:#18283e;border-color:#314960}.quick-scroll:focus-visible{outline:2px solid var(--da);outline-offset:4px;border-radius:8px}.ubd-profile-orbit{background-size:cover!important;background-position:center!important}#s-profile #prof-avatar{cursor:pointer}#s-profile #profile-photo-quick{margin:8px 0 12px}
 @media(max-width:420px){.quick-link{font-size:11px;padding:10px;min-height:48px}.quick-scroll{max-height:215px}.quick-essential{gap:7px}.quick-frequent{gap:7px}}
 </style>
+<style>
+.approved-summary{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0 20px}.approved-summary span{padding:8px 12px;border:1px solid var(--b);border-radius:12px;font-size:12px}.approved-test-row,.notification-test-row{padding:18px;margin:0 0 12px;border:1px solid var(--b);border-radius:16px;background:var(--c);display:flex;justify-content:space-between;gap:18px;align-items:center}.approved-test-row h3,.notification-test-row h3{font-size:16px;margin:4px 0 8px;overflow-wrap:anywhere}.approved-test-row p,.notification-test-row p{font-size:12px;color:var(--m);line-height:1.7}.notification-source{font-size:10px;letter-spacing:.06em;color:var(--p);font-weight:700}.notification-test-row .notification-text{white-space:pre-wrap;color:var(--t);margin-top:10px}.notification-test-row .acts,.approved-test-row .acts{display:flex;flex-wrap:wrap;gap:7px;flex-shrink:0}.ubd-profile-actions .profile-message-open{color:#d8e9ff!important;border-color:#ac9ce366!important}.test-notification-count{font-size:10px;color:var(--p);font-weight:800}.notification-quota{display:inline-block;font-size:11px;color:var(--p);padding:4px 8px;background:#55c6a419;border-radius:8px}#approved-list,#notification-list{content-visibility:auto;contain-intrinsic-size:auto 500px}@media(max-width:600px){.approved-test-row,.notification-test-row{align-items:stretch;flex-direction:column;gap:12px;padding:16px}.approved-test-row .acts .btn,.notification-test-row .acts .btn{flex:1}.approved-summary{gap:6px}}
+</style>
 <script type="text/plain" id="app-src">
 
 const ubtAssetPromises=new Map();
@@ -5289,11 +5349,7 @@ function adminCopyTest(id){
   copy.createdAt=new Date().toISOString();
   all.unshift(copy);saveAllTests(all);showCopiedTests();
 }
-function approveTest(id){
-  if(!user||!user.isAdmin)return;
-  const all=allTests();const t=all.find(x=>x.id===id);
-  if(t){t.isPublic=true;t.status='approved';t.adminApproved=true;saveAllTests(all);showAdmin()}
-}
+function approveTest(id){return publishApprovedTest(id)}
 function rejectTest(id){
   if(!user||!user.isAdmin)return;
   const all=allTests();const t=all.find(x=>x.id===id);
@@ -10080,7 +10136,7 @@ function ubtRailSync(){
   document.body.classList.toggle('ubt-has-rail',visible);
   rail.setAttribute('aria-hidden',String(!visible));rail.inert=!visible||document.body.classList.contains('app-menu-open');
   const schoolKind=screen&&screen.dataset&&screen.dataset.kind;
-  const groups={teachers:(['s-school-people','s-school-person'].includes(id)&&schoolKind==='teachers')?[id]:[],students:(['s-school-people','s-school-person'].includes(id)&&schoolKind==='students')?[id]:[],classes:['s-school-classes','s-school-class','s-class-send','s-teacher'],home:['s-home'],analytics:['s-analytics','s-knowledge-map','s-score-forecast'],profile:['s-profile'],exam:['s-ubt140'],subjects:['s-subj'],bank:['s-question-bank'],flash:['s-flash'],history:['s-hist'],create:['s-create','s-addq','s-schemes'],admin:['s-admin','s-registered','s-access-requests']};
+  const groups={approved:['s-approved-tests'],notifications:['s-notifications'],teachers:(['s-school-people','s-school-person'].includes(id)&&schoolKind==='teachers')?[id]:[],students:(['s-school-people','s-school-person'].includes(id)&&schoolKind==='students')?[id]:[],classes:['s-school-classes','s-school-class','s-class-send','s-teacher'],home:['s-home'],analytics:['s-analytics','s-knowledge-map','s-score-forecast'],profile:['s-profile'],exam:['s-ubt140'],subjects:['s-subj'],bank:['s-question-bank'],flash:['s-flash'],history:['s-hist'],create:['s-create','s-addq','s-schemes'],admin:['s-admin','s-registered','s-access-requests']};
   let matched=false;
   rail.querySelectorAll('[data-rail-group]').forEach(button=>{
     const on=visible&&!!groups[button.dataset.railGroup]&&groups[button.dataset.railGroup].includes(id);
@@ -10367,7 +10423,7 @@ async function schoolDeleteClass(cid,button){
 (function(){
  const rail=document.getElementById('ubt-icon-rail');if(!rail)return;
  const card=document.createElement('div');card.id='ubt-rail-preview';card.setAttribute('role','tooltip');document.body.appendChild(card);
- const descriptions={home:'Жеке көрсеткіштеріңіз бен соңғы нәтижелеріңіз.',analytics:'140 формат пен пән тесттерінің өсу графигі.',exam:'140 балдық форматтағы тестті таңдаңыз.',subjects:'Пәнді таңдап, біліміңізді тексеріңіз.',bank:'Пәндерге бөлінген сұрақтар жинағы.',flash:'Карточкалармен жаттап, біліміңізді бекітіңіз.',history:'Бұрын тапсырған тесттер мен балдарыңыз.',create:'Тесттер мен оқу материалдарын құрыңыз.',teachers:'Мұғалімдер тізімі мен профильдері.',students:'Оқушылар тізімі мен профильдері.',classes:'Сыныптар, оқушылар және тапсырмалар.',more:'Барлық бөлімдер мен қосымша мүмкіндіктер.',admin:'Сайтты басқару және өтініштерді қарау.',profile:'Жеке профиліңіз бен жетістіктеріңіз.'};
+ const descriptions={home:'Жеке көрсеткіштеріңіз бен соңғы нәтижелеріңіз.',analytics:'140 формат пен пән тесттерінің өсу графигі.',exam:'140 балдық форматтағы тестті таңдаңыз.',subjects:'Пәнді таңдап, біліміңізді тексеріңіз.',bank:'Пәндерге бөлінген сұрақтар жинағы.',flash:'Карточкалармен жаттап, біліміңізді бекітіңіз.',history:'Бұрын тапсырған тесттер мен балдарыңыз.',create:'Тесттер мен оқу материалдарын құрыңыз.',teachers:'Мұғалімдер тізімі мен профильдері.',students:'Оқушылар тізімі мен профильдері.',classes:'Сыныптар, оқушылар және тапсырмалар.',approved:'Админ мақұлдаған тесттерді жеке лимитпен тапсырыңыз.',notifications:'Өзіңізге және сыныбыңызға келген тесттер.',more:'Барлық бөлімдер мен қосымша мүмкіндіктер.',admin:'Сайтты басқару және өтініштерді қарау.',profile:'Жеке профиліңіз бен жетістіктеріңіз.'};
  let active=null;
  function hide(){card.classList.remove('is-visible');if(active){active.removeAttribute('aria-describedby');active=null}}
  function show(button){
@@ -10514,6 +10570,44 @@ async function schoolDeleteClass(cid,button){
  showMyProfile=function(){const r=original.apply(this,arguments);if(!user)return r;const avatar=document.getElementById('prof-avatar');avatar.setAttribute('role','button');avatar.tabIndex=0;avatar.setAttribute('aria-label','Профиль фотосын қою немесе ауыстыру');avatar.onclick=()=>document.getElementById('profile-photo-input').click();avatar.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();avatar.click()}};return r};
  const previous=afterAvatarChange;
  afterAvatarChange=function(){const r=previous.apply(this,arguments);document.querySelectorAll('.ubd-profile-orbit').forEach(el=>{if(user)setAv(el,user.id,user.name)});return r};
+})();
+
+(function(){
+ let approvedOffset=0,notificationOffset=0,approvedJob=0,notificationJob=0,badgeTime=0,badgeUid='';
+ const canUse=()=>!!user&&!user.isCodeGuest;
+ function makeScreen(id,html){const screen=document.createElement('div');screen.id=id;screen.className='screen';screen.innerHTML='<div class="wrap wide"><div class="topback"><button type="button" class="btn btn-s" onclick="goHome()">← Артқа</button></div>'+html+'</div>';document.body.appendChild(screen)}
+ makeScreen('s-approved-tests','<div class="hdr"><h2>Админ мақұлдаған тесттер</h2><p class="sub">Барлық қолданушыға ашық. Әр адамға жеке тапсыру лимиті қолданылады.</p></div><div class="approved-summary"><span id="approved-total">Жүктелуде…</span><span>Нәтиже серверде есептеледі</span></div><div id="approved-list" role="status"></div><button type="button" class="btn btn-s" id="approved-more" hidden>Тағы 50 тест</button>');
+ makeScreen('s-notifications','<div class="hdr"><h2>Хабарламалар</h2><p class="sub">Өзіңізге және сыныбыңызға жіберілген тесттерді осы жерден бастаңыз.</p></div><div class="row" style="justify-content:space-between;margin-bottom:18px"><span class="sub" id="notification-total"></span><button type="button" class="btn btn-s btn-sm" onclick="showNotifications()">Жаңарту</button></div><div id="notification-list" role="status"></div><button type="button" class="btn btn-s" id="notification-more" hidden>Тағы 50 хабарлама</button>');
+ const time=n=>n?new Date(n*1000).toLocaleString('kk-KZ',{timeZone:'Asia/Almaty'}):'';
+ window.publishApprovedTest=async function(id){if(!user?.isAdmin)return;const current=allTests().find(t=>t.id===id);const value=prompt('Әр адам бұл тестті неше рет тапсыра алады? (1–100)',String(current?.limit||1));if(value===null)return;const limit=Number(value);if(!Number.isInteger(limit)||limit<1||limit>100){alert('1–100 арасындағы лимитті таңдаңыз');return}const r=await authCall('admin_publish_test',{testId:id,limit});if(!r.ok){alert(r.msg||'Мақұлданбады');return}await window.__bridge.refresh();if(document.querySelector('.screen.active')?.id==='s-approved-tests')loadApproved(true);else showAdmin()};
+ window.showApprovedTests=function(){if(!canUse())return;showScr('s-approved-tests')};
+ async function loadApproved(reset){
+  if(!canUse())return;if(reset)approvedOffset=0;const job=++approvedJob,uid=user.id,host=document.getElementById('approved-list');if(reset)host.textContent='Тесттер жүктелуде…';
+  const r=await authCall('approved_test_list',{offset:approvedOffset});if(job!==approvedJob||uid!==user?.id)return;if(!r.ok){host.textContent=r.msg||'Жүктелмеді';return}
+  document.getElementById('approved-total').textContent=r.total+' мақұлданған тест';
+  const html=r.items.map(t=>`<article class="approved-test-row"><div><span class="notification-source">АДМИН МАҚҰЛДАҒАН</span><h3>${esc(t.title)}</h3><p>${esc(t.subject)} · ${t.count} сұрақ${t.timerMin?' · '+esc(t.timerMin)+' минут':''}</p><span class="notification-quota">Тапсырғаны: ${t.used} / ${t.limit} · Қалды: ${Math.max(0,t.limit-t.used)}</span></div><div class="acts"><button type="button" class="btn btn-p" ${t.used>=t.limit?'disabled':''} onclick="startUserTest(${jsq(t.id)})">${t.used>=t.limit?'Лимит аяқталды':'▶ Тестті бастау'}</button>${user.isAdmin?`<button type="button" class="btn btn-s btn-sm" onclick="publishApprovedTest(${jsq(t.id)})">Лимитті өзгерту</button>`:''}</div></article>`).join('');
+  if(reset)host.innerHTML=html||'<div class="empty"><p>Админ мақұлдаған тесттер әзірге жоқ.</p></div>';else host.insertAdjacentHTML('beforeend',html);
+  approvedOffset+=r.items.length;document.getElementById('approved-more').hidden=approvedOffset>=r.total;
+ }
+ document.getElementById('approved-more').onclick=()=>loadApproved(false);
+ window.showPublicTests=function(){showApprovedTests()};
+ window.showNotifications=function(){if(!canUse())return;showScr('s-notifications')};
+ window.showAssignedTests=function(){showNotifications()};
+ async function loadNotifications(reset){
+  if(!canUse())return;if(reset)notificationOffset=0;const job=++notificationJob,uid=user.id,host=document.getElementById('notification-list');if(reset)host.textContent='Хабарламалар жүктелуде…';
+  const r=await authCall('notifications_list',{offset:notificationOffset});if(job!==notificationJob||uid!==user?.id)return;if(!r.ok){host.textContent=r.msg||'Жүктелмеді';return}
+  document.getElementById('notification-total').textContent=r.total+' хабарлама';updateBadges(r.total);
+  const html=r.items.map(a=>{const blocked=Number.isFinite(a.limit)&&a.limit>0&&a.used>=a.limit;const action=a.kind==='assignment'?`startAssignedTest(${jsq(a.assignmentId)})`:`startUserTest(${jsq(a.testId)})`;return `<article class="notification-test-row"><div><span class="notification-source">${esc(a.source)}</span><h3>${esc(a.title)}</h3><p>${esc(time(a.created))}</p>${a.kind==='letter'?`<p class="notification-text">${esc(a.text)}</p>`:`<span class="notification-quota">${Number.isFinite(a.limit)&&a.limit>0?'Тапсырғаны: '+a.used+' / '+a.limit:'Келген тест'}</span>`}</div>${a.kind!=='letter'?`<div class="acts"><button type="button" class="btn btn-p" ${blocked?'disabled':''} onclick="${action}">${blocked?'Лимит аяқталды':'▶ Тестті бастау'}</button></div>`:''}</article>`}).join('');
+  if(reset)host.innerHTML=html||'<div class="empty"><p>Сізге әлі тест немесе хабарлама келген жоқ.</p></div>';else host.insertAdjacentHTML('beforeend',html);
+  notificationOffset+=r.items.length;document.getElementById('notification-more').hidden=notificationOffset>=r.total;
+ }
+ document.getElementById('notification-more').onclick=()=>loadNotifications(false);
+ function updateBadges(total){document.querySelectorAll('.test-notification-count').forEach(el=>el.textContent=total?'('+total+')':'')}
+ async function badge(){if(canUse()&&badgeUid!==user.id){badgeUid=user.id;badgeTime=0;updateBadges(0)}if(!canUse()||document.hidden||Date.now()-badgeTime<60000)return;badgeTime=Date.now();const uid=user.id;const r=await authCall('notifications_list',{offset:0});if(r.ok&&user?.id===uid)updateBadges(r.total)}
+ function profileMessageButton(){if(!canUse())return;const host=document.querySelector('.ubd-profile-actions');if(host&&!host.querySelector('.profile-message-open')){const b=document.createElement('button');b.type='button';b.className='profile-message-open';b.textContent='Хабарламалар';b.onclick=()=>showNotifications();host.appendChild(b)}}
+ const render=ubdRender;ubdRender=function(){const r=render.apply(this,arguments);profileMessageButton();badge();return r};
+ const show=showScr;showScr=function(id){const r=show.apply(this,arguments);profileMessageButton();badge();if(id==='s-approved-tests'&&canUse())loadApproved(true);if(id==='s-notifications'&&canUse())loadNotifications(true);return r};
+ const sync=syncRefresh;syncRefresh=function(){const r=sync.apply(this,arguments);if(!canUse())return r;const keys=window.__ubtChangedKeys||[];if(keys.some(k=>['ubt_assigned_tests','ubt_teacher_deliveries','ubt_tests','ubt_admin_letters','ubt_classes'].includes(k))){const id=document.querySelector('.screen.active')?.id;if(id==='s-notifications')loadNotifications(true);if(id==='s-approved-tests')loadApproved(true);badgeTime=0;badge()}return r};
 })();
 </script>
 <script>
