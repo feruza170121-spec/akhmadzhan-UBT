@@ -4129,6 +4129,10 @@ body:not(.primary-owner) input,body:not(.primary-owner) textarea,body:not(.prima
 #owner-json-panel input,#owner-json-panel select{width:100%;min-width:0}
 .item .info,.card,.wrap{min-width:0}.gl-item p,#formula-list .info p{overflow-wrap:anywhere;white-space:pre-wrap}
 @media(max-width:640px){#owner-json-panel .json-controls,.grid2{grid-template-columns:1fr}#owner-json-panel .row,.publication-tools{align-items:stretch;flex-direction:column}#owner-json-panel .btn,.publication-tools .btn{width:100%}.publication-row{flex-wrap:wrap;gap:10px}.item{flex-wrap:wrap}.item .acts{flex-wrap:wrap;max-width:100%}input,select,textarea{font-size:16px!important}.wrap{padding-left:12px;padding-right:12px}#tas-background svg{min-width:100%}}
+
+#mobile-direct-nav{display:none}#tas-background{display:none!important}
+.review-options{display:grid;gap:8px;margin:14px 0}.review-option{padding:12px;border:1px solid var(--b,#496079);border-radius:10px;white-space:pre-wrap;overflow-wrap:anywhere}.review-option strong{display:block;font-size:12px;margin-top:5px}.review-option.review-correct{border:2px solid #22c55e;background:#16a34a1c}.review-option.review-selected:not(.review-correct){border:2px solid #ef4444;background:#ef44441c}
+@media(max-width:700px){body.mobile-nav-ready:not(.test-active) #mobile-direct-nav{display:flex;position:relative;z-index:30;gap:8px;margin:10px 12px;flex-wrap:wrap}#mobile-direct-nav button{flex:1;min-width:85px;min-height:44px;touch-action:manipulation}.screen>.wrap{padding-bottom:100px!important}.ubd-profile-actions{position:relative;z-index:4;pointer-events:auto}.ubd-profile-card .profile-main{width:100%;flex-wrap:wrap}.profile-scene,.profile-scene *{pointer-events:none!important}#s-mist .item>.btn{width:100%}#s-rev .rev{padding:14px}.quick-scroll{max-height:none;overflow:visible}.ubt-rail-links{touch-action:pan-x}button,a,[role="button"]{touch-action:manipulation}}
 </style></head>
 <body>
 
@@ -5767,6 +5771,7 @@ function adminChooseLetterRecipient(login){
   document.getElementById('admin-letter-text').focus();
 }
 function showMyProfile(){
+  if(!user)return;showScr('s-profile');
   const s=user.isAdmin?{points:0,title:'👑 Админ',stars:5,verified:true}:getUserStats(user.id);
   const nameCard=document.getElementById('owner-name-card');
   if(nameCard){nameCard.style.display=user.isAdmin?'':'none';document.getElementById('owner-new-name').value=user.isAdmin?user.name:'';document.getElementById('owner-name-pass').value=''}
@@ -5779,8 +5784,9 @@ function showMyProfile(){
   if(pv) pv.style.display=s.verified?'block':'none';
   const rank=getRankPosition(user.id);
   document.getElementById('prof-rank').textContent=rank?('Рейтинг: #'+rank):'Рейтинг: —';
-  renderProgress('prof-chart','prof-topics',getProg(user.id));
-  renderSubjectGraph();renderPersonalResults();
+  try{renderProgress('prof-chart','prof-topics',getProg(user.id))}catch(e){console.warn('Profile chart',e)}
+  try{renderSubjectGraph()}catch(e){console.warn('Subject chart',e)}
+  try{renderPersonalResults()}catch(e){console.warn('Profile results',e)}
   showScr('s-profile');
 }
 async function changeOwnerName(){
@@ -6259,7 +6265,7 @@ document.addEventListener('keydown',e=>{
   if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}
   else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}
 });
-function showScr(id){closeAppMenu(false);document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));document.getElementById(id).classList.add('active');try{chromeSync()}catch(e){}}
+function showScr(id){const target=document.getElementById(id);if(!target||!target.classList.contains('screen'))return;closeAppMenu(false);if(id!=='s-test'&&!lock.on){shieldOff();hideOv();document.getElementById('exam-window-guard')?.classList.remove('show')}document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));target.classList.add('active');try{chromeSync()}catch(e){}}
 function goHome(){if(st.secureExam){showResultRetry('Тест нәтижесін жіберіңіз немесе жауаптарды файлға сақтаңыз.');return}if(lock.on)return;stopTimer();st=baseState();showScr('s-home')}
 
 const BANK={
@@ -7993,19 +7999,19 @@ async function explainReviewQuestion(i,button){
   try{const r=await authCall("explain_review",{question:{text:q.text,options:q.options,correct:q.correct},answer:aiReviewAnswers[q.id]});box.textContent=r.ok?r.text:r.msg||"AI жауабы алынбады";if(r.ok)box.dataset.done="1"}
   catch(e){box.textContent="Байланыс үзілді. Қайта басыңыз."}finally{button.disabled=false}
 }
-function reviewAns(){
+function reviewAns(selectedReview){
   const L=['A','B','C','D'];
-  let review=null;
-  if(st.lastScore&&st.questions.length&&!st.secureExam)review={questions:st.questions,answers:st.answers};
+  let review=selectedReview&&Array.isArray(selectedReview.questions)?selectedReview:null;
+  if(!review&&st.lastScore&&st.questions.length&&!st.secureExam)review={questions:st.questions,answers:st.answers};
   if(!review&&user){try{review=JSON.parse(sessionStorage.getItem('ubt_last_review_'+user.id)||'null')}catch(e){}}
   if(!review&&user){const latest=LS.get('ubt_hist_'+user.id,[])[0];if(latest&&Array.isArray(latest.questions))review=latest}
-  const questions=review&&Array.isArray(review.questions)?review.questions:[];
+  const questions=review&&Array.isArray(review.questions)?review.questions.filter(q=>q&&typeof q.text==='string'&&Array.isArray(q.options)):[];
   const answers=review&&review.answers&&typeof review.answers==='object'?review.answers:{};
   aiReviewQuestions=questions;aiReviewAnswers=answers;
   document.getElementById('rev-list').innerHTML=questions.length?questions.map((q,i)=>{const ua=answers[q.id],ok=ua===q.correct;
     const correct=Number.isInteger(q.correct)&&q.correct>=0&&q.correct<q.options.length?q.correct:null;
     return `<div class="rev ${ok?'ok':'bad'}"><div class="rh"><span>Сұрақ ${i+1}</span><span>${ok?'✓ Дұрыс':'✗ Қате'}</span></div>
-      <div class="rq" style="white-space:pre-wrap">${esc(q.text)}</div>${qMedia(q)}${ua!==undefined?`<div class="ra u">Сіз: <b>${L[ua]||ua+1}) ${esc(q.options[ua]||'')}</b></div>`:'<div class="ra u">Жауап жоқ</div>'}
+      <div class="rq" style="white-space:pre-wrap">${esc(q.text)}</div>${qMedia(q)}<div class="review-options">${q.options.map((option,index)=>`<div class="review-option ${index===q.correct?'review-correct':''} ${index===ua?'review-selected':''}"><b>${L[index]||index+1}.</b> ${esc(option)} ${index===q.correct?'<strong>✓ Дұрыс жауап</strong>':''}${index===ua?'<span> ← Сіздің жауабыңыз</span>':''}</div>`).join('')}</div>${ua!==undefined?`<div class="ra u">Сіз: <b>${L[ua]||ua+1}) ${esc(q.options[ua]||'')}</b></div>`:'<div class="ra u">Жауап жоқ</div>'}
       ${correct!==null?`<div class="ra c">Дұрыс: <b>${L[correct]||correct+1}) ${esc(q.options[correct]||'')}</b></div>`:''}
       <button type="button" class="btn btn-s btn-sm" onclick="explainReviewQuestion(${i},this)">🤖 Түсіндір</button><div id="ai-review-${i}" role="status" style="white-space:pre-wrap;margin-top:10px"></div>
       </div>`}).join(''):'';
@@ -8014,20 +8020,30 @@ function reviewAns(){
 }
 let ubtHistoryShown=50;
 function showHistory(){ubtHistoryShown=50;renderHistoryPage();showScr('s-hist')}
+function openHistoryAttempt(index){const attempt=LS.get('ubt_hist_'+user.id,[])[index];if(attempt&&Array.isArray(attempt.questions)&&attempt.questions.length)reviewAns(attempt);else alert('Бұл ескі нәтиженің сұрақтары сақталмаған. Жаңадан аяқталған тесттердің жауаптары осында көрінеді.')}
 function renderHistoryPage(){
   if(!user)return;const hist=LS.get('ubt_hist_'+user.id,[]);
-  document.getElementById('hist-list').innerHTML=hist.length?hist.slice(0,ubtHistoryShown).map(h=>`<div class="item"><div class="info"><h4>${esc(h.topic||'Тест')}</h4><p>${esc(h.date||'')}</p></div><div style="font-weight:700;color:var(--p)">${esc(h.score)}/${esc(h.max)}</div></div>`).join('')+(hist.length>ubtHistoryShown?`<button class="btn btn-s" onclick="ubtHistoryShown+=50;renderHistoryPage()">Тағы 50 нәтиже (${hist.length-ubtHistoryShown} қалды)</button>`:''):'<div class="empty"><div class="ic">📭</div><p>Тарих бос</p></div>';
+  document.getElementById('hist-list').innerHTML=hist.length?hist.slice(0,ubtHistoryShown).map((h,i)=>`<div class="item"><div class="info"><h4>${esc(h.topic||'Тест')}</h4><p>${esc(h.date||'')}</p></div><div style="font-weight:700;color:var(--p)">${esc(h.score)}/${esc(h.max)}</div><button type="button" class="btn btn-s btn-sm" onclick="openHistoryAttempt(${i})">Жауаптарды көру</button></div>`).join('')+(hist.length>ubtHistoryShown?`<button class="btn btn-s" onclick="ubtHistoryShown+=50;renderHistoryPage()">Тағы 50 нәтиже (${hist.length-ubtHistoryShown} қалды)</button>`:''):'<div class="empty"><div class="ic">📭</div><p>Тарих бос</p></div>';
 }
 
+let mistakeAttempts=[];
+function hasWrongAnswers(attempt){return Array.isArray(attempt.questions)&&attempt.questions.some(q=>q&&Array.isArray(q.options)&&(attempt.answers||{})[q.id]!==q.correct)}
 function showMistakes(){
-  const m=LS.get('ubt_mistakes_'+user.id,[]);const btn=document.getElementById('mist-start');
-  if(!m.length){document.getElementById('mist-list').innerHTML='<div class="empty"><div class="ic">🎉</div><p>Қате жоқ!</p></div>';btn.style.display='none'}
-  else{document.getElementById('mist-list').innerHTML=m.map(q=>`<div class="item"><div class="info"><h4>${esc(q.text.substring(0,70)+(q.text.length>70?'...':''))}</h4><p>${esc(q.subjectName||'')}</p></div></div>`).join('');btn.style.display='inline-flex'}
-  showScr('s-mist');
+ if(!user)return;
+ const history=LS.get('ubt_hist_'+user.id,[]);
+ mistakeAttempts=history.filter(hasWrongAnswers);
+ if(!mistakeAttempts.length){try{const latest=JSON.parse(sessionStorage.getItem('ubt_last_review_'+user.id)||'null');if(latest&&hasWrongAnswers(latest))mistakeAttempts.push(latest)}catch(e){}}
+ const list=document.getElementById('mist-list'),btn=document.getElementById('mist-start');btn.style.display='none';
+ const title=document.querySelector('#s-mist .hdr h2');if(title)title.textContent='Қатемен жұмыс';
+ const hint=document.querySelector('#s-mist .hdr .sub');if(hint)hint.textContent='Тапсырған тестті ашып, сұрақтар мен барлық жауапты қараңыз.';
+ if(!mistakeAttempts.length){const legacy=LS.get('ubt_mistakes_'+user.id,[]).filter(q=>q&&Array.isArray(q.options));if(legacy.length)mistakeAttempts.push({topic:'Бұрын сақталған қателер',questions:legacy,answers:Object.fromEntries(legacy.filter(q=>q.userAnswer!==undefined).map(q=>[q.id,q.userAnswer]))})}
+ list.innerHTML=mistakeAttempts.length?mistakeAttempts.map((h,i)=>{const qs=h.questions.filter(q=>q&&Array.isArray(q.options)),wrong=qs.filter(q=>(h.answers||{})[q.id]!==q.correct).length;return `<div class="item"><div class="info"><h4>${esc(h.topic||'Тапсырылған тест')}</h4><p>${esc(h.date||'')} · ${qs.length} сұрақ · Қате / жауапсыз: ${wrong}${h.score!==undefined?' · Балл: '+esc(h.score)+'/'+esc(h.max):''}</p></div><button type="button" class="btn btn-p" onclick="openMistakeAttempt(${i})">Тест пен жауаптарды көру</button></div>`}).join(''):'<div class="empty"><div class="ic">🎉</div><p>Қатесі бар тапсырылған тест жоқ.</p></div>';
+ showScr('s-mist');
 }
-function clearMist(){if(confirm('Тазалау?')){LS.set('ubt_mistakes_'+user.id,[]);showMistakes()}}
-function startMistakes(){const m=LS.get('ubt_mistakes_'+user.id,[]);if(!m.length)return;st=baseState();st.questions=m.map(q=>({...q}));st.subjectName='Қателер';st.isMistakes=true;st.timerSeconds=Math.max(m.length*90,600);beginTest()}
-function startMistakesFromLast(){if(!st.lastWrong||!st.lastWrong.length){alert('Қате жоқ!');return}st.questions=st.lastWrong.map(q=>({...q}));st.currentIndex=0;st.answers={};st.flags={};st.subjectName='Қателер';st.isMistakes=true;st.timerSeconds=Math.max(st.questions.length*90,600);beginTest()}
+function openMistakeAttempt(index){const attempt=mistakeAttempts[index];if(attempt)reviewAns(attempt)}
+function clearMist(){if(confirm('Бұрын жеке сақталған қате сұрақтарды тазалау керек пе? Тапсырылған тесттер мен нәтижелер сақталады.')){LS.set('ubt_mistakes_'+user.id,[]);showMistakes()}}
+function startMistakes(){showMistakes()}
+function startMistakesFromLast(){showMistakes()}
 const MAX_Q=500;
 const SAMPLE_TXT=`Тақырып: Қазақ хандығы
 Пән: Қазақстан тарихы
@@ -8756,7 +8772,7 @@ function renderPersonalResults(containerId='prof-result-list'){
   el.innerHTML=`<div class="row" style="justify-content:flex-start;margin-bottom:12px;align-items:center">
     <label style="display:flex;align-items:center;gap:7px"><input type="checkbox" onchange="toggleAllPersonalResults(${jsq(containerId)},this.checked)"> Барлығын таңдау</label>
     <button class="btn btn-d btn-sm" id="${containerId}-delete" onclick="deleteSelectedPersonalResults(${jsq(containerId)})" disabled>Таңдалғандарды өшіру (0)</button>
-    </div>`+hist.map((h,i)=>`<div class="item"><label style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;cursor:pointer"><input type="checkbox" data-result-index="${i}" ${checked.has(i)?'checked':''} onchange="updatePersonalSelection(${jsq(containerId)})" style="width:20px;height:20px;flex-shrink:0"><div class="info"><h4>${esc(h.topic||'Тест')}</h4><p>${esc(h.date||'')} · ${esc(h.score)}/${esc(h.max)} (${h.max?Math.round(h.score/h.max*100):0}%)</p></div></label><button class="btn btn-d btn-sm" onclick="deletePersonalResult(${i})">Өшіру</button></div>`).join('');
+    </div>`+hist.map((h,i)=>`<div class="item"><label style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;cursor:pointer"><input type="checkbox" data-result-index="${i}" ${checked.has(i)?'checked':''} onchange="updatePersonalSelection(${jsq(containerId)})" style="width:20px;height:20px;flex-shrink:0"><div class="info"><h4>${esc(h.topic||'Тест')}</h4><p>${esc(h.date||'')} · ${esc(h.score)}/${esc(h.max)} (${h.max?Math.round(h.score/h.max*100):0}%)</p></div></label><button type="button" class="btn btn-s btn-sm" onclick="openHistoryAttempt(${i})">Жауаптар</button><button class="btn btn-d btn-sm" onclick="deletePersonalResult(${i})">Өшіру</button></div>`).join('');
   updatePersonalSelection(containerId);
 }
 function updatePersonalSelection(containerId){
@@ -10858,7 +10874,7 @@ function ubtQuickItems(){
   const known=action.startsWith('showUbt140(')?'exam':action.startsWith('startQuickSubject(')?'subjects':action.includes("showSchoolPeople('students')")?'students':action.includes("showSchoolPeople('teachers')")?'teachers':action.startsWith('showSchoolClasses(')?'classes':/^(showMyProfile|schoolOwnProfile)\(/.test(action)?'profile':action||'file-import';
   if(seen.has(known))return;seen.add(known);
   const label=(node.querySelector('h3')?.textContent||node.textContent||'Бөлім').replace(/\s+/g,' ').trim();
-  items.push({id:known,label,run:()=>file?file.click():node.click()});
+  items.push({id:known,label,run:()=>{closeAppMenu(false);if(file)file.click();else if(typeof node.onclick==='function')node.onclick.call(node,new Event('click'));else node.click()}});
  });
  return items;
 }
@@ -11245,7 +11261,7 @@ async function schoolDeleteClass(cid,button){
  function decorate(){
   if(!user)return;
   const old=document.querySelector('#ubd-home .ubd-profile-card');
-  if(old&&!old.dataset.enhanced){const card=document.createElement('div');card.className='ubd-profile-card';card.dataset.enhanced='1';const main=document.createElement('div');main.className='profile-main';const avatar=document.createElement('span');avatar.className='ubd-profile-orbit';setAv(avatar,user.id,user.name);const info=document.createElement('div');const label=document.createElement('small');label.textContent='ЖЕКЕ ПРОФИЛЬ';const name=document.createElement('strong');name.className='profile-card-name';name.textContent=user.name;const actions=document.createElement('div');actions.className='ubd-profile-actions';const profile=document.createElement('button');profile.type='button';profile.textContent='Профиль ↗';profile.onclick=()=>showMyProfile();const logout=document.createElement('button');logout.type='button';logout.textContent='Шығу';logout.onclick=()=>doLogout();actions.append(profile,logout);info.append(label,name,actions);main.append(avatar,info);card.append(main,scene());old.replaceWith(card)}
+  if(old&&!old.dataset.enhanced){const card=document.createElement('div');card.className='ubd-profile-card';card.dataset.enhanced='1';card.setAttribute('role','link');card.tabIndex=0;card.setAttribute('aria-label','Жеке профильге кіру');card.addEventListener('click',event=>{if(!event.target.closest('button,a,input'))showMyProfile()});card.addEventListener('keydown',event=>{if(event.target===card&&(event.key==='Enter'||event.key===' ')){event.preventDefault();showMyProfile()}});const main=document.createElement('div');main.className='profile-main';const avatar=document.createElement('span');avatar.className='ubd-profile-orbit';setAv(avatar,user.id,user.name);const info=document.createElement('div');const label=document.createElement('small');label.textContent='ЖЕКЕ ПРОФИЛЬ';const name=document.createElement('strong');name.className='profile-card-name';name.textContent=user.name;const actions=document.createElement('div');actions.className='ubd-profile-actions';const profile=document.createElement('button');profile.type='button';profile.textContent='Профиль ↗';profile.onclick=()=>showMyProfile();const logout=document.createElement('button');logout.type='button';logout.textContent='Шығу';logout.onclick=()=>doLogout();actions.append(profile,logout);info.append(label,name,actions);main.append(avatar,info);card.append(main,scene());old.replaceWith(card)}
   const host=document.getElementById('s-profile');if(host&&!host.querySelector(':scope > .profile-scene')){const el=scene();host.prepend(el)}
   refreshScenes();pauseInvisible();
  }
@@ -11407,7 +11423,7 @@ async function schoolDeleteClass(cid,button){
 
 (function(){
  const screen=document.createElement('div');screen.id='s-admin-messenger';screen.className='screen';screen.innerHTML='<div class="wrap wide"><div class="topback"><button type="button" class="btn btn-s" onclick="goHome()">← Артқа</button></div><div class="hdr wa-screen-title"><h2 id="wa-page-title">Админ WhatsApp</h2><p class="sub">Сайт ішіндегі хабарламалар мен жіберілген тесттер</p></div><div class="wa-shell" id="wa-shell"><aside class="wa-sidebar"><div class="wa-brand">Админ WhatsApp</div><input type="search" id="wa-search" class="wa-search" placeholder="Адамның атын іздеу" aria-label="Контактіні іздеу"><div class="wa-contacts" id="wa-contacts"></div><button type="button" class="wa-more" id="wa-contact-more" hidden>Тағы адамдар</button></aside><section class="wa-chat"><header class="wa-head"><button type="button" class="wa-back" id="wa-mobile-back" aria-label="Контактілерге оралу">←</button><div class="wa-avatar" id="wa-chat-avatar">А</div><div><h3 id="wa-chat-name">Админнен келген хабарламалар</h3><small>Хабарламалар және тесттер</small></div></header><div class="wa-messages" id="wa-messages" role="log" aria-label="Чат хабарламалары"></div><p class="wa-status" id="wa-status" role="status"></p><div class="wa-compose"><button type="button" class="wa-attach" id="wa-send-test">+ Тест</button><textarea id="wa-text" rows="1" maxlength="2000" placeholder="Хабарлама жазыңыз…" aria-label="Хабарлама мәтіні"></textarea><button type="button" id="wa-send">Жіберу ➤</button></div></section></div></div>';document.body.appendChild(screen);
- const background=document.createElement('div');background.id='tas-background';background.setAttribute('aria-hidden','true');background.innerHTML='<svg viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice"><defs><pattern id="tas-dot-pattern" x="0" y="0" width="9" height="9" patternUnits="userSpaceOnUse"><circle cx="3" cy="3" r="1.8" fill="#1671eb"/></pattern></defs><g fill="url(#tas-dot-pattern)" font-family="Arial,sans-serif" font-size="240" font-weight="900" text-anchor="middle" letter-spacing="24"><text x="600" y="230">T.A.S</text><text x="600" y="560">T.A.S</text><text x="600" y="890">T.A.S</text></g></svg>';document.body.appendChild(background);
+
  let selected='',owner='',contactOffset=0,threadOffset=0,contactJob=0,threadJob=0,searchTimer=0,refreshTimer=0,sending=false;
  const active=()=>document.querySelector('.screen.active')?.id==='s-admin-messenger';
  const allowed=()=>!!user&&!user.isCodeGuest;
@@ -11616,6 +11632,16 @@ function mountContentPanel(){
 }
 const admin=showAdmin;showAdmin=function(){const r=admin.apply(this,arguments);mountContentPanel();return r};
 const show=showScr;showScr=function(id){const r=show.apply(this,arguments);if(!isOwner())document.getElementById('owner-json-panel')?.remove();return r};
+})();
+
+(function(){
+ const nav=document.createElement('nav');nav.id='mobile-direct-nav';nav.setAttribute('aria-label','Жылдам навигация');
+ nav.innerHTML='<button type="button" class="btn btn-s" onclick="goHome()">Басты бет</button><button type="button" class="btn btn-p" onclick="showMyProfile()">Профиль</button><button type="button" class="btn btn-s" onclick="openAppMenu()">☰ Бөлімдер</button>';
+ document.getElementById('s-login').before(nav);
+ function sync(){const id=document.querySelector('.screen.active')?.id;const visible=!!user&&!user.isCodeGuest&&id!=='s-login'&&id!=='s-test';document.body.classList.toggle('mobile-nav-ready',visible);nav.hidden=!visible}
+ const show=showScr;showScr=function(){const result=show.apply(this,arguments);sync();return result};
+ const profile=showMyProfile;showMyProfile=function(){if(!user)return;try{return profile.apply(this,arguments)}catch(error){console.warn('Profile rendering',error);showScr('s-profile')}};
+ sync();
 })();
 </script>
 <script>
