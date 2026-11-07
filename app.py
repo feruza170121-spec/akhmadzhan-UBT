@@ -382,7 +382,7 @@ def _pub_user(p):
     return {k: v for k, v in p.items() if k not in ("ph", "password")}
 
 def _new_session(state, uid, name, admin):
-    admin = uid == "admin" or uid == _secondary_uid(state)
+    admin = uid == "admin" or uid in _admin_uids(state)
     now = time.time()
     if len(state["sessions"]) > 5000:
         for t in [t for t, s in state["sessions"].items() if s["exp"] < now]:
@@ -409,7 +409,7 @@ def _session(state, tok):
             state["sessions"].pop(tok,None)
             return None
         return s
-    s["admin"] = s["uid"] == "admin" or s["uid"] == _secondary_uid(state)
+    s["admin"] = s["uid"] == "admin" or s["uid"] in _admin_uids(state)
     if s["uid"] != "admin":
         raw = state["db"].get("ubt_profiles", "{}")
         cached = state.get("session_profile_index")
@@ -1119,6 +1119,13 @@ def _school_request(state, sess, typ, d):
 def _secondary_uid(state):
     return _jload(state["db"].get("ubt_server_access_secondary", '""'), str, "")
 
+def _admin_uids(state):
+    raw = _jload(state["db"].get("ubt_server_access_admins", "null"), list, None)
+    if raw is not None:
+        return {uid for uid in raw if isinstance(uid,str) and uid and uid != "admin"}
+    legacy = _secondary_uid(state)
+    return {legacy} if legacy else set()
+
 def _owner_check(state, password):
     stored = _jload(state["db"].get("ubt_server_access_owner_password", "null"), dict, None)
     if stored:
@@ -1130,7 +1137,7 @@ def _owner_check(state, password):
 
 def _client_user(state, profile):
     user = _pub_user(profile)
-    user["isAdmin"] = profile.get("id") == _secondary_uid(state)
+    user["isAdmin"] = profile.get("id") in _admin_uids(state)
     user["isOwner"] = False
     return user
 
@@ -1153,7 +1160,7 @@ def _access_request(state, sess, typ, d, sid, token):
         with state["lock"]:
             if _locked(state, fail_key):
                 return {"ok": False, "msg": _MSG_LOCK}
-            entry = _access_live(state, code_id) if re.fullmatch(r"[A-F0-9]{16}", code_id) else None
+            entry = _access_live(state, code_id) if re.fullmatch(r"[A-Z0-9]{6,32}", code_id) else None
             if not entry:
                 _fail(state, fail_key)
                 return {"ok": False, "msg": "Код қате, өшірілген немесе мерзімі өткен"}
@@ -1195,50 +1202,36 @@ def _access_request(state, sess, typ, d, sid, token):
                     "topic": entry["title"], "timer": remaining, "allowInstantFeedback": False}
     if not sess or not sess["admin"]:
         return {"ok": False, "msg": "Тек админге қолжетімді"}
-    if typ in ("admin_set_secondary", "admin_create_secondary", "admin_owner_password") and not owner:
-        return {"ok": False, "msg": "Бұл әрекетті тек басты админ орындайды"}
-    if typ == "admin_owner_password":
-        password, current = str(d.get("password") or ""), str(d.get("current") or "")
-        if not _MIN_PASS <= len(password) <= 200:
-            return {"ok": False, "msg": "Жаңа пароль 10–200 таңба болсын"}
-        with state["lock"]:
-            key = "owner-password:"+sid
-            if _locked(state,key):
-                return {"ok": False,"msg":_MSG_LOCK}
-            if not _owner_check(state,current):
-                _fail(state,key)
-                return {"ok":False,"msg":"Қазіргі пароль қате"}
-            _put(state,"ubt_server_access_owner_password",_jdump(_hash_pw(password)))
-            for tok in list(state["sessions"]):
-                if state["sessions"][tok].get("uid") == "admin" and tok != token:
-                    state["sessions"].pop(tok,None)
-            _commit(state)
-        return {"ok":True}
-    if typ in ("admin_set_secondary", "admin_create_secondary"):
+    if typ in ("admin_assign_admin", "admin_create_admin") and not owner:
+        return {"ok":False,"msg":"Админдерді тек басты админ басқарады"}
+    if typ in ("admin_assign_admin", "admin_create_admin"):
         with state["lock"]:
             uid = str(d.get("uid") or "")
-            if typ == "admin_create_secondary":
+            if typ == "admin_create_admin":
                 created = _school_request(state,sess,"school_create_person",{"name":d.get("name"),"pass":d.get("password"),"role":"student"})
                 if not created.get("ok"):
                     return created
-                uid = created["uid"]
-            if uid and not any(isinstance(p,dict) and p.get("id")==uid and p.get("accessApproved") is True for p in _profiles(state).values()):
+                uid=created["uid"]
+            if uid == "admin" or not any(isinstance(p,dict) and p.get("id")==uid and p.get("accessApproved") is True for p in _profiles(state).values()):
                 return {"ok":False,"msg":"Расталған қолданушыны таңдаңыз"}
-            old = _secondary_uid(state)
-            _put(state,"ubt_server_access_secondary",_jdump(uid))
-            if old:
-                _revoke_uid(state,old)
-            if uid:
-                _revoke_uid(state,uid)
+            admins=_admin_uids(state)
+            if typ == "admin_assign_admin" and d.get("remove") is True:
+                admins.discard(uid)
+            else:
+                admins.add(uid)
+            _put(state,"ubt_server_access_admins",_jdump(sorted(admins)))
+            _put(state,"ubt_server_access_secondary",_jdump(""))
+            _revoke_uid(state,uid)
             _commit(state)
             return {"ok":True}
     if typ == "admin_code_list":
         with state["lock"]:
-            codes = _access_codes(state)
-            people = _profiles(state)
-            uid = _secondary_uid(state)
-            secondary = next((p.get("name", "") for p in people.values() if isinstance(p,dict) and p.get("id")==uid), "")
-            return {"ok":True,"secondaryUid":uid,"secondaryName":secondary,"codes":[dict(v,code=k) for k,v in codes.items()]}
+            people=_profiles(state)
+            assigned=_admin_uids(state)
+            owner_name=_jload(state["db"].get("ubt_owner_name", '"Басты админ"'),str,"Басты админ")
+            admins=[{"id":"admin","name":owner_name,"isOwner":True}]
+            admins += [{"id":p["id"],"name":p.get("name","Админ"),"isOwner":False} for p in people.values() if isinstance(p,dict) and p.get("id") in assigned]
+            return {"ok":True,"admins":admins,"codes":[dict(v,code=k) for k,v in _access_codes(state).items()]}
     if typ == "admin_code_create":
         days, tid = d.get("days"), str(d.get("testId") or "")
         if type(days) is not int or not 1 <= days <= 14:
@@ -1251,7 +1244,11 @@ def _access_request(state, sess, typ, d, sid, token):
             codes={k:v for k,v in codes.items() if v.get("expires",0)>time.time()}
             if len(codes)>=1000:
                 return {"ok":False,"msg":"Алдымен ескі кодтарды өшіріңіз"}
-            code=secrets.token_hex(8).upper()
+            code=str(d.get("code") or "").strip().upper().replace("-", "")
+            if not re.fullmatch(r"[A-Z0-9]{6,32}",code):
+                return {"ok":False,"msg":"Кодты 6–32 латын әрпімен не санмен жазыңыз"}
+            if code in codes:
+                return {"ok":False,"msg":"Бұл код бар. Басқа код жазыңыз"}
             codes[code]={"testId":tid,"title":str(test.get("topic") or "Тест")[:180],"created":int(time.time()),"expires":int(time.time()+days*86400),"createdBy":sess["uid"],"days":days}
             _put(state,"ubt_server_access_codes",_jdump(codes));_commit(state)
             return {"ok":True,"code":code}
@@ -1291,9 +1288,9 @@ def _handle_req(state, sid, rq):
         return {"ok":False,"msg":"Бұл код тек бір тестке арналған"}
     if sess and sess["uid"] != "admin" and typ in ("change_display_name",) :
         return {"ok":False,"msg":"Тек басты админ өзгерте алады"}
-    if sess and sess["uid"] != "admin" and typ in ("admin_setpass", "admin_deluser") and str(d.get("uid") or "") in ("admin", _secondary_uid(state)):
+    if sess and sess["uid"] != "admin" and typ in ("admin_setpass", "admin_deluser") and str(d.get("uid") or "") in (_admin_uids(state) | {"admin"}):
         return {"ok":False,"msg":"Админ аккаунтын тек басты админ өзгертеді"}
-    if typ in ("code_login", "code_start", "admin_code_list", "admin_code_create", "admin_code_delete", "admin_set_secondary", "admin_create_secondary", "admin_owner_password"):
+    if typ in ("code_login", "code_start", "admin_code_list", "admin_code_create", "admin_code_delete", "admin_assign_admin", "admin_create_admin"):
         return _access_request(state,sess,typ,d,sid,rq.get("tok"))
 
     if typ.startswith("school_"):
@@ -2007,11 +2004,13 @@ def _merge_profiles(state, sess, v):
         if not isinstance(s, dict):
             if admin:
                 candidate = p.get("id")
-                if not isinstance(candidate,str) or not candidate or candidate in ("admin",_secondary_uid(state)) or k.lower() in _ADMIN_NAMES or any(isinstance(existing,dict) and existing.get("id")==candidate for existing in stored.values()):
+                if not isinstance(candidate,str) or not candidate or candidate in (_admin_uids(state) | {"admin"}) or k.lower() in _ADMIN_NAMES or any(isinstance(existing,dict) and existing.get("id")==candidate for existing in stored.values()):
                     continue
                 n = {kk: vv for kk, vv in p.items() if kk not in ("password", "ph")}
                 n["isAdmin"] = False
                 out[k] = n
+            continue
+        if sess["uid"] != "admin" and s.get("id") in (_admin_uids(state) | {"admin"}):
             continue
         if not admin and s.get("id") != sess["uid"]:
             continue
@@ -4460,7 +4459,7 @@ html{text-rendering:optimizeSpeed}
 @media(prefers-reduced-motion:reduce){.profile-welcome-loop{animation:none}}
 </style>
 <style>
-#access-codes-panel .code-table{width:100%;border-collapse:collapse;min-width:650px}#access-codes-panel th,#access-codes-panel td{padding:12px;text-align:left;border-bottom:1px solid var(--b)}#access-codes-panel code{font-size:15px;letter-spacing:.04em;user-select:text}#access-codes-panel .access-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(100px,1fr) auto;gap:10px;align-items:end;margin:18px 0}.code-only #ubt-icon-rail,.code-only .profile-bar.app-header,.code-only #app-menu,.code-only #app-menu-backdrop{display:none!important}body.code-only{padding-left:0!important}.code-only #s-res .btn{display:none!important}.code-only #s-res #code-result-exit{display:inline-flex!important}.secondary-admin #owner-name-card,.secondary-admin #admin-pass-box{display:none!important}#s-code-access>.wrap{max-width:580px;padding-top:60px}#code-login-box .fg{margin-bottom:16px}#code-access-title{overflow-wrap:anywhere}@media(max-width:650px){#access-codes-panel .access-grid{grid-template-columns:1fr}#access-codes-panel .btn{white-space:normal}}
+#access-codes-panel .code-table{width:100%;border-collapse:collapse;min-width:650px}#access-codes-panel th,#access-codes-panel td{padding:12px;text-align:left;border-bottom:1px solid var(--b)}#access-codes-panel code{font-size:15px;letter-spacing:.04em;user-select:text}#access-codes-panel .access-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(130px,1fr) minmax(100px,1fr) auto;gap:10px;align-items:end;margin:18px 0}.code-only #ubt-icon-rail,.code-only .profile-bar.app-header,.code-only #app-menu,.code-only #app-menu-backdrop{display:none!important}body.code-only{padding-left:0!important}.code-only #s-res .btn{display:none!important}.code-only #s-res #code-result-exit{display:inline-flex!important}.secondary-admin #owner-name-card,.secondary-admin #admin-pass-box{display:none!important}#s-code-access>.wrap{max-width:580px;padding-top:60px}#code-login-box .fg{margin-bottom:16px}#code-access-title{overflow-wrap:anywhere}@media(max-width:650px){#access-codes-panel .access-grid{grid-template-columns:1fr}#access-codes-panel .btn{white-space:normal}}
 </style>
 <script type="text/plain" id="app-src">
 
@@ -5144,19 +5143,6 @@ function showAdmin(){
 
   try{renderHist()}catch(e){}
   try{renderAdminSchemes()}catch(e){}
-  let passBox=document.getElementById('admin-pass-box');
-  if(!passBox){
-    const wrap=document.getElementById('admin-users').parentElement;
-    passBox=document.createElement('div');
-    passBox.id='admin-pass-box';
-    passBox.className='card';
-    passBox.style.padding='20px';
-    passBox.style.marginTop='12px';
-    passBox.innerHTML=`<h3 style="margin-bottom:12px">🔑 Админ паролі</h3>
-      <p class="sub">Қауіпсіздік үшін админ паролі Streamlit → App settings → Secrets ішіндегі <b>ADMIN_PASSWORD</b> арқылы өзгертіледі.</p>`;
-    wrap.appendChild(passBox);
-  }
-
   document.getElementById('admin-formulas').innerHTML=formulas.length?formulas.map((f,i)=>`
     <div class="item"><div class="info"><h4>${esc(f.title)}</h4><p>${esc(f.subject)} · ${esc(f.authorName||'')} · ${esc(f.body)}</p></div>
     <div class="acts"><button class="btn btn-d btn-sm" onclick="adminDelFormula(${i})">Өшіру</button></div></div>`).join(''):'<p class="sub">Формула жоқ</p>';
@@ -10436,7 +10422,7 @@ async function schoolDeleteClass(cid,button){
  function roles(){document.body.classList.toggle('code-only',!!user?.isCodeGuest);document.body.classList.toggle('secondary-admin',!!user?.isAdmin&&!main())}
  const loginHost=document.querySelector('#auth-sliding-panel .auth-forms');
  const codeBox=document.createElement('div');codeBox.id='code-login-box';codeBox.className='card';codeBox.style.display='none';codeBox.inert=true;
- codeBox.innerHTML='<h3>Кодпен кіру</h3><p class="sub" style="margin-bottom:18px">Админ берген код тек бір тестті ашады.</p><div class="fg"><label for="test-access-code">Тест коды</label><input id="test-access-code" autocomplete="off" maxlength="25" placeholder="16 таңбалы код"></div><p id="test-access-error" class="sub" role="status"></p><button type="button" class="btn btn-p" style="width:100%;margin:12px 0" id="test-access-enter">Тестке кіру</button><button type="button" class="btn btn-s" style="width:100%" onclick="showLoginBox()">Артқа</button>';
+ codeBox.innerHTML='<h3>Кодпен кіру</h3><p class="sub" style="margin-bottom:18px">Админ берген код тек бір тестті ашады.</p><div class="fg"><label for="test-access-code">Тест коды</label><input id="test-access-code" autocomplete="off" maxlength="40" placeholder="Админ берген код"></div><p id="test-access-error" class="sub" role="status"></p><button type="button" class="btn btn-p" style="width:100%;margin:12px 0" id="test-access-enter">Тестке кіру</button><button type="button" class="btn btn-s" style="width:100%" onclick="showLoginBox()">Артқа</button>';
  loginHost.appendChild(codeBox);
  const codeLoginButton=document.createElement('button');codeLoginButton.type='button';codeLoginButton.className='btn btn-s';codeLoginButton.style.cssText='width:100%;margin-top:10px';codeLoginButton.textContent='Кодпен кіру';
  codeLoginButton.onclick=()=>{loginHost.querySelectorAll(':scope > .card').forEach(el=>{el.style.display='none';el.inert=true});codeBox.style.display='block';codeBox.inert=false;codeBox.setAttribute('aria-hidden','false');document.getElementById('auth-sliding-panel').classList.add('auth-alternate');document.getElementById('auth-side-title').textContent='Тестке қош келдіңіз!';document.getElementById('auth-side-description').textContent='Кодпен тек белгіленген тестке кіресіз.';document.getElementById('test-access-code').focus()};document.getElementById('login-box').appendChild(codeLoginButton);
@@ -10451,10 +10437,10 @@ async function schoolDeleteClass(cid,button){
  const sync=syncRefresh;syncRefresh=function(){roles();if(user?.isCodeGuest)return;return sync.apply(this,arguments)};
  window.accessCopy=async function(code){try{await navigator.clipboard.writeText(code);alert('Код көшірілді')}catch(e){prompt('Кодты көшіріңіз',code)}};
  window.accessDelete=async function(code){if(!confirm('Кодты өшіресіз бе? Осы кодпен кіру тоқтайды.'))return;const r=await authCall('admin_code_delete',{code});if(!r.ok)alert(r.msg);loadAccessPanel()};
- window.accessCreate=async function(button){button.disabled=true;try{const r=await authCall('admin_code_create',{testId:document.getElementById('access-test').value,days:Number(document.getElementById('access-days').value)});if(!r.ok){alert(r.msg);return}await loadAccessPanel();alert('Код жасалды: '+r.code)}finally{button.disabled=false}};
- window.accessAssignSecondary=async function(remove=false){if(!main())return;const uid=remove?'':document.getElementById('secondary-select').value;if(!remove&&!uid){alert('Қолданушыны таңдаңыз');return}const r=await authCall('admin_set_secondary',{uid});if(!r.ok){alert(r.msg);return}await loadAccessPanel();alert(remove?'Екінші админ алынды.':'Екінші админ тағайындалды. Сол адам қайта кірсін.')};
- window.accessNewSecondary=async function(button){if(!main())return;button.disabled=true;try{const r=await authCall('admin_create_secondary',{name:document.getElementById('secondary-new-name').value,password:document.getElementById('secondary-new-password').value});if(!r.ok){alert(r.msg);return}await window.__bridge.refresh();await loadAccessPanel();alert('Екінші админ аккаунты қосылды. Өз логині мен паролі арқылы кіре алады.')}finally{button.disabled=false}};
- window.accessOwnerPassword=async function(button){if(!main())return;const current=document.getElementById('main-current-password'),next=document.getElementById('main-new-password'),repeat=document.getElementById('main-repeat-password');if(next.value!==repeat.value){alert('Жаңа парольдер сәйкес емес');return}button.disabled=true;try{const r=await authCall('admin_owner_password',{current:current.value,password:next.value});if(!r.ok){alert(r.msg);return}current.value=next.value=repeat.value='';alert('Басты админ паролі өзгертілді. Келесі жолы жаңа парольмен кіріңіз.')}finally{button.disabled=false}};
+ window.accessCreate=async function(button){button.disabled=true;try{const r=await authCall('admin_code_create',{testId:document.getElementById('access-test').value,code:document.getElementById('access-code-input').value,days:Number(document.getElementById('access-days').value)});if(!r.ok){alert(r.msg);return}await loadAccessPanel();alert('Код жасалды: '+r.code)}finally{button.disabled=false}};
+ window.accessAssignAdmin=async function(uid='',remove=false){if(!main())return;uid=uid||document.getElementById('admin-person-select').value;if(!uid){alert('Қолданушыны таңдаңыз');return}if(remove&&!confirm('Админ құқығын аласыз ба? Аккаунты сақталады.'))return;const r=await authCall('admin_assign_admin',{uid,remove});if(!r.ok){alert(r.msg);return}await loadAccessPanel();alert(remove?'Админ құқығы алынды.':'Админ қосылды. Өз аккаунтына қайта кірсін.')};
+ window.accessNewAdmin=async function(button){if(!main())return;button.disabled=true;try{const r=await authCall('admin_create_admin',{name:document.getElementById('new-admin-name').value,password:document.getElementById('new-admin-password').value});if(!r.ok){alert(r.msg);return}await window.__bridge.refresh();await loadAccessPanel();alert('Жаңа админ қосылды.')}finally{button.disabled=false}};
+ window.accessAdminPassword=async function(uid){if(!main()||uid==='admin')return;const password=prompt('Осы админге жаңа пароль жазыңыз (кемінде 10 таңба):');if(password===null)return;const r=await authCall('admin_setpass',{uid,pass:password});alert(r.ok?'Админ паролі өзгертілді. Жаңа парольмен қайта кірсін.':r.msg||'Өзгермеді')};
  window.accessAddPerson=function(){schoolState.kind='students';schoolCreatePersonDialog()};
  async function loadAccessPanel(){
   if(!user?.isAdmin)return;const job=++adminJob,uid=user.id;const r=await authCall('admin_code_list',{});if(job!==adminJob||user?.id!==uid||!user?.isAdmin)return;
@@ -10464,10 +10450,14 @@ async function schoolDeleteClass(cid,button){
   const tests=allTests().filter(t=>!t.assignmentId&&Array.isArray(t.questions)&&t.questions.length);
   const people=Object.values(LS.get('ubt_profiles',{})).filter(p=>p&&p.accessApproved===true&&p.id!=='admin');
   const date=n=>new Date(n*1000).toLocaleString('kk-KZ',{timeZone:'Asia/Almaty'});
-  host.innerHTML='<div class="row" style="justify-content:space-between"><h3>Код тесттері</h3><button class="btn btn-s btn-sm" onclick="accessAddPerson()">+ Адам қосу</button></div><p class="sub" style="margin-top:10px">Әр код бір тестке арналған. Мерзімі 1–14 күн. Екі админ де жасап, өшіре алады.</p><div class="access-grid"><label>Тест<select id="access-test">'+tests.map(t=>'<option value="'+esc(t.id)+'">'+esc(t.topic||'Тест')+' · '+t.questions.length+' сұрақ</option>').join('')+'</select></label><label>Мерзімі<select id="access-days">'+Array.from({length:14},(_,i)=>'<option value="'+(i+1)+'" '+(i===6?'selected':'')+'>'+(i+1)+' күн</option>').join('')+'</select></label><button class="btn btn-p" onclick="accessCreate(this)" '+(!tests.length?'disabled':'')+'>Код жасау</button></div>'+(!tests.length?'<p class="sub">Алдымен сұрақтары бар тест құрыңыз не файлдан сақтаңыз.</p>':'')+'<div style="overflow-x:auto"><table class="code-table"><thead><tr><th>Код</th><th>Тест</th><th>Жарамдылық мерзімі</th><th>Әрекет</th></tr></thead><tbody>'+r.codes.slice().reverse().map(c=>'<tr><td><code>'+esc(c.code)+'</code></td><td>'+esc(c.title)+'</td><td>'+esc(date(c.expires))+(c.expires*1000<=Date.now()?' · Мерзімі өтті':' · '+c.days+' күн')+'</td><td><button class="btn btn-s btn-sm" onclick="accessCopy('+jsq(c.code)+')">Көшіру</button> <button class="btn btn-d btn-sm" onclick="accessDelete('+jsq(c.code)+')">Өшіру</button></td></tr>').join('')+'</tbody></table></div>'+(!r.codes.length?'<p class="sub">Кодтар әлі жасалмаған.</p>':'');
+  host.innerHTML='<div class="row" style="justify-content:space-between"><h3>Код тесттері</h3><button class="btn btn-s btn-sm" onclick="accessAddPerson()">+ Адам қосу</button></div><p class="sub" style="margin-top:10px">Тестті таңдаңыз, код жазыңыз, күн санын таңдаңыз. Ең көбі — 14 күн.</p><div class="access-grid"><label>Тест<select id="access-test">'+tests.map(t=>'<option value="'+esc(t.id)+'">'+esc(t.topic||'Тест')+' · '+t.questions.length+' сұрақ</option>').join('')+'</select></label><label>Код<input id="access-code-input" placeholder="Мысалы: BIO2026" minlength="6" maxlength="32" autocomplete="off"></label><label>Мерзімі<select id="access-days">'+Array.from({length:14},(_,i)=>'<option value="'+(i+1)+'" '+(i===6?'selected':'')+'>'+(i+1)+' күн</option>').join('')+'</select></label><button class="btn btn-p" onclick="accessCreate(this)" '+(!tests.length?'disabled':'')+'>Код жасау</button></div>'+(!tests.length?'<p class="sub">Алдымен сұрақтары бар тест құрыңыз не файлдан сақтаңыз.</p>':'')+'<div style="overflow-x:auto"><table class="code-table"><thead><tr><th>Код</th><th>Тест</th><th>Жарамдылық мерзімі</th><th>Әрекет</th></tr></thead><tbody>'+r.codes.slice().reverse().map(c=>'<tr><td><code>'+esc(c.code)+'</code></td><td>'+esc(c.title)+'</td><td>'+esc(date(c.expires))+(c.expires*1000<=Date.now()?' · Мерзімі өтті':' · '+c.days+' күн')+'</td><td><button class="btn btn-s btn-sm" onclick="accessCopy('+jsq(c.code)+')">Көшіру</button> <button class="btn btn-d btn-sm" onclick="accessDelete('+jsq(c.code)+')">Өшіру</button></td></tr>').join('')+'</tbody></table></div>'+(!r.codes.length?'<p class="sub">Кодтар әлі жасалмаған.</p>':'');
+  const section=document.createElement('div');section.style.cssText='margin-top:28px;padding-top:20px;border-top:1px solid var(--b)';
+  section.innerHTML='<h3>Админдер</h3><div style="overflow-x:auto;margin:16px 0"><table class="code-table"><thead><tr><th>Аты</th><th>Мәртебесі</th><th>Әрекет</th></tr></thead><tbody>'+r.admins.map(a=>'<tr><td>'+esc(a.name)+'</td><td>'+(a.isOwner?'Басты админ':'Админ')+'</td><td>'+(main()&&!a.isOwner?'<button class="btn btn-s btn-sm" onclick="accessAdminPassword('+jsq(a.id)+')">Парольді өзгерту</button> <button class="btn btn-d btn-sm" onclick="accessAssignAdmin('+jsq(a.id)+',true)">Админ құқығын алу</button>':'—')+'</td></tr>').join('')+'</tbody></table></div>';
   if(main()){
-   const section=document.createElement('div');section.style.cssText='margin-top:28px;padding-top:20px;border-top:1px solid var(--b)';section.innerHTML='<h3>Екінші админ</h3><p class="sub" style="margin:10px 0">Қазіргі екінші админ: '+esc(r.secondaryName||'тағайындалмаған')+'</p><label>Қолданушыны таңдаңыз<select id="secondary-select"><option value="">Таңдаңыз</option>'+people.map(p=>'<option value="'+esc(p.id)+'" '+(p.id===r.secondaryUid?'selected':'')+'>'+esc(p.name)+'</option>').join('')+'</select></label><div class="row" style="margin:12px 0"><button class="btn btn-p" onclick="accessAssignSecondary()">Админ тағайындау</button><button class="btn btn-s" onclick="accessAssignSecondary(true)">Екінші админді алу</button></div><details><summary>Жаңа аккаунтпен екінші админ қосу</summary><div class="fg"><label>Логин / аты</label><input id="secondary-new-name" maxlength="40" autocomplete="off"></div><div class="fg"><label>Пароль (кемінде 10 таңба)</label><input id="secondary-new-password" type="password" autocomplete="new-password"></div><button class="btn btn-p" onclick="accessNewSecondary(this)">Жаңа екінші админ қосу</button></details><div style="margin-top:25px;padding-top:20px;border-top:1px solid var(--b)"><h3>Басты админ паролін өзгерту</h3><p class="sub" style="margin:10px 0">Бұл бөлім тек басты админге ашық.</p><div class="fg"><label>Қазіргі пароль</label><input id="main-current-password" type="password" autocomplete="current-password"></div><div class="fg"><label>Жаңа пароль</label><input id="main-new-password" type="password" minlength="10" autocomplete="new-password"></div><div class="fg"><label>Жаңа парольді қайталаңыз</label><input id="main-repeat-password" type="password" autocomplete="new-password"></div><button class="btn btn-p" onclick="accessOwnerPassword(this)">Парольді сақтау</button></div>';host.appendChild(section)
+   const ids=new Set(r.admins.map(a=>a.id));
+   section.innerHTML+='<label>Қолданушыны админ ету<select id="admin-person-select"><option value="">Таңдаңыз</option>'+people.filter(p=>!ids.has(p.id)).map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join('')+'</select></label><button class="btn btn-p" style="margin:12px 0" onclick="accessAssignAdmin()">+ Админ қосу</button><details><summary>Жаңа аккаунтпен админ қосу</summary><div class="fg"><label>Логин / аты</label><input id="new-admin-name" maxlength="40" autocomplete="off"></div><div class="fg"><label>Бастапқы пароль (кемінде 10 таңба)</label><input id="new-admin-password" type="password" autocomplete="new-password"></div><button class="btn btn-p" onclick="accessNewAdmin(this)">Жаңа админ қосу</button></details>';
   }
+  host.appendChild(section);
  }
  const oldAdmin=showAdmin;showAdmin=function(){const r=oldAdmin.apply(this,arguments);roles();return r};
  roles();
