@@ -387,6 +387,9 @@ def _new_session(state, uid, name, admin, device=""):
     if len(state["sessions"]) > 5000:
         for t in [t for t, s in state["sessions"].items() if s["exp"] < now]:
             state["sessions"].pop(t, None)
+    if not admin and device:
+        devices=_jload(state["db"].get("ubt_server_access_blocked_devices","{}"),dict,{})
+        if hashlib.sha256(str(device).encode()).hexdigest() in devices:return None
     if _blocked(state,uid):
         return None
     if _SINGLE_DEVICE and not admin:
@@ -1011,10 +1014,16 @@ def _security_request(state,sess,d):
         row["events"].append({"id":eid,"event":event,"time":now})
         row["events"]=row["events"][-100:]
         _put(state,key,_jdump(data));_commit(state)
-        blocked=row["count"]>20
-        reason="Мазмұнды қорғау ережесі: браузер анықтаған скриншот пернесінің 20 әрекетінен асты. Бұл скриншот файлы жасалғанының дәлелі емес."
-        if blocked:_block_account(state,sess["uid"],reason)
-        return {"ok":True,"count":row["count"],"blocked":blocked,"msg":reason if blocked else "Қауіпсіздік үшін мазмұнды көшірмеңіз. Анықталған скриншот пернесі әрекеттері: "+str(row["count"])+" / 20. 20-дан асса аккаунт бұғатталады."}
+        blocked=row["count"]>=20
+        reason="Тест мазмұнын рұқсатсыз көшіруге талпыныс: браузер скриншот пернесінің 20 әрекетін анықтады. Қауіпсіздік ережесіне сай аккаунт бұғатталды. Бұл скриншот файлы жасалғанының дәлелі емес."
+        if blocked:
+            device=str(sess.get("device") or "")[:160]
+            if device:
+                devices=_jload(state["db"].get("ubt_server_access_blocked_devices","{}"),dict,{})
+                devices[hashlib.sha256(device.encode()).hexdigest()]={"uid":sess["uid"],"reason":reason,"created":int(time.time())}
+                _put(state,"ubt_server_access_blocked_devices",_jdump(devices))
+            _block_account(state,sess["uid"],reason)
+        return {"ok":True,"count":row["count"],"blocked":blocked,"msg":reason if blocked else str(row["count"])+" рет скриншот пернесі әрекеті анықталды. Ескерту: 20 рет болса аккаунт бұғатталады. Тестті рұқсатсыз көшіру және тарату сайт ережесі бойынша тест ұрлауға талпыныс болып есептеледі. Бұл — мазмұнды қорғау шарасы."}
 
 def _support_request(state,sess,typ,d):
     """Guest support is a separate, unverified identity; token never grants account access."""
@@ -1550,7 +1559,10 @@ def _owner_security(state,sess,typ,d):
                 blocks=_jload(state["db"].get("ubt_server_access_blocks","{}"),dict,{})
                 blocks.pop(uid,None);_put(state,"ubt_server_access_blocks",_jdump(blocks))
                 security=_jload(state["db"].get("ubt_server_access_content_security","{}"),dict,{})
-                security.pop(uid,None);_put(state,"ubt_server_access_content_security",_jdump(security));_commit(state)
+                security.pop(uid,None);_put(state,"ubt_server_access_content_security",_jdump(security))
+                devices=_jload(state["db"].get("ubt_server_access_blocked_devices","{}"),dict,{})
+                devices={key:row for key,row in devices.items() if row.get("uid")!=uid}
+                _put(state,"ubt_server_access_blocked_devices",_jdump(devices));_commit(state)
             else:
                 _block_account(state,uid,d.get("reason") or "Басты админ бұғаттады")
             return {"ok":True}
@@ -2219,10 +2231,16 @@ def _handle_req(state, sid, rq):
                 return {"ok":False,"msg":"Сайт уақытша жабық. Тек басты админ кіре алады"}
             tok = _new_session(state, prof.get("id"), prof.get("name") or name, False,str(d.get("device") or "")[:160])
             if not tok:
-                return {"ok":False,"msg":"Аккаунт бұғатталған. Себебі: "+str((_blocked(state,prof.get("id")) or {}).get("reason") or "Қауіпсіздік ережесі")+". Басты админге хабарласыңыз"}
+                return {"ok":False,"msg":"Аккаунт бұғатталған. Себебі: "+str((_blocked(state,prof.get("id")) or {}).get("reason") or _jload(state["db"].get("ubt_server_access_blocked_devices","{}"),dict,{}).get(hashlib.sha256(str(d.get("device") or "").encode()).hexdigest(),{}).get("reason") or "Қауіпсіздік ережесі")+". Басты админге хабарласыңыз"}
         return {"ok": True, "token": tok, "user": _client_user(state,prof)}
 
     if typ == "register":
+        device=str(d.get("device") or "")[:160]
+        if not device:
+            return {"ok":False,"msg":"Браузер белгісі жоқ. Бетті жаңартып қайта көріңіз"}
+        devices=_jload(state["db"].get("ubt_server_access_blocked_devices","{}"),dict,{})
+        if hashlib.sha256(device.encode()).hexdigest() in devices:
+            return {"ok":False,"msg":"Осы браузерден тіркелу бұғатталған. Себебі: "+str(devices[hashlib.sha256(device.encode()).hexdigest()].get("reason") or "Қауіпсіздік ережесі")+". Басты админге хабарласыңыз"}
         name = _clean_name(d.get("name"))
         pw = str(d.get("pass") or "")[:200]
         if not name:
@@ -3225,6 +3243,8 @@ def _snapshot(tok="", claim=""):
     saved_ids = _jload(state["db"].get("ubt_server_access_saved_public","{}"),dict,{}).get(sess["uid"],[])
     db["ubt_saved_public_tests"] = _jdump([{"id":t["id"],"title":t.get("topic") or "Тест","subject":t.get("subjectName") or t.get("subject") or "","count":len(t.get("questions",[]))}
         for t in _jload(db.get("ubt_tests","[]"),list,[]) if isinstance(t,dict) and t.get("id") in saved_ids and _approved_test(t)])
+    security=_jload(state["db"].get("ubt_server_access_content_security","{}"),dict,{})
+    db["ubt_content_security_status"]=_jdump({"count":int(security.get(sess["uid"],{}).get("count",0)),"uid":sess["uid"]})
     db["ubt_daily_motivation"] = _jdump(_daily_motivation())
     db["ubt_chat"] = chat
     deliveries = _jload(db.get("ubt_teacher_deliveries", "[]"), list, [])
@@ -3920,7 +3940,11 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
 .daily-motivation{display:flex;align-items:center;gap:26px;position:relative;overflow:hidden;margin:0 0 22px;padding:26px 30px;border:1px solid #b999554d;border-radius:22px;background:linear-gradient(120deg,#151c34,#17233b 70%,#2c2935);color:#f4f3ee;box-shadow:0 12px 32px #00000018;animation:quote-arrive .55s ease both}
 .daily-motivation[hidden]{display:none}.daily-motivation .daily-portrait{flex:0 0 104px;width:104px;height:124px;border-radius:15px;overflow:hidden;background:#30344a;position:relative;border:1px solid #d9bc7360;display:grid;place-items:center;color:#e4cb92;font-size:28px;font-weight:800}.daily-portrait img{width:100%;height:100%;object-fit:cover;object-position:center 22%;position:absolute;inset:0}.daily-copy{min-width:0;flex:1}.daily-kicker{font-size:10px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:#e4cb92}.daily-motivation blockquote{font-size:clamp(17px,2vw,23px);line-height:1.5;font-weight:650;margin:10px 0 14px;padding:0;border:0;color:#faf6eb}.daily-author{font-size:13px;font-weight:800}.daily-role{font-size:11px;color:#b2bace;margin-top:3px}.daily-meta{display:flex;flex-wrap:wrap;gap:8px 15px;font-size:10px;color:#a9b1c6;margin-top:12px}.daily-meta a{color:#d9c18a;text-decoration:none}.daily-meta a:hover{text-decoration:underline}@keyframes quote-arrive{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}@media(max-width:550px){.daily-motivation{padding:19px 16px;gap:14px;align-items:flex-start;border-radius:18px}.daily-motivation .daily-portrait{flex-basis:68px;width:68px;height:90px}.daily-motivation blockquote{font-size:16px;line-height:1.45}.daily-kicker{letter-spacing:1px;font-size:9px}}@media(prefers-reduced-motion:reduce){.daily-motivation{animation:none}}
 </style>
-<style>@media print{body:not(.is-admin) .screen,body:not(.is-admin) .app-header,body:not(.is-admin) #wm{display:none!important}body:not(.is-admin)::before{content:"Қорғалған мазмұнды басып шығаруға рұқсат жоқ";display:block!important}}</style></head>
+<style>@media print{body:not(.is-admin) .screen,body:not(.is-admin) .app-header,body:not(.is-admin) #wm{display:none!important}body:not(.is-admin)::before{content:"Қорғалған мазмұнды басып шығаруға рұқсат жоқ";display:block!important}}</style><style>
+body:not(.is-admin) .screen,body:not(.is-admin) .screen *,body:not(.is-admin) dialog,body:not(.is-admin) dialog *{-webkit-user-select:none!important;user-select:none!important;-webkit-touch-callout:none!important;-webkit-user-drag:none!important}
+body:not(.is-admin) input,body:not(.is-admin) textarea,body:not(.is-admin) [contenteditable="true"],body:not(.is-admin) [contenteditable="true"] *{-webkit-user-select:text!important;user-select:text!important;-webkit-touch-callout:default!important}
+#capture-cover{position:fixed;inset:0;z-index:2147483646;display:grid;place-items:center;background:#101829;color:#fff;padding:24px;text-align:center}#capture-cover .capture-card{max-width:600px;padding:30px;border:1px solid #c89b64;border-radius:22px;background:#1a2339}#capture-cover h2{margin-bottom:14px}#capture-cover p{line-height:1.8;font-size:15px}#capture-cover button{margin-top:18px}
+</style></head>
 <body>
 
 <button id="theme-btn" class="btn btn-s" onclick="toggleTheme()" title="Қараңғы / жарық режим">🌙</button>
@@ -3935,7 +3959,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
   <div class="wrap">
     <div class="hdr ubt-welcome"><div class="ubt-brand-label">БІЛІМГЕ БІР ҚАДАМ ЖАҚЫН</div><h1 class="ubt-brand-title">ҰБТ <span>PLUS</span></h1><div class="ubt-brand-line" aria-hidden="true"></div><p class="sub">Оқушы, мұғалім және админ ретінде кіру</p></div>
     <div class="card" id="login-box">
-      <p class="sub" style="margin-bottom:14px">🔒 Қорғаныс үшін тестті көшіруге және таратуға болмайды. Браузер анықтаған скриншот пернесі әрекеттері 20-дан асса, аккаунт бұғатталады. Телефонның жүйелік скриншоттарын сайт толық анықтай алмайды.</p><div class="fg"><label>Логин</label><input id="login-name" placeholder="Логин" autocomplete="username" oninput="checkAdminName()"></div>
+      <div class="fg"><label>Логин</label><input id="login-name" placeholder="Логин" autocomplete="username" oninput="checkAdminName()"></div>
       <div class="fg"><label>Пароль</label><input id="login-pass" type="password" placeholder="Пароль"></div>
       <div class="fg" id="admin-pass-wrap" style="display:none"><label class="sub">Админ ретінде кіру</label></div>
       <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doLogin()">Кіру</button>
@@ -11210,7 +11234,7 @@ async function schoolDeleteClass(cid,button){
 
 (function(){
  let device='';try{device=localStorage.getItem('login_device_key')||'';if(!device){device=(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2));localStorage.setItem('login_device_key',device)}}catch(e){device=Math.random().toString(36).slice(2)}
- const originalAuth=authCall;authCall=function(type,data){if(type==='login')data={...(data||{}),device};return originalAuth.call(this,type,data)};
+ const originalAuth=authCall;authCall=function(type,data){if(type==='login'||type==='register')data={...(data||{}),device};return originalAuth.call(this,type,data)};
  const owner=()=>!!user&&user.id==='admin'&&user.isAdmin;
  const previousMaintenance=syncMaintenance;
  syncMaintenance=function(){const overlay=document.getElementById('maintenance-overlay'),closed=!!siteControls().maintenance;const login=document.querySelector('.screen.active')?.id==='s-login';if(overlay){overlay.innerHTML='<div class="card" style="max-width:440px;padding:30px"><h2>Сайт уақытша жабық</h2><p class="sub" style="margin:16px 0">Қазір тек басты админ кіре алады. Кейінірек қайта көріңіз.</p><button class="btn btn-p" type="button" onclick="doLogout()">Басты админ ретінде кіру</button></div>';overlay.style.display=closed&&!owner()&&!login?'flex':'none'}let note=document.getElementById('closed-login-note');if(!note){note=document.createElement('div');note.id='closed-login-note';note.textContent='Сайт уақытша жабық. Қазір тек басты админ кіре алады.';document.querySelector('#s-login>.wrap').prepend(note)}note.hidden=!closed;const toggle=document.getElementById('registered-maintenance');if(toggle){toggle.disabled=!owner();toggle.closest('label').hidden=!owner()}};
@@ -11286,10 +11310,11 @@ async function schoolDeleteClass(cid,button){
 })();
 
 (function(){
- let shotAt=0,warningTimer=null;
+ let shotAt=0,warningTimer=null,captureTimer=null;
  function warning(text){let node=document.getElementById('content-security-warning');if(!node){node=document.createElement('div');node.id='content-security-warning';node.setAttribute('role','alert');Object.assign(node.style,{position:'fixed',bottom:'22px',left:'50%',transform:'translateX(-50%)',width:'min(92vw,620px)',padding:'17px 21px',border:'1px solid #d5ae60',borderRadius:'16px',background:'#202237',color:'#f7e4b4',fontSize:'13px',lineHeight:'1.7',zIndex:'100003',boxShadow:'0 10px 40px #0005'});document.body.append(node)}node.textContent=text;clearTimeout(warningTimer);warningTimer=setTimeout(()=>node.remove(),10000)}
- async function record(event){if(!user||user.isAdmin||user.isCodeGuest)return;const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);const id=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');const r=await authCall('content_security_event',{event,eventId:id});if(!r.ok)return;warning(r.msg||'Қорғаныс үшін мазмұнды көшірмеңіз');if(r.blocked){alert(r.msg);doLogout()}}
- function screenshot(){if(Date.now()-shotAt<2500)return;shotAt=Date.now();record('screenshot_shortcut')}
+ function captureCover(text,blocked=false){clearTimeout(captureTimer);let cover=document.getElementById('capture-cover');if(!cover){cover=document.createElement('div');cover.id='capture-cover';cover.setAttribute('role','alert');document.body.append(cover)}cover.dataset.blocked=blocked?'1':'0';cover.replaceChildren();const card=document.createElement('div');card.className='capture-card';const title=document.createElement('h2');title.textContent=blocked?'Аккаунт бұғатталған':'Мазмұн қорғалған';const note=document.createElement('p');note.textContent=text;card.append(title,note);if(blocked){const button=document.createElement('button');button.className='btn btn-p';button.textContent='Кіру бетіне';button.onclick=()=>cover.remove();card.append(button)}else captureTimer=setTimeout(()=>{if(cover.dataset.blocked!=='1')cover.remove()},4500);cover.append(card)}
+ async function record(event){if(!user||user.isAdmin||user.isCodeGuest)return;const actor=user.id;const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);const id=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');const r=await authCall('content_security_event',{event,eventId:id});if(!r.ok||(user&&user.id!==actor))return;if(Number.isInteger(r.count)){try{localStorage.setItem('ubt_content_security_status',JSON.stringify({uid:actor,count:r.count}))}catch(e){}}const text=r.msg||'Қорғаныс үшін мазмұнды көшірмеңіз';warning(text);if(event==='screenshot_shortcut')captureCover(text,!!r.blocked);if(r.blocked){captureCover(text,true);doLogout()}}
+ function screenshot(){if(!user||user.isAdmin||user.isCodeGuest||Date.now()-shotAt<2500)return;shotAt=Date.now();captureCover('Скриншот пернесі әрекеті анықталды. Ескерту: 20 рет болса аккаунт бұғатталады. Тестті рұқсатсыз көшіру және тарату сайт ережесі бойынша тест ұрлауға талпыныс болып есептеледі.');record('screenshot_shortcut')}
  document.addEventListener('keydown',e=>{if(!user||user.isAdmin||e.repeat)return;const k=String(e.key||'').toLowerCase();if(e.key==='PrintScreen'||e.code==='PrintScreen'||(e.metaKey&&e.shiftKey&&(/Mac|iPhone|iPad/.test(navigator.platform)?['3','4','5'].includes(k):k==='s')))screenshot()},true);
  document.addEventListener('keyup',e=>{if(e.key==='PrintScreen'||e.code==='PrintScreen')screenshot()},true);
  document.addEventListener('copy',e=>{if(user&&!user.isAdmin&&!inField(e.target)){e.preventDefault();record('copy')}},true);
@@ -11316,6 +11341,13 @@ async function schoolDeleteClass(cid,button){
  showContactAdmin=showSupportDialog;
  async function supportAdminList(){if(!user?.isAdmin)return;const r=await authCall('support_list',{});if(!r.ok||!user?.isAdmin)return;let host=document.getElementById('support-admin-panel');if(!host){host=document.createElement('section');host.id='support-admin-panel';host.className='card';document.getElementById('s-admin').querySelector('.wrap').append(host)}host.innerHTML='<h3>Қолдау чаты · логинмен келгендер</h3><p class="sub">Бұл чаттағы логин расталмаған. Құпия сөздер мен жеке аккаунт деректерін жібермеңіз.</p><div id="support-admin-list"></div><div id="support-admin-thread"></div>';const refresh=document.createElement('button');refresh.className='btn btn-s btn-sm';refresh.textContent='Жаңарту';refresh.onclick=supportAdminList;host.prepend(refresh);const list=host.querySelector('#support-admin-list');for(const item of r.items){const button=document.createElement('button');button.className='btn btn-s btn-sm';button.style.margin='6px';button.textContent=item.login;button.onclick=()=>adminSupportThread(item.id);list.append(button)}}
  async function adminSupportThread(id){const r=await authCall('support_read',{id});if(!r.ok)return alert(r.msg);const host=document.getElementById('support-admin-thread');if(!host)return;host.replaceChildren();const title=document.createElement('h4');title.textContent=r.thread.login;host.append(title);const messages=document.createElement('div');messages.style.cssText='max-height:300px;overflow:auto;margin:12px 0';for(const m of r.thread.messages){const p=document.createElement('p');p.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;margin:9px 0';p.textContent=(m.role==='admin'?'Админ: ':'Қолданушы: ')+m.text;messages.append(p)}host.append(messages);messages.scrollTop=messages.scrollHeight;const input=document.createElement('textarea');input.maxLength=1000;input.placeholder='Жауап жазыңыз';const button=document.createElement('button');button.className='btn btn-p';button.textContent='Жауап жіберу';button.onclick=async()=>{if(!input.value.trim())return;button.disabled=true;const result=await authCall('support_send',{id,text:input.value});if(!result.ok){button.disabled=false;return alert(result.msg)}adminSupportThread(id)};host.append(input,button)}
+})();
+
+(function(){
+ let clearing=false;
+ document.addEventListener('selectionchange',()=>{if(clearing||user?.isAdmin||inField(document.activeElement))return;const selected=window.getSelection();if(selected&&!selected.isCollapsed){clearing=true;selected.removeAllRanges();clearing=false}},true);
+ ['selectstart','dragstart','contextmenu'].forEach(kind=>document.addEventListener(kind,e=>{if(user?.isAdmin||inField(e.target))return;e.preventDefault();window.getSelection()?.removeAllRanges()},true));
+ document.addEventListener('copy',e=>{if(user?.isAdmin||inField(e.target))return;e.preventDefault();e.clipboardData?.setData('text/plain','');window.getSelection()?.removeAllRanges()},true);
 })();
 </script>
 <script>
