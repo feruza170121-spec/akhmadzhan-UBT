@@ -1456,6 +1456,29 @@ def _publication_request(state,sess,typ,d):
         return {"ok":False,"msg":"Аккаунтыңызға кіріңіз"}
     with state["lock"]:
         tests=_jload(state["db"].get("ubt_tests","[]"),list,[])
+        if typ in ("owner_publication_list","owner_set_publication"):
+            if not sess["admin"] or sess["uid"]!="admin":
+                return {"ok":False,"msg":"Тек басты админге қолжетімді"}
+            available=[t for t in _available_send_tests(state) if not t.get("assignmentId") and not t.get("classId") and not t.get("receivedFromAdmin")]
+            if typ=="owner_publication_list":
+                return {"ok":True,"items":[{"id":t["id"],"title":t.get("topic") or "Тест","subject":t.get("subjectName") or _SUBJECT_NAMES.get(t.get("subject"),"Пәні таңдалмаған"),"count":len(t["questions"]),"limit":_approved_limit(t),"public":_approved_test(t) and t.get("publicListing") is not False,"approved":_approved_test(t) and t.get("approvedListing") is not False} for t in available]}
+            tid=d.get("testId");targets=d.get("targets");limit=d.get("limit")
+            if not isinstance(targets,list) or any(target not in ("public","approved") for target in targets) or len(targets)>2:
+                return {"ok":False,"msg":"Жариялау бөлімін таңдаңыз"}
+            test=next((t for t in available if t.get("id")==tid),None)
+            if not test:return {"ok":False,"msg":"Тест табылмады"}
+            if targets and (type(limit)is not int or not 1<=limit<=100):return {"ok":False,"msg":"Лимит 1–100 рет болсын"}
+            if targets and test.get("subject") not in _SUBJECT_NAMES:return {"ok":False,"msg":"Алдымен тесттің нақты пәнін таңдаңыз"}
+            # Publication removal keeps the original test, results and attempt counters.
+            test=dict(test)
+            test.update(publicListing="public" in targets,approvedListing="approved" in targets,isPublic="public" in targets,adminApproved=bool(targets),status="approved" if targets else "private")
+            if targets:
+                test["limit"]=limit;test.pop("accessCode",None)
+            found=next((i for i,t in enumerate(tests) if isinstance(t,dict) and t.get("id")==tid),None)
+            if found is None:tests.append(test)
+            else:tests[found]=test
+            _put(state,"ubt_tests",_jdump(tests));_commit(state)
+            return {"ok":True,"published":bool(targets)}
         if typ in ("save_public_test", "remove_saved_public_test"):
             tid = str(d.get("testId") or "")
             saved = _jload(state["db"].get("ubt_server_access_saved_public", "{}"), dict, {})
@@ -1483,14 +1506,14 @@ def _publication_request(state,sess,typ,d):
                 return {"ok":False,"msg":"Жариялауға арналған сұрақтары бар жеке тест таңдаңыз"}
             if type(limit) is not int or not 1 <= limit <= 100:
                 return {"ok":False,"msg":"Лимит 1–100 рет болсын"}
-            test.update(status="approved",isPublic=True,adminApproved=True,limit=limit)
+            test.update(status="approved",isPublic=True,adminApproved=True,limit=limit,publicListing=True,approvedListing=True)
             test.pop("accessCode",None)
             _put(state,"ubt_tests",_jdump(tests));_commit(state)
             return {"ok":True}
         if typ == "approved_test_list":
             rows=[]
             for test in tests:
-                if not _approved_test(test) or not test.get("questions"):
+                if not _approved_test(test) or test.get("approvedListing") is False or not test.get("questions"):
                     continue
                 rows.append({"id":test["id"],"title":test.get("topic") or "Тест","subject":test.get("subjectName") or test.get("subject") or "",
                     "count":len(test["questions"]),"limit":_approved_limit(test),"used":_published_used(state,test["id"],sess["uid"]),"timerMin":test.get("timerMin") or 0})
@@ -1833,7 +1856,7 @@ def _handle_req(state, sid, rq):
     if typ=="exam_check_answer":
         return _check_exam_answer(state,sess,d)
 
-    if typ in ("admin_publish_test", "approved_test_list", "notifications_list", "save_public_test", "remove_saved_public_test"):
+    if typ in ("admin_publish_test", "approved_test_list", "notifications_list", "save_public_test", "remove_saved_public_test", "owner_publication_list", "owner_set_publication"):
         return _publication_request(state,sess,typ,d)
 
     if typ in ("messenger_contacts","messenger_thread","messenger_send","messenger_send_test"):
@@ -2648,7 +2671,7 @@ def _merge_tests(state, sess, v):
     existing_by_id = {t.get("id"):t for t in existing_rows if isinstance(t,dict)}
     for index,t in enumerate(inc):
         old = existing_by_id.get(t["id"])
-        if old and sess["uid"]!="admin" and (old.get("authorId")!=sess["uid"] or old.get("assignmentId") or old.get("receivedFromAdmin")):
+        if old and sess["uid"]!="admin" and (old.get("authorId")!=sess["uid"] or old.get("assignmentId") or old.get("receivedFromAdmin") or "publicListing" in old or "approvedListing" in old):
             # Preserve foreign contents; moderation is handled by dedicated server actions.
             inc[index]=dict(old)
             continue
@@ -3967,6 +3990,8 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
 body:not(.primary-owner) .screen,body:not(.primary-owner) .screen *,body:not(.primary-owner) dialog,body:not(.primary-owner) dialog *{-webkit-user-select:none!important;user-select:none!important;-webkit-touch-callout:none!important;-webkit-user-drag:none!important}
 body:not(.primary-owner) input,body:not(.primary-owner) textarea,body:not(.primary-owner) [contenteditable="true"],body:not(.primary-owner) [contenteditable="true"] *{-webkit-user-select:text!important;user-select:text!important;-webkit-touch-callout:default!important}
 #capture-cover{position:fixed;inset:0;z-index:2147483646;display:grid;place-items:center;background:#101829;color:#fff;padding:24px;text-align:center}#capture-cover .capture-card{max-width:600px;padding:30px;border:1px solid #c89b64;border-radius:22px;background:#1a2339}#capture-cover h2{margin-bottom:14px}#capture-cover p{line-height:1.8;font-size:15px}#capture-cover button{margin-top:18px}
+</style><style>
+.quick-public-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:10px 0 14px}.quick-public-actions .quick-blue{background:linear-gradient(135deg,#2465cf,#347ee6)!important;border:1px solid #71a2ef!important;color:#fff!important;box-shadow:0 5px 16px #1263c525;min-height:48px;text-align:left}.quick-public-actions .quick-blue:hover{background:#4289ec!important}.quick-public-actions .quick-blue:focus-visible{outline:3px solid #91baff;outline-offset:3px}#tas-background{opacity:.23!important}body.dark #tas-background{opacity:.25!important}#owner-publication-panel .publication-tools{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:15px 0}#owner-publication-panel select{width:100%}#owner-publication-panel .publication-table{max-height:390px;overflow:auto;margin-top:16px}#owner-publication-panel .publication-row{display:flex;gap:12px;align-items:center;justify-content:space-between;border-top:1px solid var(--b);padding:13px 0}#owner-publication-panel .publication-row p{font-size:12px;margin-top:5px;color:var(--dm)}@media(max-width:520px){.quick-public-actions{grid-template-columns:1fr}#tas-background{opacity:.19!important}}
 </style></head>
 <body>
 
@@ -6111,7 +6136,7 @@ function saveAllTests(a){
   if(user) a.filter(t=>t.authorId===user.id&&t.subject).forEach(t=>rememberQuestionsInBank(t.subject,t.questions||[],'Тест: '+(t.topic||'')));
 }
 function myTests(){return allTests().filter(t=>Array.isArray(t.questions)&&t.questions.length&&!t.assignmentId)}
-function publicTests(){return allTests().filter(t=>(t.isPublic||t.status==='approved')&&!t.classId&&t.questions.length>0)}
+function publicTests(){return allTests().filter(t=>t.publicListing!==false&&(t.isPublic||t.status==='approved')&&!t.classId&&t.questions.length>0)}
 function showFormulas(){
   renderFormulas();showScr('s-formulas');
 }
@@ -7787,7 +7812,7 @@ function finishTest(force){
   if(st.verifiedExam){score=st.verifiedExam.score;max=st.verifiedExam.max}
   if(!st.verifiedExam){
     if(!st.isMistakes&&wrong.length){let m=LS.get('ubt_mistakes_'+user.id,[]);const ids=new Set(m.map(x=>x.id));wrong.forEach(q=>{if(!ids.has(q.id))m.push(q)});LS.set('ubt_mistakes_'+user.id,m)}
-    const resultId="res_"+Date.now()+"_"+Math.random().toString(36).slice(2);let pg=getProg(user.id);pg.push({id:resultId,t:Date.now(),score,max,topic:st.subjectName,viol:lock.viol});LS.set('ubt_prog_'+user.id,pg);
+    const resultId="res_"+Date.now()+"_"+Math.random().toString(36).slice(2);let pg=getProg(user.id);pg.push({id:resultId,t:Date.now(),score,max,topic:st.subjectName,viol:lock.viol,is140:!!st.is140});LS.set('ubt_prog_'+user.id,pg);
     let hist=LS.get('ubt_hist_'+user.id,[]);hist.unshift({id:resultId,date:new Date().toLocaleString('kk-KZ'),score,max,topic:st.subjectName,viol:lock.viol,answers:{...st.answers},questions:st.questions.map(q=>({...q,points:practicePoints(q)})),is140:!!st.is140,questionCount:st.questions.length});
     LS.set('ubt_hist_'+user.id,hist);
   }
@@ -10593,7 +10618,7 @@ function ubdRows(){
   function add(r,index){
     if(!r||typeof r!=='object'||!(ubdNum(r.max)>0))return;
     const qs=Array.isArray(r.questions)?r.questions:[],ans=r.answers&&typeof r.answers==='object'?r.answers:{};
-    const row={id:r.id||'',topic:String(r.topic||'Тест'),score:ubdNum(r.score),max:ubdNum(r.max),time:ubdTime(r),date:String(r.date||''),verified:r.serverVerified===true,index,groups:new Map(),good:0,bad:0,skip:0};
+    const row={id:r.id||'',topic:String(r.topic||'Тест'),score:ubdNum(r.score),max:ubdNum(r.max),time:ubdTime(r),date:String(r.date||''),verified:r.serverVerified===true,is140:r.is140===true||r.examType==='ubt140'||r.mode==='ubt140'||/140|ҰБТ.*(?:формат|толық)/i.test(r.topic||'')||ubdNum(r.max)===140,index,groups:new Map(),good:0,bad:0,skip:0};
     row.subject=ubdSubject(null,r);
     qs.forEach(q=>{
       if(!q||!Array.isArray(q.options)||!Number.isInteger(q.correct)||q.correct<0||q.correct>=q.options.length)return;
@@ -10639,14 +10664,22 @@ function ubdLine(points,id,ceiling=100,color="#54dfba"){
   return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Соңғы ${pts.length} тест нәтижесі, ${ceiling===140?"140 балл бойынша":"пайызбен"}"><defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#54dfba" stop-opacity=".24"/><stop offset="1" stop-color="#54dfba" stop-opacity="0"/></linearGradient></defs>${grid}<polygon points="${x(0)},${y(0)} ${coords} ${x(pts.length-1)},${y(0)}" fill="url(#${id})"/><polyline points="${coords}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round"/>${dots}${labels}</svg>`;
 }
 function ubdCombined(rows,subject){
- const exam=rows.filter(r=>r.max===140).slice(-30).map(r=>({row:r,value:r.score/140*100}));
- const practice=ubdModel(rows.filter(r=>r.max!==140),subject).chart.slice(-30).map(p=>({row:p.row,value:p.pct}));
+ const isExam=r=>r.is140===true||r.max===140;
+ const exam=rows.filter(isExam).slice(-30).map(r=>({row:r,value:r.max>0?r.score/r.max*100:0}));
+ const practice=ubdModel(rows.filter(r=>!isExam(r)),subject).chart.slice(-30).map(p=>({row:p.row,value:p.pct}));
  if(!exam.length&&!practice.length)return '<div class="ubd-empty"><strong>Алғашқы нәтижеңді күтудеміз</strong>140 формат пен пән тесттерінің нәтижелері осы графикте пайда болады.</div>';
  const W=820,H=290,L=45,R=48,T=22,B=36,n=Math.max(exam.length,practice.length),x=i=>L+(n===1?(W-L-R)/2:i*(W-L-R)/(n-1)),y=v=>T+(100-Math.max(0,Math.min(100,v)))*(H-T-B)/100;
  let grid='';[0,25,50,75,100].forEach(v=>{grid+=`<line x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}" stroke="#203455" stroke-dasharray="3 7"/><text x="${L-10}" y="${y(v)+4}" text-anchor="end" fill="#f5c75e" font-size="11">${v*1.4}</text><text x="${W-R+10}" y="${y(v)+4}" fill="#54dfba" font-size="11">${v}%</text>`});
- function line(data,color,isExam){if(!data.length)return '';const points=data.map((p,i)=>`${x(i)},${y(p.value)}`).join(' ');return `<polyline points="${points}" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`+data.map((p,i)=>`<circle cx="${x(i)}" cy="${y(p.value)}" r="4" fill="${color}" stroke="#0b1429" stroke-width="2"><title>${esc(p.row.topic)}: ${isExam?p.row.score+' / 140':Math.round(p.value)+'%'} · ${esc(p.row.date)}</title></circle>`).join('')}
+ function line(data,color,isExam){
+  if(!data.length)return '';const points=data.map((p,i)=>`${x(i)},${y(p.value)}`).join(' ');
+  return `<polyline points="${points}" fill="none" stroke="${color}" stroke-width="${isExam?3.5:3}" ${isExam?'stroke-dasharray="9 5"':''} stroke-linecap="round" stroke-linejoin="round"/>`+data.map((p,i)=>{
+   const score=isExam?p.row.score+' / '+p.row.max:Math.round(p.value)+'%';
+   const label=isExam&&(data.length<=12||i===data.length-1||i%3===0)?`<text x="${x(i)}" y="${Math.max(12,y(p.value)-12)}" text-anchor="middle" fill="${color}" stroke="#0b1429" stroke-width="3" paint-order="stroke" font-size="11" font-weight="700">${esc(String(p.row.score))}</text>`:'';
+   return `<circle cx="${x(i)}" cy="${y(p.value)}" r="${isExam?5:4}" fill="${isExam?'#111d32':color}" stroke="${isExam?color:'#0b1429'}" stroke-width="2"><title>${isExam?'140 формат · ':''}${esc(p.row.topic)}: ${score}${isExam&&p.row.max!==140?' · 140 шкаласында '+Math.round(p.value*1.4)+' / 140':''} · ${esc(p.row.date)}</title></circle>`+label;
+  }).join('')
+ }
  let labels='';for(let i=0;i<n;i++)if(i===0||i===n-1||i%5===0)labels+=`<text x="${x(i)}" y="${H-9}" fill="#91a5c5" text-anchor="middle" font-size="11">${i+1}</text>`;
- return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Біріккен график. Сары: 140 балдық тест, сол жақ шкала 0–140. Жасыл: пән тесті, оң жақ шкала 0–100 пайыз.">${grid}${line(exam,'#f5c75e',true)}${line(practice,'#54dfba',false)}${labels}</svg>`;
+ return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Біріккен график. Сары: 140 балдық тест, сол жақ шкала 0–140. Жасыл: пән тесті, оң жақ шкала 0–100 пайыз.">${grid}${line(practice,'#54dfba',false)}${line(exam,'#f5c75e',true)}${labels}</svg>`;
 }
 
 function ubdRing(m){
@@ -10696,7 +10729,7 @@ function ubtQuickCounts(){try{return JSON.parse(localStorage.getItem('quick_nav_
 function ubtQuickHTML(){
  const selected=ubtQuickSelect(ubtQuickItems(),ubtQuickCounts());
  const button=(item,primary=false)=>`<button type="button" class="ubd-btn quick-link${primary?' primary':''}" onclick="ubtQuickOpen(${jsq(item.id)})"><span>${esc(item.label)}</span><span aria-hidden="true">↗</span></button>`;
- return `<section class="ubd-card quick-launcher"><div class="ubd-card-head"><h3>Келесі қадам</h3><span class="ubd-pill">Барлық бөлімдер</span></div><p class="ubd-muted">Жиі кіретін алты бөлім жоғарыда. Қалғанын төмен сырғытып қараңыз.</p><div class="quick-essential">${selected.essential.map(x=>button(x,true)).join('')}</div><div class="quick-frequent">${selected.frequent.map(x=>button(x)).join('')}</div><div class="quick-scroll-title"><span>Барлық бөлімдер</span><span aria-hidden="true">↓</span></div><div class="quick-scroll" role="region" aria-label="Қалған бөлімдер" tabindex="0">${selected.other.map(x=>button(x)).join('')}</div></section>`;
+ return `<section class="ubd-card quick-launcher"><div class="ubd-card-head"><h3>Келесі қадам</h3><span class="ubd-pill">Барлық бөлімдер</span></div><p class="ubd-muted">Жиі кіретін алты бөлім жоғарыда. Қалғанын төмен сырғытып қараңыз.</p><div class="quick-essential">${selected.essential.map(x=>button(x,true)).join('')}</div><div class="quick-public-actions"><button type="button" class="ubd-btn quick-blue" onclick="showPublicTests()">🌐 Жария тесттер ↗</button><button type="button" class="ubd-btn quick-blue" onclick="showApprovedTests()">✓ Админ мақұлдаған тесттер ↗</button></div><div class="quick-frequent">${selected.frequent.map(x=>button(x)).join('')}</div><div class="quick-scroll-title"><span>Барлық бөлімдер</span><span aria-hidden="true">↓</span></div><div class="quick-scroll" role="region" aria-label="Қалған бөлімдер" tabindex="0">${selected.other.map(x=>button(x)).join('')}</div></section>`;
 }
 function ubtQuickOpen(id){
  if(!user||user.isCodeGuest)return;const item=ubtQuickItems().find(x=>x.id===id);if(!item)return;
@@ -10717,7 +10750,7 @@ function ubdRender(home){
   let max140=0;best140.forEach(r=>max140=Math.max(max140,r.score));
   const cards=[['Тапсырылған тест',m.rows.length,'Сақталған нәтижелер'],['Орташа нәтиже',m.rows.length?Math.round(m.avg)+'%':'—','Әр тесттің пайыздық нәтижесі'],['Үздік нәтиже',m.rows.length?Math.round(m.best)+'%':'—',best140.length?'140 формат: '+max140+' / 140':'Жеке үздік көрсеткіш'],['Соңғы нәтиже',latest?Math.round(latest.pct)+'%':'—',delta===null?'Алғашқы тесттен бастаңыз':(delta>0?'↑ +':delta<0?'↓ ':'')+Math.round(delta)+' пайыздық тармақ']];
   const bars=[...m.groups].sort((a,b)=>b[1].n-a[1].n).slice(0,home?5:12);
-  host.innerHTML=`<div class="ubd-head"><div><div class="ubd-label">ҰБТ PLUS / ЖЕКЕ КӨРСЕТКІШТЕР</div><h2>${home?'Дайындығың бір қарағанда':'Менің статистикам'}</h2><p class="ubd-muted">${home?'Сәлем, '+esc(user.name)+'. Әр қадам — келесі нәтижеге жақындатады.':'Тесттер, пәндер және дұрыс жауаптар — бір панельде.'}</p></div><button class="ubd-btn ${home?'primary':''}" onclick="${home?'showAnalytics()':'ubdExport()'}">${home?'Толық статистика ↗':'↓ CSV жүктеу'}</button></div><div class="ubd-kpis">${cards.map(c=>`<div class="ubd-kpi"><span>${c[0]}</span><b>${c[1]}</b><small>${esc(c[2])}</small></div>`).join('')}</div>${home?`<button type="button" class="ubd-profile-card" onclick="schoolOwnProfile()"><span class="ubd-profile-orbit" aria-hidden="true">${esc((user.name||'U').slice(0,1))}</span><span><small>ЖЕКЕ ПРОФИЛЬ</small><strong>${esc(user.name)}</strong><span>Профильге кіру ↗</span></span><span class="ubd-profile-art" aria-hidden="true">✦</span></button>`:''}<section class="ubd-card ubd-combined"><div class="ubd-card-head"><h3>Нәтижелер динамикасы</h3><span class="ubd-pill">140 формат + пән тесттері</span></div><div class="ubd-chart">${ubdCombined(rows,subject)}</div><div class="ubd-legend"><span style="color:#f5c75e">● 140 формат · сол жақ: балл / 140</span><span style="color:#54dfba">● Пән тесттері · оң жақ: %</span></div><p class="ubd-muted">Көлденең: әр түрдің соңғы 30 тестінің реті. Нүктені басып, нақты нәтижені көріңіз.</p></section><div class="ubd-grid"><section class="ubd-card"><div class="ubd-card-head"><h3>Пәндер бойынша</h3><span class="ubd-muted">Дұрыс жауап үлесі</span></div><div class="ubd-bars">${bars.length?bars.map(([name,g])=>`<div><div class="ubd-bar-top"><span title="${esc(name)}">${esc(name)}</span><b>${Math.round(g.sum/g.n*100)}% <small style="color:var(--dm);font-weight:400">· ${g.n} сұрақ</small></b></div><div class="ubd-track"><i style="width:${g.sum/g.n*100}%"></i></div></div>`).join(''):'<p class="ubd-muted">Пәндік талдау үшін сұрақтары мен жауаптары сақталған тест қажет. Бұрынғы балдар жоғарыдағы графикте көрінеді.</p>'}</div></section>${ubtQuickHTML()}</div><section class="ubd-card"><div class="ubd-card-head"><h3>${home?'Соңғы нәтижелер':'Тест нәтижелері'}</h3><button class="ubd-btn" onclick="showHistory()">Тарих →</button></div>${ubdTable(m.rows,home)}</section><div class="ubd-foot"><span>Көрсеткіштер өзіңіздің сақталған деректеріңізден есептеледі.</span><span>${cutoff?'Күні белгісіз ескі нәтижелер «Барлық уақыт» ішінде.':'Барлық уақыт · '+all.length+' нәтиже'}${subject?' · Кесте: толық тест балы, график: таңдалған пән.':''}</span></div>`;
+  host.innerHTML=`<div class="ubd-head"><div><div class="ubd-label">ҰБТ PLUS / ЖЕКЕ КӨРСЕТКІШТЕР</div><h2>${home?'Дайындығың бір қарағанда':'Менің статистикам'}</h2><p class="ubd-muted">${home?'Сәлем, '+esc(user.name)+'. Әр қадам — келесі нәтижеге жақындатады.':'Тесттер, пәндер және дұрыс жауаптар — бір панельде.'}</p></div><button class="ubd-btn ${home?'primary':''}" onclick="${home?'showAnalytics()':'ubdExport()'}">${home?'Толық статистика ↗':'↓ CSV жүктеу'}</button></div><div class="ubd-kpis">${cards.map(c=>`<div class="ubd-kpi"><span>${c[0]}</span><b>${c[1]}</b><small>${esc(c[2])}</small></div>`).join('')}</div>${home?`<button type="button" class="ubd-profile-card" onclick="schoolOwnProfile()"><span class="ubd-profile-orbit" aria-hidden="true">${esc((user.name||'U').slice(0,1))}</span><span><small>ЖЕКЕ ПРОФИЛЬ</small><strong>${esc(user.name)}</strong><span>Профильге кіру ↗</span></span><span class="ubd-profile-art" aria-hidden="true">✦</span></button>`:''}<section class="ubd-card ubd-combined"><div class="ubd-card-head"><h3>Нәтижелер динамикасы</h3><span class="ubd-pill">140 формат + пән тесттері</span></div><div class="ubd-chart">${ubdCombined(rows,subject)}</div><div class="ubd-legend"><span style="color:#f5c75e">● 140 формат · сол жақ: балл / 140</span><span style="color:#54dfba">● Пән тесттері · оң жақ: %</span></div><p class="ubd-muted">Сары үзік сызық пен сандар — 140 формат нәтижелері, жасыл — пән тесттері. Әр түрдің соңғы 30 нәтижесі. Қысқа 140 жаттығулары 140 шкаласына келтіріледі.</p></section><div class="ubd-grid"><section class="ubd-card"><div class="ubd-card-head"><h3>Пәндер бойынша</h3><span class="ubd-muted">Дұрыс жауап үлесі</span></div><div class="ubd-bars">${bars.length?bars.map(([name,g])=>`<div><div class="ubd-bar-top"><span title="${esc(name)}">${esc(name)}</span><b>${Math.round(g.sum/g.n*100)}% <small style="color:var(--dm);font-weight:400">· ${g.n} сұрақ</small></b></div><div class="ubd-track"><i style="width:${g.sum/g.n*100}%"></i></div></div>`).join(''):'<p class="ubd-muted">Пәндік талдау үшін сұрақтары мен жауаптары сақталған тест қажет. Бұрынғы балдар жоғарыдағы графикте көрінеді.</p>'}</div></section>${ubtQuickHTML()}</div><section class="ubd-card"><div class="ubd-card-head"><h3>${home?'Соңғы нәтижелер':'Тест нәтижелері'}</h3><button class="ubd-btn" onclick="showHistory()">Тарих →</button></div>${ubdTable(m.rows,home)}</section><div class="ubd-foot"><span>Көрсеткіштер өзіңіздің сақталған деректеріңізден есептеледі.</span><span>${cutoff?'Күні белгісіз ескі нәтижелер «Барлық уақыт» ішінде.':'Барлық уақыт · '+all.length+' нәтиже'}${subject?' · Кесте: толық тест балы, график: таңдалған пән.':''}</span></div>`;
 }
 function showAnalytics(){
   if(!user)return;
@@ -11230,7 +11263,7 @@ async function schoolDeleteClass(cid,button){
 
 (function(){
  const screen=document.createElement('div');screen.id='s-admin-messenger';screen.className='screen';screen.innerHTML='<div class="wrap wide"><div class="topback"><button type="button" class="btn btn-s" onclick="goHome()">← Артқа</button></div><div class="hdr wa-screen-title"><h2 id="wa-page-title">Админ WhatsApp</h2><p class="sub">Сайт ішіндегі хабарламалар мен жіберілген тесттер</p></div><div class="wa-shell" id="wa-shell"><aside class="wa-sidebar"><div class="wa-brand">Админ WhatsApp</div><input type="search" id="wa-search" class="wa-search" placeholder="Адамның атын іздеу" aria-label="Контактіні іздеу"><div class="wa-contacts" id="wa-contacts"></div><button type="button" class="wa-more" id="wa-contact-more" hidden>Тағы адамдар</button></aside><section class="wa-chat"><header class="wa-head"><button type="button" class="wa-back" id="wa-mobile-back" aria-label="Контактілерге оралу">←</button><div class="wa-avatar" id="wa-chat-avatar">А</div><div><h3 id="wa-chat-name">Админнен келген хабарламалар</h3><small>Хабарламалар және тесттер</small></div></header><div class="wa-messages" id="wa-messages" role="log" aria-label="Чат хабарламалары"></div><p class="wa-status" id="wa-status" role="status"></p><div class="wa-compose"><button type="button" class="wa-attach" id="wa-send-test">+ Тест</button><textarea id="wa-text" rows="1" maxlength="2000" placeholder="Хабарлама жазыңыз…" aria-label="Хабарлама мәтіні"></textarea><button type="button" id="wa-send">Жіберу ➤</button></div></section></div></div>';document.body.appendChild(screen);
- const background=document.createElement('div');background.id='tas-background';background.setAttribute('aria-hidden','true');background.innerHTML='<svg viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice"><defs><pattern id="tas-dot-pattern" x="0" y="0" width="9" height="9" patternUnits="userSpaceOnUse"><circle cx="3" cy="3" r="1.6" fill="#8196a6"/></pattern></defs><g fill="url(#tas-dot-pattern)" font-family="Arial,sans-serif" font-size="240" font-weight="900" text-anchor="middle" letter-spacing="24"><text x="600" y="230">T.A.S.</text><text x="600" y="560">T.A.S.</text><text x="600" y="890">T.A.S.</text></g></svg>';document.body.appendChild(background);
+ const background=document.createElement('div');background.id='tas-background';background.setAttribute('aria-hidden','true');background.innerHTML='<svg viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice"><defs><pattern id="tas-dot-pattern" x="0" y="0" width="9" height="9" patternUnits="userSpaceOnUse"><circle cx="3" cy="3" r="1.8" fill="#9fbbdb"/></pattern></defs><g fill="url(#tas-dot-pattern)" font-family="Arial,sans-serif" font-size="240" font-weight="900" text-anchor="middle" letter-spacing="24"><text x="600" y="230">T.A.S.</text><text x="600" y="560">T.A.S.</text><text x="600" y="890">T.A.S.</text></g></svg>';document.body.appendChild(background);
  let selected='',owner='',contactOffset=0,threadOffset=0,contactJob=0,threadJob=0,searchTimer=0,refreshTimer=0,sending=false;
  const active=()=>document.querySelector('.screen.active')?.id==='s-admin-messenger';
  const allowed=()=>!!user&&!user.isCodeGuest;
@@ -11394,6 +11427,18 @@ async function schoolDeleteClass(cid,button){
  const show=showScr;showScr=function(id){if(id==='s-test')entered=Date.now();const r=show.apply(this,arguments);document.body.classList.toggle('primary-owner',owner());if(!owner())document.querySelectorAll('[onclick]').forEach(el=>{if(/^(exportTest|exportJsonTest|exportWordTest|exportPdfTest|adminCopyTest|importPublicTestToBank)\(/.test(el.getAttribute('onclick')||''))el.hidden=true});return r};
  ['copy','cut','contextmenu','dragstart','selectstart'].forEach(kind=>window.addEventListener(kind,e=>{if(!user||owner()||inField(e.target))return;e.preventDefault();e.stopImmediatePropagation();e.clipboardData?.setData('text/plain','');window.getSelection()?.removeAllRanges()},true));
  ['exportTest','exportJsonTest','exportWordTest','exportPdfTest','adminCopyTest','importPublicTestToBank'].forEach(name=>{const fn=window[name];if(typeof fn==='function')window[name]=function(){if(!owner())return alert('Тек басты админге қолжетімді');return fn.apply(this,arguments)}});
+})();
+
+(function(){
+ const owner=()=>!!(user?.isAdmin&&user.id==='admin');let busy=false,job=0;
+ async function panel(){if(!owner()||busy)return;busy=true;const task=++job;try{const r=await authCall('owner_publication_list',{});if(!owner()||task!==job||!r.ok)return;let host=document.getElementById('owner-publication-panel');if(!host){host=document.createElement('section');host.id='owner-publication-panel';host.className='card';document.getElementById('s-admin').querySelector('.wrap').prepend(host)}host.innerHTML='<h3>🌐 Жарияға тест қою</h3><p class="sub" style="margin-top:8px">Тестті таңдаңыз және барлық қолданушыға көрінетін бөлімдерін белгілеңіз.</p><div class="fg" style="margin-top:16px"><label>Тест</label><select id="owner-publication-test"><option value="">Тестті таңдаңыз</option></select></div><div class="publication-tools"><label><input type="checkbox" id="owner-publish-public" checked> Жария тесттер</label><label><input type="checkbox" id="owner-publish-approved" checked> Админ мақұлдаған тесттер</label><label>Тапсыру лимиті <input type="number" id="owner-publication-limit" min="1" max="100" value="1" style="max-width:80px"></label></div><div class="publication-tools"><button class="btn btn-p" id="owner-publication-save">＋ Жарияға қою</button><button class="btn btn-s" id="owner-publication-refresh">Жаңарту</button></div><p id="owner-publication-status" class="sub" role="status"></p><div class="publication-table" id="owner-publication-rows"></div>';
+ const select=host.querySelector('select');for(const t of r.items)select.add(new Option(t.title+' · '+t.subject+' · '+t.count+' сұрақ',t.id));select.onchange=()=>{const t=r.items.find(x=>x.id===select.value);if(!t)return;host.querySelector('#owner-publication-limit').value=t.limit;const published=t.public||t.approved;host.querySelector('#owner-publish-public').checked=published?t.public:true;host.querySelector('#owner-publish-approved').checked=published?t.approved:true};
+ host.querySelector('#owner-publication-refresh').onclick=panel;
+ host.querySelector('#owner-publication-save').onclick=async function(){if(!select.value)return alert('Алдымен тестті таңдаңыз');const targets=[];if(host.querySelector('#owner-publish-public').checked)targets.push('public');if(host.querySelector('#owner-publish-approved').checked)targets.push('approved');if(!targets.length)return alert('Кемінде бір бөлімді белгілеңіз');this.disabled=true;const result=await authCall('owner_set_publication',{testId:select.value,targets,limit:Number(host.querySelector('#owner-publication-limit').value)});if(!result.ok){this.disabled=false;host.querySelector('#owner-publication-status').textContent=result.msg;return}await window.__bridge.refresh();panel()};
+ const list=host.querySelector('#owner-publication-rows');const published=r.items.filter(t=>t.public||t.approved);if(!published.length)list.textContent='Әзірге жарияланған тест жоқ.';for(const t of published){const row=document.createElement('div');row.className='publication-row';const info=document.createElement('div');const title=document.createElement('strong');title.textContent=t.title;const sub=document.createElement('p');sub.textContent=[t.public?'Жария тесттер':'',t.approved?'Админ мақұлдаған тесттер':''].filter(Boolean).join(' · ')+' · Лимит: '+t.limit;info.append(title,sub);const button=document.createElement('button');button.className='btn btn-d btn-sm';button.textContent='Жариядан алып тастау';button.onclick=async()=>{if(!confirm('Тест екі жария бөлімнен алынады. Базадағы түпнұсқа мен нәтижелер сақталады. Жалғастыру керек пе?'))return;button.disabled=true;const result=await authCall('owner_set_publication',{testId:t.id,targets:[]});if(!result.ok){button.disabled=false;return alert(result.msg)}await window.__bridge.refresh();panel()};row.append(info,button);list.append(row)}
+ }finally{busy=false}}
+ const admin=showAdmin;showAdmin=function(){const r=admin.apply(this,arguments);panel();return r};
+ const show=showScr;showScr=function(){const r=show.apply(this,arguments);if(!owner()){job++;document.getElementById('owner-publication-panel')?.remove()}return r};
 })();
 </script>
 <script>
