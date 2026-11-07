@@ -1877,6 +1877,53 @@ def _messenger_request(state,sess,typ,d):
             return {"ok":True,"uid":uid,"name":person["name"],"items":rows[start:end],"hasMore":start>0,"total":len(rows)}
     return {"ok":False,"msg":"Әрекет табылмады"}
 
+def _remember_stamp(state, uid):
+    if uid=="admin":
+        material=[state["db"].get("ubt_admin_ph"),state["db"].get("ubt_server_access_owner_password"),_secret("ADMIN_PASSWORD")]
+    else:
+        prof=next((p for p in _profiles(state).values() if isinstance(p,dict) and p.get("id")==uid),{})
+        material=[prof.get("ph"),prof.get("password"),prof.get("accessApproved")]
+    return hashlib.sha256(_jdump(material).encode()).hexdigest()
+
+def _remember_request(state,sess,typ,d):
+    device=str(d.get("device") or "")[:160]
+    if not device:return {"ok":False,"msg":"Браузер белгісі жоқ"}
+    key="ubt_server_access_remembered_accounts"
+    with state["lock"]:
+        now=time.time();records=_jload(state["db"].get(key,"{}"),dict,{})
+        records={k:v for k,v in records.items() if isinstance(v,dict) and v.get("exp",0)>now}
+        token=str(d.get("rememberToken") or "")
+        digest=hashlib.sha256(token.encode()).hexdigest()
+        binding=hashlib.sha256(device.encode()).hexdigest()
+        if typ=="remember_account":
+            if not sess or sess.get("codeGuest"):return {"ok":False,"msg":"Алдымен аккаунтыңызға кіріңіз"}
+            if len(records)>=20000:return {"ok":False,"msg":"Сақтау лимиті толды"}
+            records={k:v for k,v in records.items() if not (v.get("uid")==sess["uid"] and v.get("device")==binding)}
+            fresh=secrets.token_urlsafe(40);exp=now+30*86400
+            records[hashlib.sha256(fresh.encode()).hexdigest()]={"uid":sess["uid"],"device":binding,"stamp":_remember_stamp(state,sess["uid"]),"exp":exp}
+            _put(state,key,_jdump(records));_commit(state)
+            return {"ok":True,"rememberToken":fresh,"expires":int(exp*1000)}
+        record=records.get(digest)
+        if not record or not hmac.compare_digest(str(record.get("device")),binding):
+            return {"ok":False,"msg":"Сақталған кіру мерзімі аяқталды. Логин мен парольді енгізіңіз."}
+        if typ=="forget_account":
+            records.pop(digest,None);_put(state,key,_jdump(records));_commit(state);return {"ok":True}
+        uid=record["uid"]
+        if not hmac.compare_digest(str(record.get("stamp")),_remember_stamp(state,uid)) or _blocked(state,uid):
+            records.pop(digest,None);_put(state,key,_jdump(records));_commit(state)
+            return {"ok":False,"msg":"Қайтадан логин мен пароль арқылы кіріңіз"}
+        if uid!="admin" and _closed(state):return {"ok":False,"msg":"Сайт уақытша жабық"}
+        if uid=="admin":
+            name=_jload(state["db"].get("ubt_owner_name",'"Мен"'),str,"Мен")
+            user={"id":"admin","name":name,"isAdmin":True,"isOwner":True}
+        else:
+            prof=next((p for p in _profiles(state).values() if isinstance(p,dict) and p.get("id")==uid),None)
+            if not prof or prof.get("accessApproved") is not True:return {"ok":False,"msg":"Аккаунтқа кіру рұқсаты жоқ"}
+            user=_client_user(state,prof)
+        active=_new_session(state,uid,user["name"],bool(user.get("isAdmin")),device)
+        if not active:return {"ok":False,"msg":"Аккаунтқа кіру мүмкін емес. Админге хабарласыңыз."}
+        return {"ok":True,"token":active,"user":user}
+
 def _handle_req(state, sid, rq):
     typ = rq.get("type")
     d = rq.get("data") if isinstance(rq.get("data"), dict) else {}
@@ -2054,7 +2101,7 @@ def _handle_req(state, sid, rq):
                        "questions": [{"text": q.get("text"), "options": q.get("options"), "correct": q.get("correct")}
                                      for q in test["questions"] if isinstance(q, dict)]}
         return {"ok": True, "test": payload}
-    if controls.get("maintenance") and not (sess and sess["admin"]) and typ not in ("login", "resume", "logout", "finish_exam", "resume_exam"):
+    if controls.get("maintenance") and not (sess and sess["admin"]) and typ not in ("login", "login_remembered", "resume", "logout", "finish_exam", "resume_exam"):
         return {"ok": False, "msg": "Админ өзгеріс енгізіп жатыр"}
 
     if typ == "explain_review":
@@ -2326,6 +2373,9 @@ def _handle_req(state, sid, rq):
             rows = _jload(state["db"].get("ubt_server_visits_" + day, "[]"), list, [])
             result = list(reversed(rows))
             return {"ok": True, "rows": result[offset:offset+50], "total": len(rows)}
+
+    if typ in ("remember_account","login_remembered","forget_account"):
+        return _remember_request(state,sess,typ,d)
 
     if typ == "login":
         name = str(d.get("name") or "").strip()[:60]
@@ -5284,6 +5334,10 @@ body.dark #s-login{background:radial-gradient(ellipse at 10% 8%,#273d7144,transp
 @media(max-width:360px){#s-login>.wrap{padding:23px 12px 28px!important}#auth-sliding-panel .auth-forms{padding:25px 21px 22px}#auth-sliding-panel .auth-welcome-panel{padding:22px 21px}#s-login .ubt-brand-title{font-size:30px!important}}
 @media(max-height:650px) and (min-width:761px){#s-login>.wrap{justify-content:flex-start;padding-top:24px!important}#auth-sliding-panel,#auth-sliding-panel .auth-forms{min-height:470px}}
 </style>
+
+<style id="welcome-and-entry">
+.auth-welcome-caption{display:block;color:#cbd4fc;font-size:11px;font-weight:700;letter-spacing:.13em;margin-bottom:22px}.dashboard-enter .clean-hero,.dashboard-enter .clean-stats,.dashboard-enter .clean-actions,.dashboard-enter .clean-recent{animation:dashboard-arrive .65s both!important}.dashboard-enter .clean-stats{animation-delay:.12s!important}.dashboard-enter .clean-actions{animation-delay:.24s!important}.dashboard-enter .clean-recent{animation-delay:.36s!important}@keyframes dashboard-arrive{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}#quick-account-login:empty{display:none}#quick-account-login:not(:empty){margin-bottom:23px;padding-bottom:17px;border-bottom:1px solid #e0e6f1}.quick-forget{display:block;margin:9px auto 0;border:0;background:none;color:#7b879f;padding:6px;cursor:pointer;font-size:12px}.auth-welcome-caption{animation:dashboard-arrive .6s both}@media(max-width:760px){.auth-welcome-caption{margin-bottom:10px;font-size:10px}}@media(prefers-reduced-motion:reduce){.dashboard-enter .clean-hero,.dashboard-enter .clean-stats,.dashboard-enter .clean-actions,.dashboard-enter .clean-recent,.auth-welcome-caption{animation:none!important}}
+</style>
 <script type="text/plain" id="app-src">
 
 const ubtAssetPromises=new Map();
@@ -5872,15 +5926,7 @@ function openPubProfile(id){
   showScr('s-pubprof');
 }
 
-(function(){
-  const u=LS.get('ubt_current');
-  if(u&&u.name&&u.token){
-    window.__token=u.token;
-    authCall('resume',{}).then(r=>{
-      if(r&&r.ok){startSession(r)}else{window.__token='';LS.set('ubt_current',null)}
-    }).catch(()=>{});
-  }else if(u){LS.set('ubt_current',null)}
-})();
+(function(){const previous=LS.get('ubt_current');if(previous?.token){window.__token=previous.token;authCall('logout',{});window.__token=''}LS.set('ubt_current',null)})();
 
 function renderAdminUsers(){
   const el=document.getElementById('admin-users');if(!el)return;
@@ -11252,7 +11298,7 @@ async function schoolDeleteClass(cid,button){
  const panel=document.createElement('div');panel.id='auth-sliding-panel';
  const forms=document.createElement('div');forms.className='auth-forms';
  ['login-box','register-box','teacher-reg-box','forgot-box','contact-box'].forEach(id=>{const el=document.getElementById(id);if(el)forms.appendChild(el)});
- const side=document.createElement('aside');side.className='auth-welcome-panel';side.innerHTML='<div class="auth-emblem" aria-hidden="true">✦</div><h2 id="auth-side-title">Қош келдіңіз!</h2><p id="auth-side-description">ҰБТ PLUS-пен бірге біліміңізді дамытып, мақсатыңызға жақындаңыз.</p>';
+ const side=document.createElement('aside');side.className='auth-welcome-panel';side.innerHTML='<span class="auth-welcome-caption">Welcome to ҰБТ PLUS</span><div class="auth-emblem" aria-hidden="true">✦</div><h2 id="auth-side-title">Қош келдіңіз!</h2><p id="auth-side-description">ҰБТ PLUS-пен бірге біліміңізді дамытып, мақсатыңызға жақындаңыз.</p>';
  panel.append(forms,side);wrap.appendChild(panel);
  const title=document.createElement('h3');title.textContent='Кіріңіз';document.getElementById('login-box').prepend(title);
  document.getElementById('login-pass').autocomplete='current-password';
@@ -11391,7 +11437,7 @@ async function schoolDeleteClass(cid,button){
 
 (function(){
  let device='';try{device=localStorage.getItem('login_device_key')||'';if(!device){device=(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2));localStorage.setItem('login_device_key',device)}}catch(e){device=Math.random().toString(36).slice(2)}
- const originalAuth=authCall;authCall=function(type,data){if(type==='login'||type==='register')data={...(data||{}),device};return originalAuth.call(this,type,data)};
+ const originalAuth=authCall;authCall=function(type,data){if(['login','register','remember_account','login_remembered','forget_account'].includes(type))data={...(data||{}),device};return originalAuth.call(this,type,data)};
  const owner=()=>!!user&&user.id==='admin'&&user.isAdmin;
  const previousMaintenance=syncMaintenance;
  syncMaintenance=function(){const overlay=document.getElementById('maintenance-overlay'),closed=!!siteControls().maintenance;const login=document.querySelector('.screen.active')?.id==='s-login';if(overlay){overlay.innerHTML='<div class="card" style="max-width:440px;padding:30px"><h2>Сайт уақытша жабық</h2><p class="sub" style="margin:16px 0">Қазір тек басты админ кіре алады. Кейінірек қайта көріңіз.</p><button class="btn btn-p" type="button" onclick="doLogout()">Басты админ ретінде кіру</button></div>';overlay.style.display=closed&&!owner()&&!login?'flex':'none'}let note=document.getElementById('closed-login-note');if(!note){note=document.createElement('div');note.id='closed-login-note';note.textContent='Сайт уақытша жабық. Қазір тек басты админ кіре алады.';document.querySelector('#s-login>.wrap').prepend(note)}note.hidden=!closed;const toggle=document.getElementById('registered-maintenance');if(toggle){toggle.disabled=!owner();toggle.closest('label').hidden=!owner()}};
@@ -11577,8 +11623,35 @@ const show=showScr;showScr=function(id){const r=show.apply(this,arguments);if(!i
  const rail=document.getElementById('ubt-icon-rail'),profileButton=document.getElementById('ubt-rail-profile'),more=document.getElementById('ubt-rail-more');
  if(profileButton&&more)more.before(profileButton);
  const menu=document.getElementById('app-menu');
- if(menu&&!menu.querySelector('[data-clean-logout]')){const logout=document.createElement('button');logout.type='button';logout.className='app-menu-home';logout.dataset.cleanLogout='1';logout.textContent='Аккаунттан шығу';logout.onclick=doLogout;menu.querySelector('nav')?.append(logout)}
+ if(menu&&!menu.querySelector('[data-clean-logout]')){const logout=document.createElement('button');logout.type='button';logout.className='app-menu-home';logout.dataset.cleanLogout='1';logout.textContent='Аккаунттан шығу';logout.onclick=()=>doLogout();menu.querySelector('nav')?.append(logout)}
  const profile=showMyProfile;showMyProfile=function(){if(!user)return;try{return profile.apply(this,arguments)}catch(error){console.warn('Profile rendering',error);showScr('s-profile')}};
+})();
+
+(function(){
+const key='quick_account_v1';let loggingIn=false;
+function saved(){try{const item=JSON.parse(localStorage.getItem(key)||'null');return item&&item.token&&item.expires>Date.now()?item:null}catch(e){return null}}
+function status(text){const el=document.getElementById('quick-account-status');if(el)el.textContent=text}
+function render(){
+ const login=document.getElementById('login-box');let box=document.getElementById('quick-account-login');
+ if(!box){box=document.createElement('div');box.id='quick-account-login';login.prepend(box)}
+ const item=saved();box.replaceChildren();if(!item)return;
+ const button=document.createElement('button');button.type='button';button.className='btn btn-s';button.textContent=item.name+' · қайта кіру ↗';
+ button.onclick=async()=>{if(loggingIn)return;loggingIn=true;button.disabled=true;status('Кіріп жатыр…');try{const r=await authCall('login_remembered',{rememberToken:item.token});if(!r.ok){status(r.msg||'Логин мен пароль арқылы кіріңіз');return}await startSession(r)}finally{loggingIn=false;button.disabled=false}};
+ const forget=document.createElement('button');forget.type='button';forget.className='quick-forget';forget.textContent='Бұл аккаунтты ұмыту';forget.onclick=()=>{authCall('forget_account',{rememberToken:item.token});localStorage.removeItem(key);render()};
+ const message=document.createElement('p');message.id='quick-account-status';message.className='sub';message.setAttribute('role','status');box.append(button,forget,message);
+}
+function profileCard(){
+ if(!user||user.isCodeGuest)return;
+ let card=document.getElementById('remember-account-card');if(!card){card=document.createElement('section');card.id='remember-account-card';card.className='card';document.querySelector('#s-profile>.wrap').append(card)}
+ card.innerHTML='<h3>Аккаунтқа қайта кіру</h3><p class="sub" style="margin:9px 0 16px">Өз құрылғыңызда аккаунтты сақтасаңыз, келесі жолы арнайы батырмамен кіресіз. Пароль сақталмайды. Рұқсат 30 күнге беріледі.</p><div class="row" style="justify-content:flex-start"><button type="button" class="btn btn-p" id="remember-account-save">Осы құрылғыда сақтау</button><button type="button" class="btn btn-s" onclick="doLogout()">Аккаунттан шығу</button></div><p id="remember-account-status" class="sub" role="status" style="margin-top:12px"></p>';
+ card.querySelector('#remember-account-save').onclick=async function(){if(loggingIn)return;const uid=user.id,name=user.name;this.disabled=true;try{const r=await authCall('remember_account',{});if(!r.ok)throw Error(r.msg);if(!user||user.id!==uid)return;localStorage.setItem(key,JSON.stringify({id:uid,name,token:r.rememberToken,expires:r.expires}));card.querySelector('#remember-account-status').textContent='Сақталды. Келесі жолы «'+name+' · қайта кіру» батырмасын басыңыз.'}catch(e){card.querySelector('#remember-account-status').textContent=e.message||'Сақталмады'}finally{this.disabled=false}};
+}
+const profile=showMyProfile;showMyProfile=function(){const result=profile.apply(this,arguments);profileCard();return result};
+const login=showLoginBox;showLoginBox=function(){const result=login.apply(this,arguments);render();return result};
+const logout=doLogout;doLogout=function(){document.body.classList.remove('dashboard-enter');const result=logout.apply(this,arguments);['login-name','login-pass','reg-pass','reg-pass2','tr-pass','tr-pass2'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=''});document.getElementById('admin-pass-wrap').style.display='none';render();return result};
+const start=startSession;startSession=async function(r){await start.apply(this,arguments);if(!user||user.id!==r.user?.id)return;document.body.classList.remove('dashboard-enter');requestAnimationFrame(()=>{if(user&&user.id===r.user.id){document.body.classList.add('dashboard-enter');setTimeout(()=>document.body.classList.remove('dashboard-enter'),1400)}})};
+window.addEventListener('pagehide',()=>{LS.set('ubt_current',null)});window.addEventListener('pageshow',event=>{if(event.persisted&&user)doLogout()});
+render();
 })();
 </script>
 <script>
