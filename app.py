@@ -527,9 +527,63 @@ def _resume_exam(state, sess, d):
         if exam.get("completed"):
             return {"ok": True, "completed": True}
         remaining = max(0, math.ceil(exam["expires"] - time.time() - 90))
-        visible = [{**{k: v for k, v in q.items() if k != "correct"}, "id": "examq" + str(i)}
+        visible = [{**{k: v for k, v in q.items() if k != "correct"}, "id": "examq" + str(i), **({"correct":q["correct"]} if "examq"+str(i) in exam.get("checkedAnswers",{}) else {})}
                    for i, q in enumerate(exam["questions"])]
         return {"ok": True, "questions": visible, "timer": remaining, "topic": exam["topic"]}
+
+
+def _recover_received_test(state,sess,tid):
+    tests=_jload(state["db"].get("ubt_tests","[]"),list,[])
+    existing=next((t for t in tests if isinstance(t,dict) and t.get("id")==tid),None)
+    if existing:
+        return existing
+    deliveries=_jload(state["db"].get("ubt_teacher_deliveries","[]"),list,[])
+    assignments=_jload(state["db"].get("ubt_assigned_tests","[]"),list,[])
+    record=next((r for r in assignments+deliveries if isinstance(r,dict) and r.get("testId")==tid and r.get("uid")==sess["uid"]),None)
+    if not record:
+        return None
+    title=str(record.get("title") or "").strip().casefold()
+    sources=_available_send_tests(state)
+    source=next((t for t in sources if record.get("sourceTestId") and t.get("id")==record["sourceTestId"]),None)
+    if not source:
+        source=next((t for t in sources if str(t.get("topic") or "").strip().casefold()==title and (sess["admin"] or t.get("authorId") in (sess["uid"],"system") or _approved_test(t))),None)
+    if not source:
+        rows=[q for q in _catalog_sync(state) if isinstance(q,dict) and not q.get("deleted") and q.get("authorId")==sess["uid"] and str(q.get("source") or "").strip().casefold()==title]
+        if rows:
+            source={"topic":record.get("title"),"subject":rows[0].get("subject","other"),"questions":rows}
+    if not source or not source.get("questions"):
+        return None
+    clone=dict(source);clone.update(id=tid,status="private",isPublic=False,adminApproved=False)
+    assignment=next((r for r in assignments if r.get("testId")==tid and r.get("uid")==sess["uid"]),None)
+    if assignment:
+        clone.update(assignmentId=assignment.get("batchId") or assignment["id"],authorId="admin")
+    else:
+        clone.update(authorId=sess["uid"],receivedFromAdmin=True)
+        clone.pop("assignmentId",None)
+    clone.pop("classId",None);clone.pop("className",None);clone.pop("accessCode",None)
+    tests.append(clone);_put(state,"ubt_tests",_jdump(tests));_commit(state)
+    return clone
+
+def _check_exam_answer(state,sess,d):
+    if not sess:
+        return {"ok":False,"msg":"Тестке кіріңіз"}
+    nonce=d.get("exam");qid=d.get("questionId");answer=d.get("answer")
+    if not isinstance(nonce,str) or not isinstance(qid,str) or not re.fullmatch(r"examq\d+",qid) or type(answer) is not int:
+        return {"ok":False,"msg":"Жауап пішімі қате"}
+    with state["lock"]:
+        exam=state["exams"].get(nonce)
+        if not exam or exam.get("uid")!=sess["uid"] or exam.get("completed") or exam.get("expires",0)<time.time():
+            return {"ok":False,"msg":"Белсенді тест табылмады"}
+        index=int(qid[5:]);questions=exam["questions"]
+        if index>=len(questions) or not 0<=answer<len(questions[index]["options"]):
+            return {"ok":False,"msg":"Жауап нұсқасы жарамсыз"}
+        checked=exam.setdefault("checkedAnswers",{})
+        if qid in checked and checked[qid]!=answer:
+            return {"ok":False,"msg":"Тексерілген жауапты өзгертуге болмайды"}
+        checked[qid]=answer
+        _save_exam(state,nonce)
+        return {"ok":True,"correct":questions[index]["correct"],"isCorrect":answer==questions[index]["correct"]}
+
 
 def _start_exam(state, sess, d):
     tid = d.get("testId")
@@ -539,7 +593,9 @@ def _start_exam(state, sess, d):
         test = next((t for t in _jload(state["db"].get("ubt_tests", "[]"), list, [])
                      if isinstance(t, dict) and t.get("id") == tid), None)
         if not test:
-            return {"ok": False, "msg": "Тест табылмады"}
+            test=_recover_received_test(state,sess,tid)
+        if not test:
+            return {"ok": False, "msg": "Тест табылмады. Админ тестті қайта жіберсін"}
         qs = test.get("questions")
         if not isinstance(qs, list) or not 0 < len(qs) <= 500 or any(not isinstance(q, dict) or
             not isinstance(q.get("options"), list) or type(q.get("correct")) is not int or
@@ -607,9 +663,8 @@ def _start_exam(state, sess, d):
                                  "expires": time.time() + timer + 90}
         _save_exam(state, nonce)
         
-        allow_instant = bool(test.get("authorId") == uid and not aid and
-                             not test.get("assignmentId") and not test.get("classId"))
-        visible = [{**{k: v for k, v in q.items() if k != "correct" or allow_instant},
+        allow_instant = True
+        visible = [{**{k: v for k, v in q.items() if k != "correct"},
                     "id": "examq" + str(i)} for i, q in enumerate(qs)]
         return {"ok": True, "exam": nonce, "questions": visible,
                 "allowInstantFeedback": allow_instant,
@@ -652,6 +707,8 @@ def _finish_exam(state, sess, d):
             attempts = _jload(state["db"].get("ubt_att_" + exam["testId"], "{}"), dict, {})
             if isinstance(exam.get("limit"), int) and exam["limit"] > 0 and int(attempts.get(sess["uid"], 0)) >= exam["limit"]:
                 return {"ok": False, "msg": "Тапсыру лимиті аяқталды"}
+        if any(answers.get(qid)!=value for qid,value in exam.get("checkedAnswers",{}).items()):
+            return {"ok":False,"msg":"Бірден тексерілген жауапты өзгертуге болмайды"}
         weights = [q.get("points") if type(q.get("points")) in (int, float) and
                    0 < q["points"] <= 100 else 1 for q in qs]
         score = sum(weights[i] for i, q in enumerate(qs) if answers.get("examq" + str(i)) == q["correct"])
@@ -1089,7 +1146,7 @@ def _school_request(state, sess, typ, d):
                 new_id = "teacher_test_" + secrets.token_hex(12)
                 t.update(id=new_id, authorId=uid, authorName=person["name"], status="private", isPublic=False, adminApproved=False, receivedFromAdmin=True, createdAt=datetime.datetime.now(datetime.timezone.utc).isoformat())
                 tests.append(t)
-                deliveries.append({"id": "delivery_" + secrets.token_hex(12), "uid": uid, "testId": new_id, "title": t["topic"], "fileName": str(d.get("fileName") or "")[:200], "created": now, "fromName": sess["name"]})
+                deliveries.append({"id": "delivery_" + secrets.token_hex(12), "uid": uid, "testId": new_id, "sourceTestId":tid or None, "title": t["topic"], "fileName": str(d.get("fileName") or "")[:200], "created": now, "fromName": sess["name"]})
                 created.append(new_id)
             if len(_jdump(tests)) >= 7_800_000:
                 return {"ok": False, "msg": "Тесттер қоймасының көлемі толды. Файлды кішірек бөліктерге бөліңіз"}
@@ -1188,7 +1245,7 @@ def _access_request(state, sess, typ, d, sid, token):
             _save_exam(state, nonce)
             remaining = max(1,min(timer,int(entry["expires"]-time.time())))
             return {"ok": True, "exam": nonce, "questions": [{**{k:v for k,v in q.items() if k != "correct"}, "id": "examq"+str(i)} for i,q in enumerate(questions)],
-                    "topic": entry["title"], "timer": remaining, "allowInstantFeedback": False}
+                    "topic": entry["title"], "timer": remaining, "allowInstantFeedback": True}
     if not sess or not sess["admin"]:
         return {"ok": False, "msg": "Тек админге қолжетімді"}
     if typ in ("admin_assign_admin", "admin_create_admin") and not owner:
@@ -1226,9 +1283,12 @@ def _access_request(state, sess, typ, d, sid, token):
         if type(days) is not int or not 1 <= days <= 14:
             return {"ok":False,"msg":"Мерзімі 1–14 күн болсын"}
         with state["lock"]:
-            test=next((t for t in _jload(state["db"].get("ubt_tests","[]"),list,[]) if isinstance(t,dict) and t.get("id")==tid),None)
+            test=next((t for t in _available_send_tests(state) if t.get("id")==tid),None)
             if not test or not isinstance(test.get("questions"),list) or not 0 < len(test["questions"]) <= 500:
                 return {"ok":False,"msg":"Сұрақтары бар тест таңдаңыз"}
+            stored_tests=_jload(state["db"].get("ubt_tests","[]"),list,[])
+            if not any(t.get("id")==tid for t in stored_tests):
+                stored_tests.append(dict(test));_put(state,"ubt_tests",_jdump(stored_tests))
             codes=_access_codes(state)
             codes={k:v for k,v in codes.items() if v.get("expires",0)>time.time()}
             if len(codes)>=1000:
@@ -1504,7 +1564,7 @@ def _messenger_request(state,sess,typ,d):
             if len(_jdump(tests))>=7_800_000:
                 return {"ok":False,"msg":"Тесттер қоймасы толған"}
             assignments=_jload(state["db"].get("ubt_assigned_tests","[]"),list,[])
-            assignments.append({"id":aid,"uid":uid,"login":person["login"],"testId":private_id,"title":str(test.get("topic") or "Тест")[:150],
+            assignments.append({"id":aid,"uid":uid,"login":person["login"],"testId":private_id,"sourceTestId":test.get("id"),"title":str(test.get("topic") or "Тест")[:150],
                 "limit":limit,"used":0,"created":int(time.time()),"fromUid":sess["uid"],"fromName":sess["name"]})
             _put(state,"ubt_tests",_jdump(tests));_put(state,"ubt_assigned_tests",_jdump(assignments));_commit(state)
             return {"ok":True}
@@ -1565,7 +1625,7 @@ def _handle_req(state, sid, rq):
             return {"ok":False,"msg":"Тек админге қолжетімді"}
         with state["lock"]:
             return {"ok":True,"items":[{"id":t["id"],"title":t.get("topic") or "Тест","count":len(t["questions"])} for t in _available_send_tests(state)]}
-    if sess and sess.get("codeGuest") and typ not in ("code_start", "resume", "resume_exam", "finish_exam", "cancel_exam", "logout"):
+    if sess and sess.get("codeGuest") and typ not in ("code_start", "resume", "resume_exam", "finish_exam", "cancel_exam", "logout", "exam_check_answer"):
         return {"ok":False,"msg":"Бұл код тек бір тестке арналған"}
     if sess and sess["uid"] != "admin" and typ in ("change_display_name",) :
         return {"ok":False,"msg":"Тек басты админ өзгерте алады"}
@@ -1573,6 +1633,9 @@ def _handle_req(state, sid, rq):
         return {"ok":False,"msg":"Админ аккаунтын тек басты админ өзгертеді"}
     if typ in ("code_login", "code_start", "admin_code_list", "admin_code_create", "admin_code_delete", "admin_assign_admin", "admin_create_admin"):
         return _access_request(state,sess,typ,d,sid,rq.get("tok"))
+
+    if typ=="exam_check_answer":
+        return _check_exam_answer(state,sess,d)
 
     if typ in ("admin_publish_test", "approved_test_list", "notifications_list"):
         return _publication_request(state,sess,typ,d)
@@ -1769,7 +1832,7 @@ def _handle_req(state, sid, rq):
             private_test.pop("classId", None)
             private_test.pop("className", None)
             assignment = {"id": aid, "uid": person["id"],
-                          "login": login, "testId": private_id, "title": str(test.get("topic") or "Тест")[:150],
+                          "login": login, "testId": private_id, "sourceTestId":test.get("id"), "title": str(test.get("topic") or "Тест")[:150],
                           "limit": limit, "used": 0, "created": int(time.time())}
             assignments.append(assignment)
             tests.append(private_test)
@@ -1849,6 +1912,8 @@ def _handle_req(state, sid, rq):
             a = next((x for x in assignments if isinstance(x, dict) and x.get("id") == aid and x.get("uid") == sess["uid"]), None)
             tests = _jload(state["db"].get("ubt_tests", "[]"), list, [])
             t = next((x for x in tests if isinstance(x, dict) and a and x.get("id") == a.get("testId")), None)
+            if a and not t:
+                t=_recover_received_test(state,sess,a["testId"])
             if not a or not t or not t.get("questions"):
                 return {"ok": False, "msg": "Тест қолжетімсіз"}
             if a.get("used", 0) >= a.get("limit", 0):
@@ -2378,7 +2443,10 @@ def _merge_tests(state, sess, v):
            not re.fullmatch(r"[\w.:-]{1,100}", t["id"]) for t in inc):
         return None
     if sess["admin"]:
-        return _jdump(inc)
+        existing=_jload(state["db"].get("ubt_tests","[]"),list,[])
+        seen={t["id"] for t in inc}
+        retained=[t for t in existing if isinstance(t,dict) and t.get("id") not in seen and (t.get("assignmentId") or t.get("receivedFromAdmin"))]
+        return _jdump(inc+retained)
     stored = _jload(state["db"].get("ubt_tests", "[]"), list, [])
     sby = {t.get("id"): t for t in stored if isinstance(t, dict)}
     uid = sess["uid"]
@@ -3815,8 +3883,8 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
       <button class="mode" onclick="showQuestionBank()" style="grid-column:1/-1"><span class="ic">📚</span><h3>Сұрақтар базасы</h3><p>Пәндер бойынша өз сұрақтарым</p></button>
       <button class="mode" id="admin-btn" style="display:none" onclick="showAdmin()"><span class="ic">👑</span><h3>Админ панелі</h3><p>Толық басқару</p></button>
       <button class="mode" id="admin-requests-card" style="display:none" onclick="showAccessRequests()"><span class="ic">📨</span><h3>Өтініштер <span id="home-requests-count"></span></h3><p>Тіркелу өтініштері</p></button>
-      <button class="mode" style="grid-column:1/-1" onclick="exportAll()"><span class="ic">💾</span><h3 title="Тесттер мен жинақтардың көшірмесі">Көшірмені сақтау</h3><p>JSON файлға сақтау</p></button>
-      <label class="mode" style="grid-column:1/-1;cursor:pointer"><span class="ic">📥</span><h3 title="Көшірмеден қалпына келтіру">Көшірмеден қалпына келтіру</h3><p>JSON файлын қосу; бар тесттер сақталады</p><input type="file" accept=".json,application/json" style="display:none" onchange="importAll(this)"></label></div></details>
+
+</div></details>
   </nav>
 </aside>
 
@@ -4566,7 +4634,7 @@ body.dark #s-login .ubt-brand-title span{color:#b4a4ff}
       <h3 style="margin-bottom:12px">📐 Формулалар</h3>
       <div id="admin-formulas" class="list"></div>
     </div>
-    <div class="card" style="padding:20px">
+    <div class="card owner-backup-only" id="owner-backup-panel" style="padding:20px">
       <h3 style="margin-bottom:6px">💾 Дерекқордың резервтік көшірмесі</h3>
       <p class="sub" style="margin-bottom:10px">Барлық аккаунт, тест, сынып деректері. Серверді ауыстырсаңыз немесе дерек жоғалса — осы файлмен қалпына келтіріңіз.</p>
       <div class="row" style="justify-content:flex-start"><button class="btn btn-p btn-sm" onclick="exportAll()">⬇ Көшірмені жүктеу</button><label class="btn btn-s btn-sm" style="cursor:pointer">⬆ Қалпына келтіру<input type="file" accept=".json" style="display:none" onchange="importAll(this)"></label></div>
@@ -4787,6 +4855,9 @@ html{text-rendering:optimizeSpeed}
 <style>
 #owner-security-panel .security-actions{display:flex;gap:10px;flex-wrap:wrap;margin:15px 0}#owner-security-panel table{width:100%;min-width:650px;border-collapse:collapse}#owner-security-panel th,#owner-security-panel td{padding:11px;border-bottom:1px solid var(--b);text-align:left;font-size:12px;overflow-wrap:anywhere}#owner-security-panel .security-status{padding:12px;border-radius:12px;background:#36bd9818;color:var(--t);margin:12px 0}#closed-login-note{border:1px solid #ba8062;background:#663b2829;color:#e8c4a7;padding:12px 16px;border-radius:14px;line-height:1.7;margin-bottom:18px;font-size:12px}.wa-contact-preview{max-width:180px}.owner-block-target{white-space:nowrap}#owner-security-panel details{margin-top:20px}#owner-security-panel summary{font-size:16px;font-weight:750;cursor:pointer;padding:10px 0}
 </style>
+<style>
+.owner-backup-only{display:none!important}body.primary-owner #s-admin .owner-backup-only{display:block!important}.instant-feedback-toolbar{display:flex;align-items:center;gap:9px;margin:10px 0 15px;padding:11px 14px;background:var(--c);border:1px solid var(--b);border-radius:12px;font-size:12px}.instant-feedback-toolbar label{display:flex;align-items:center;gap:9px;cursor:pointer}.instant-feedback-toolbar input{width:18px;height:18px;flex:none}.instant-feedback-status{font-size:11px;color:var(--m);margin-left:auto}
+</style>
 <script type="text/plain" id="app-src">
 
 const ubtAssetPromises=new Map();
@@ -4846,7 +4917,7 @@ function personalBackupKey(k){
      'ubt_ubt140_selection_','ubt_subject_selection_'].some(p=>k===p+'admin');
 }
 function exportAll(){
-  if(!user||!user.isAdmin)return;
+  if(!user||!user.isAdmin||user.id!=='admin'||document.querySelector('.screen.active')?.id!=='s-admin')return;
   const o={};
   for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(personalBackupKey(k))o[k]=localStorage.getItem(k)}
   const blob=new Blob([JSON.stringify(o)],{type:'application/json'});
@@ -4854,9 +4925,8 @@ function exportAll(){
   document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 }
 function importAll(inp){
-  if(!user||!user.isAdmin)return;
+  if(!user||!user.isAdmin||user.id!=='admin'||document.querySelector('.screen.active')?.id!=='s-admin')return;
   const f=inp.files&&inp.files[0];if(!f)return;
-  if(ctx==='f'&&inp.files.length>1){bulk.f=null;bulkName.f='';document.getElementById('f-bulk-info').textContent=inp.files.length+' JSON файл таңдалды. Төмендегі «10 000 сұрақты базаға қосу» батырмасын басыңыз.';return}
   const r=new FileReader();
   r.onload=()=>{
     try{
@@ -6082,7 +6152,7 @@ function startBank(key){
   st.timerSeconds=Math.max(b.qs.length*90,600);shuf(st.questions);beginTest();
 }
 function beginTest(){
-  const canInstantFeedback=!st.secureExam||st.allowInstantFeedback===true;
+  const canInstantFeedback=true;
   const existing=document.getElementById('ubt-start-overlay');if(existing)existing.remove();
   const modal=document.createElement('div');modal.id='ubt-start-overlay';modal.className='ovl';
   modal.innerHTML=`<div class="box" style="max-width:470px;margin:9vh auto;padding:28px">
@@ -8189,7 +8259,7 @@ const MANAGE_SEL='[data-testid="manage-app-button"],[data-testid*="manage-app"],
 function chromeSync(){
   syncAdminClass();updWatermark();
   const act=document.querySelector('.screen.active');
-  const show=isAdminNow()&&act&&act.id==='s-admin';
+  const show=!!(user&&user.isAdmin&&user.id==='admin')&&act&&act.id==='s-admin';
   window.__ubtManageVisible=!!show;
   if(window.__ubtManageSync)window.__ubtManageSync();
   const docs=[];
@@ -10812,7 +10882,8 @@ async function schoolDeleteClass(cid,button){
   if(!r.ok){alert(r.msg||'Кодтар ашылмады');return}
   document.getElementById('admin-pass-box')?.remove();
   let host=document.getElementById('access-codes-panel');if(!host){host=document.createElement('section');host.id='access-codes-panel';host.className='card';host.style.cssText='padding:22px;margin-top:20px';document.querySelector('#s-admin > .wrap').appendChild(host)}
-  const tests=allTests().filter(t=>!t.assignmentId&&Array.isArray(t.questions)&&t.questions.length);
+  const available=await authCall('sendable_tests',{});if(job!==adminJob||user?.id!==uid)return;
+  const tests=(available.items||[]).map(t=>({id:t.id,topic:t.title,questions:{length:t.count}}));
   const people=Object.values(LS.get('ubt_profiles',{})).filter(p=>p&&p.accessApproved===true&&p.id!=='admin');
   const date=n=>new Date(n*1000).toLocaleString('kk-KZ',{timeZone:'Asia/Almaty'});
   host.innerHTML='<div class="row" style="justify-content:space-between"><h3>Код тесттері</h3><button class="btn btn-s btn-sm" onclick="accessAddPerson()">+ Адам қосу</button></div><p class="sub" style="margin-top:10px">Тестті таңдаңыз, код жазыңыз, күн санын таңдаңыз. Ең көбі — 14 күн.</p><div class="access-grid"><label>Тест<select id="access-test">'+tests.map(t=>'<option value="'+esc(t.id)+'">'+esc(t.topic||'Тест')+' · '+t.questions.length+' сұрақ</option>').join('')+'</select></label><label>Код<input id="access-code-input" placeholder="Кемінде 6 әріп не сан: BIO2026" minlength="6" maxlength="32" style="text-transform:uppercase" autocomplete="off"></label><label>Мерзімі<select id="access-days">'+Array.from({length:14},(_,i)=>'<option value="'+(i+1)+'" '+(i===6?'selected':'')+'>'+(i+1)+' күн</option>').join('')+'</select></label><button class="btn btn-p" onclick="accessCreate(this)" '+(!tests.length?'disabled':'')+'>Код жасау</button></div>'+(!tests.length?'<p class="sub">Алдымен сұрақтары бар тест құрыңыз не файлдан сақтаңыз.</p>':'')+'<div style="overflow-x:auto"><table class="code-table"><thead><tr><th>Код</th><th>Тест</th><th>Жарамдылық мерзімі</th><th>Әрекет</th></tr></thead><tbody>'+r.codes.slice().reverse().map(c=>'<tr><td><code>'+esc(c.code)+'</code></td><td>'+esc(c.title)+'</td><td>'+esc(date(c.expires))+(c.expires*1000<=Date.now()?' · Мерзімі өтті':' · '+c.days+' күн')+'</td><td><button class="btn btn-s btn-sm" onclick="accessCopy('+jsq(c.code)+')">Көшіру</button> <button class="btn btn-d btn-sm" onclick="accessDelete('+jsq(c.code)+')">Өшіру</button></td></tr>').join('')+'</tbody></table></div>'+(!r.codes.length?'<p class="sub">Кодтар әлі жасалмаған.</p>':'');
@@ -10887,7 +10958,7 @@ async function schoolDeleteClass(cid,button){
  async function loadContacts(reset){if(!allowed())return;if(reset)contactOffset=0;const job=++contactJob,uid=user.id,host=document.getElementById('wa-contacts'),scroll=host.scrollTop;if(reset&&!host.children.length)host.textContent='Жүктелуде…';const r=await authCall('messenger_contacts',{search:document.getElementById('wa-search').value,offset:contactOffset});if(job!==contactJob||uid!==user?.id)return;if(!r.ok){document.getElementById('wa-status').textContent=r.msg;return}const html=r.items.map(c=>`<button type="button" class="wa-contact${c.id===selected?' selected':''}" data-uid="${esc(c.id)}" onclick="waSelectContact(${jsq(c.id)})"><span class="wa-avatar">${esc(c.name.slice(0,1))}</span><span style="min-width:0"><span class="wa-contact-name">${c.id===user.id?'Маған келгендер':esc(c.name)}${c.isGroup?' · Топ':c.isAdmin?' · Админ':''}</span><span class="wa-contact-preview">${esc(c.preview)}</span></span>${c.unread?`<span class="wa-count">${c.unread}</span>`:''}</button>`).join('');if(reset){host.innerHTML=html||'<p class="wa-loading">Адам табылмады.</p>';host.scrollTop=scroll}else host.insertAdjacentHTML('beforeend',html);contactOffset+=r.items.length;document.getElementById('wa-contact-more').hidden=contactOffset>=r.total}
  document.getElementById('wa-search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>loadContacts(true),200)};document.getElementById('wa-contact-more').onclick=()=>loadContacts(false);
  async function loadThread(reset){if(!allowed()||!selected)return;if(reset)threadOffset=0;const target=selected,uid=user.id,job=++threadJob,host=document.getElementById('wa-messages'),nearBottom=host.scrollHeight-host.scrollTop-host.clientHeight<90,oldHeight=host.scrollHeight,oldTop=host.scrollTop;const r=await authCall('messenger_thread',{uid:target,offset:threadOffset});if(job!==threadJob||uid!==user?.id||target!==selected)return;if(!r.ok){document.getElementById('wa-status').textContent=r.msg||'Чат ашылмады';return}document.getElementById('wa-chat-name').textContent=r.isGroup?r.name:user.isAdmin?(target===user.id?'Маған келгендер':r.name):'Админнен келген хабарламалар';document.querySelector('.owner-block-target')?.remove();if(user.id==='admin'&&!r.isGroup&&target!=='admin'){const block=document.createElement('button');block.type='button';block.className='btn btn-d btn-sm owner-block-target';block.textContent='Бұғаттау';block.style.marginLeft='auto';block.onclick=()=>ownerBlockAccount(target);document.querySelector('.wa-head').appendChild(block)}document.getElementById('wa-chat-avatar').textContent=r.name.slice(0,1);const previous=host.dataset.thread;host.dataset.thread=target;const own=target===user.id||target.startsWith('group:');
- const html=r.items.map(m=>{const test=m.kind!=='letter';const exhausted=Number.isFinite(m.limit)&&m.limit>0&&m.used>=m.limit;const action=m.kind==='assignment'?`startAssignedTest(${jsq(m.assignmentId)})`:`startUserTest(${jsq(m.testId)})`;return `<article class="wa-bubble${m.mine?' mine':''}"><div class="wa-sender">${esc(m.sender||'Админ')}</div>${test?`<div class="wa-test-title">📋 ${esc(m.title)}</div><div class="wa-test-details">${Number.isFinite(m.limit)&&m.limit>0?'Тапсырғаны: '+m.used+' / '+m.limit:'Жіберілген тест'}</div>${own&&m.canStart!==false?`<button type="button" class="wa-test-start" ${exhausted?'disabled':''} onclick="${action}">${exhausted?'Лимит аяқталды':'▶ Тестті бастау'}</button>`:'<div class="wa-test-details">Қатысушы осы жерден бастайды</div>'}`:`<div class="wa-message-text">${esc(m.text)}</div>`}<div class="wa-time">${m.created?esc(new Date(m.created*1000).toLocaleString('kk-KZ',{timeZone:'Asia/Almaty'})):''}</div></article>`}).join('');host.querySelector('.wa-load-older')?.remove();
+ const html=r.items.map(m=>{const test=m.kind!=='letter';const exhausted=Number.isFinite(m.limit)&&m.limit>0&&m.used>=m.limit;const action=m.kind==='assignment'?`waStartReceived('assignment',${jsq(m.assignmentId)})`:`waStartReceived(${jsq(m.kind)},${jsq(m.testId)})`;return `<article class="wa-bubble${m.mine?' mine':''}"><div class="wa-sender">${esc(m.sender||'Админ')}</div>${test?`<div class="wa-test-title">📋 ${esc(m.title)}</div><div class="wa-test-details">${Number.isFinite(m.limit)&&m.limit>0?'Тапсырғаны: '+m.used+' / '+m.limit:'Жіберілген тест'}</div>${own&&m.canStart!==false?`<button type="button" class="wa-test-start" ${exhausted?'disabled':''} onclick="${action}">${exhausted?'Лимит аяқталды':'▶ Тестті бастау'}</button>`:'<div class="wa-test-details">Қатысушы осы жерден бастайды</div>'}`:`<div class="wa-message-text">${esc(m.text)}</div>`}<div class="wa-time">${m.created?esc(new Date(m.created*1000).toLocaleString('kk-KZ',{timeZone:'Asia/Almaty'})):''}</div></article>`}).join('');host.querySelector('.wa-load-older')?.remove();
  if(reset){const signature=JSON.stringify(r.items);if(host.dataset.signature!==signature||previous!==target){host.innerHTML=html||'<p class="wa-loading">Хабарлама жоқ. Жаңа хабарлама жазыңыз.</p>';host.dataset.signature=signature;if(nearBottom||previous!==target)host.scrollTop=host.scrollHeight;else host.scrollTop=oldTop}}
  else{host.insertAdjacentHTML('afterbegin',html);host.scrollTop=host.scrollHeight-oldHeight+oldTop}
  threadOffset+=r.items.length;if(r.hasMore){const more=document.createElement('button');more.type='button';more.className='wa-more wa-load-older';more.textContent='Бұрынғы хабарламалар';more.onclick=()=>loadThread(false);host.prepend(more)}
@@ -10918,6 +10989,30 @@ async function schoolDeleteClass(cid,button){
  const show=showScr;showScr=function(id){const r=show.apply(this,arguments);if(!owner())document.getElementById('owner-security-panel')?.remove();syncMaintenance();if(id==='s-admin'&&owner())loadOwnerSecurity();return r};
  const sync=syncRefresh;syncRefresh=function(){const r=sync.apply(this,arguments);if(!owner())document.getElementById('owner-security-panel')?.remove();syncMaintenance();return r};
  syncMaintenance();
+})();
+
+(function(){
+ function ownerUI(){document.body.classList.toggle('primary-owner',!!(user&&user.isAdmin&&user.id==='admin'))}
+ window.waStartReceived=async function(kind,id){if(!user||user.isCodeGuest)return;const notice=document.getElementById('wa-status');if(notice)notice.textContent='Тест ашылуда…';let permit=null;
+  if(kind==='assignment'){permit=await authCall('start_assigned_test',{id});if(!permit.ok){if(notice)notice.textContent=permit.msg||'Тест ашылмады';alert(permit.msg||'Тест ашылмады');return}}
+  const r=await authCall('start_exam',{testId:permit?permit.testId:id,assignmentId:permit?id:undefined,attemptToken:permit?.attemptToken});
+  if(!r.ok){if(notice)notice.textContent=r.msg||'Тест ашылмады';alert(r.msg||'Тест ашылмады');return}
+  if(notice)notice.textContent='';st=baseState();st.questions=r.questions.map(q=>({...q,subjectName:r.topic}));st.subjectName=r.topic;st.secureExam=r.exam;st.timerSeconds=r.timer;st.allowInstantFeedback=true;beginTest();document.getElementById('ubt-start-confirm')?.click();
+ };
+ const originalSelect=selOpt;
+ selOpt=async function(index){
+  const q=st.questions[st.currentIndex];if(!q||st.examSubmitting||document.getElementById('result-retry'))return;
+  if(st.checkedFeedback?.[q.id]||(st.secureExam&&Number.isInteger(q.correct)&&Number.isInteger(st.answers[q.id])))return;
+  if(!st.secureExam||!st.instantFeedback)return originalSelect.apply(this,arguments);
+  if(st.checkingAnswer)return;const attempt=st,exam=st.secureExam;st.checkingAnswer=true;const status=document.querySelector('.instant-feedback-status');if(status)status.textContent='Тексерілуде…';
+  try{const r=await authCall('exam_check_answer',{exam,questionId:q.id,answer:index});if(st!==attempt)return;if(!r.ok)throw Error(r.msg||'Жауап тексерілмеді');q.correct=r.correct;st.answers[q.id]=index;st.checkedFeedback=st.checkedFeedback||{};st.checkedFeedback[q.id]=true;rememberPendingResult('active');renderQ();updateProg()}catch(e){alert(e.message||'Қайта көріңіз')}finally{if(st===attempt)st.checkingAnswer=false;const status=document.querySelector('.instant-feedback-status');if(status)status.textContent=''}
+ };
+ let startingReceived=false;
+ const directStart=waStartReceived;waStartReceived=async function(){if(startingReceived)return;startingReceived=true;try{return await directStart.apply(this,arguments)}finally{startingReceived=false}};
+ let finishWait=null;const finish=finishTest;finishTest=function(){if(st.checkingAnswer){if(!finishWait){const args=arguments;finishWait=setTimeout(()=>{finishWait=null;finishTest.apply(this,args)},250)}return}return finish.apply(this,arguments)};
+ const originalRender=renderQ;
+ renderQ=function(){const r=originalRender.apply(this,arguments);let bar=document.getElementById('all-instant-feedback-bar');if(!bar){bar=document.createElement('div');bar.id='all-instant-feedback-bar';bar.className='instant-feedback-toolbar';bar.innerHTML='<label><input id="all-instant-feedback" type="checkbox"> Жауапты бірден шығару</label><span class="instant-feedback-status" role="status"></span>';const host=document.querySelector('#s-test .tmain');host.prepend(bar);bar.querySelector('input').onchange=function(){st.instantFeedback=this.checked;const q=st.questions[st.currentIndex],answer=st.answers[q?.id];if(this.checked&&st.secureExam&&Number.isInteger(answer)&&!Number.isInteger(q.correct)){selOpt(answer);return}renderQ()}}bar.querySelector('input').checked=!!st.instantFeedback;return r};
+ const show=showScr;showScr=function(){const r=show.apply(this,arguments);ownerUI();return r};const sync=syncRefresh;syncRefresh=function(){const r=sync.apply(this,arguments);ownerUI();return r};ownerUI();
 })();
 </script>
 <script>
