@@ -594,13 +594,20 @@ def _start_exam(state, sess, d):
     with state["lock"]:
         test = next((t for t in _jload(state["db"].get("ubt_tests", "[]"), list, [])
                      if isinstance(t, dict) and t.get("id") == tid), None)
-        if tid.startswith("real:"):
+        if tid.startswith(("real:","realnamed:")):
             if sess.get("codeGuest"):
                 return {"ok":False,"msg":"Аккаунтыңызға кіріңіз"}
-            subject = tid[5:]
+            subject = "named" if tid.startswith("realnamed:") else tid[5:]
             banks = _real_bank_cached(state)
             rng = secrets.SystemRandom()
-            if subject == "all":
+            if subject == "named":
+                group = next((t for t in _real_named_tests(state) if t["id"]==tid[len("realnamed:"):]),None)
+                if not group:return {"ok":False,"msg":"ҰБТ тесті табылмады"}
+                if len(group["questions"])>500:return {"ok":False,"msg":"Жинақты 500 сұрақтан аспайтын тесттерге бөліңіз"}
+                selected = [dict(q,subjectName=_SUBJECT_NAMES[group["subject"]]) for q in group["questions"]]
+                title, subject_name = group["title"], _SUBJECT_NAMES[group["subject"]]
+                minutes = min(300,max(10,len(selected)*2))
+            elif subject == "all":
                 p1, p2 = d.get("p1"), d.get("p2")
                 profiles = set(_SUBJECT_NAMES) - {"history","reading","mathlit"}
                 if p1 not in profiles or p2 not in profiles or p1 == p2:
@@ -692,7 +699,7 @@ def _start_exam(state, sess, d):
             timer = 0
         timer = min(max(timer if timer > 0 else max(len(qs) * 90, 600), 60), 18000)
         state["exams"][nonce] = {"uid": uid, "testId": tid, "assignmentId": aid, "classId": test.get("classId"),
-                                 "is140": tid == "real:all", "owner": owner and not tid.startswith("real:"), "reward": bool(aid or test.get("classId") or test.get("adminApproved")),
+                                 "is140": tid == "real:all", "owner": owner and not tid.startswith(("real:","realnamed:")), "reward": bool(aid or test.get("classId") or test.get("adminApproved")),
                                  "limit": test.get("limit"), "publishedQuota": published, "publishedLimit": _approved_limit(test), "questions": [dict(q) for q in qs],
                                  "topic": (str(test.get("subjectName") or "") + " · " + str(test.get("topic") or "Тест")).strip(" ·"),
                                  "expires": time.time() + timer + 90}
@@ -1488,6 +1495,85 @@ def _content_key(row, kind):
     fields = ("c","t","d") if kind == "glossary" else ("subject","title","body")
     return _jdump([norm(row.get(k)) for k in fields])
 
+def _real_named_tests(state):
+    raw = state["db"].get("ubt_server_exam_real_bank", "{}")
+    cached = state.get("real_named_cache")
+    if cached and cached[0] is raw:
+        return cached[1]
+    groups = {}
+    for subject, rows in _real_bank_cached(state).items():
+        if subject not in _SUBJECT_NAMES: continue
+        for q in rows:
+            title = str(q.get("source") or "ҰБТ жинағы")
+            ident = q.get("sourceTestId") or "legacy_" + hashlib.sha256((subject+"|"+title).encode()).hexdigest()[:24]
+            group = groups.setdefault(ident,{"id":ident,"title":title,"subject":subject,"questions":[]})
+            group["questions"].append(q)
+    result = list(groups.values())
+    state["real_named_cache"] = (raw,result)
+    return result
+
+def _real_source_tests(state):
+    hidden = set(_jload(state["db"].get("ubt_hidden_source_tests","[]"),list,[]))
+    tests = {t["id"]:t for t in _available_send_tests(state) if t["id"] not in hidden}
+    represented = {(t.get("authorId") or "admin",t.get("subject"),t.get("topic") or "Тест") for t in tests.values()}
+    for q in _jload(state["db"].get("ubt_question_catalog","[]"),list,[]):
+        if not isinstance(q,dict) or q.get("deleted"): continue
+        key = (q.get("authorId") or "admin",q.get("subject"),q.get("source") or "Базаға қосылған")
+        if key in represented: continue
+        ident = "cat_"+hashlib.sha256(_jdump(key).encode()).hexdigest()[:24]
+        if ident in hidden: continue
+        t = tests.setdefault(ident,{"id":ident,"authorId":key[0],"subject":key[1],"topic":key[2],"questions":[]})
+        t["questions"].append(q)
+    return list(tests.values())
+
+def _real_manage_request(state,sess,d):
+    if not sess or sess.get("uid")!="admin" or not sess.get("admin") or sess.get("codeGuest"):
+        return {"ok":False,"msg":"Тек басты админ басқара алады"}
+    with state["lock"]:
+        action = d.get("action")
+        if action == "list":
+            named = {t["id"] for t in _real_named_tests(state)}
+            return {"ok":True,"items":[{"id":t["id"],"title":str(t.get("topic") or "Тест"),"subject":t.get("subject"),"count":len(t.get("questions",[])),"added":"test_"+hashlib.sha256(t["id"].encode()).hexdigest()[:24] in named} for t in _real_source_tests(state)]}
+        source = next((t for t in _real_source_tests(state) if t["id"]==d.get("sourceId")),None)
+        ident = "test_"+hashlib.sha256(str(d.get("sourceId") or "").encode()).hexdigest()[:24]
+        if action not in ("add","remove","delete"):return {"ok":False,"msg":"Әрекет қате"}
+        if action in ("add","delete") and not source:return {"ok":False,"msg":"Тест табылмады"}
+        banks = {k:list(v) for k,v in _real_bank_cached(state).items()}
+        if action == "add":
+            subject = source.get("subject")
+            if subject not in _SUBJECT_NAMES:return {"ok":False,"msg":"Алдымен тесттің пәнін белгілеңіз"}
+            try:
+                clean = []
+                qs = source.get("questions",[])
+                for offset in range(0,len(qs),500):
+                    clean.extend(_school_test_payload([{**source,"questions":qs[offset:offset+500]}])[0]["questions"])
+                if not clean:raise ValueError("Тестте сұрақ жоқ")
+            except (ValueError,TypeError) as e:return {"ok":False,"msg":str(e)}
+            for key in banks:banks[key]=[q for q in banks[key] if q.get("sourceTestId")!=ident]
+            if len(banks.get(subject,[]))+len(clean)>20000:return {"ok":False,"msg":"Пән базасының шегі — 20000 сұрақ"}
+            banks.setdefault(subject,[]).extend({**q,"realBank":True,"subject":subject,"subjectName":_SUBJECT_NAMES[subject],"source":str(source.get("topic") or "Тест"),"sourceTestId":ident} for q in clean)
+        else:
+            target = str(d.get("namedId") or ident)
+            for key in banks:
+                banks[key]=[q for q in banks[key] if (q.get("sourceTestId") or "legacy_"+hashlib.sha256((key+"|"+str(q.get("source") or "ҰБТ жинағы")).encode()).hexdigest()[:24])!=target]
+        if action == "delete":
+            # Remove the original and tombstone its catalogue rows so they cannot reappear.
+            rows = _jload(state["db"].get("ubt_tests","[]"),list,[])
+            _put(state,"ubt_tests",_jdump([t for t in rows if t.get("id")!=source["id"]]))
+            hidden = _jload(state["db"].get("ubt_hidden_source_tests","[]"),list,[])
+            if source["id"] not in hidden:hidden.append(source["id"])
+            _put(state,"ubt_hidden_source_tests",_jdump(hidden))
+            texts = {q.get("text") for q in source.get("questions",[])}
+            other_texts = {q.get("text") for t in _available_send_tests(state) if t["id"]!=source["id"] and (t.get("authorId") or "admin")== (source.get("authorId") or "admin") and t.get("subject")==source.get("subject") for q in t.get("questions",[])}
+            texts -= other_texts
+            author = source.get("authorId") or "admin"
+            catalog = _jload(state["db"].get("ubt_question_catalog","[]"),list,[])
+            for q in catalog:
+                if q.get("authorId")==author and q.get("subject")==source.get("subject") and q.get("text") in texts:q["deleted"]=True
+            _put(state,"ubt_question_catalog",_jdump(catalog))
+        _put(state,"ubt_server_exam_real_bank",_jdump(banks));_commit(state)
+        return {"ok":True}
+
 def _real_bank_cached(state):
     """Parse a large bank once per committed version, reuse for start and metadata."""
     raw = state["db"].get("ubt_server_exam_real_bank", "{}")
@@ -1836,7 +1922,8 @@ def _available_send_tests(state):
     for test in _jload(state["db"].get("ubt_tests","[]"),list,[]) + globals().get("_BUILTIN_BANK_TESTS",[]):
         if isinstance(test,dict) and test.get("id") and test.get("questions"):
             result.setdefault(test["id"],test)
-    return list(result.values())
+    hidden=set(_jload(state["db"].get("ubt_hidden_source_tests","[]"),list,[]))
+    return [t for t in result.values() if t["id"] not in hidden]
 
 def _group_allowed(sess,cls):
     return bool(cls and (sess["admin"] or cls.get("teacherId")==sess["uid"] or sess["uid"] in cls.get("students",[])))
@@ -2125,6 +2212,9 @@ def _handle_req(state, sid, rq):
 
     if typ=="exam_check_answer":
         return _check_exam_answer(state,sess,d)
+
+    if typ=="real_bank_manage":
+        return _real_manage_request(state,sess,d)
 
     if typ=="owner_content_import":
         return _owner_content_request(state,sess,d)
@@ -3196,6 +3286,8 @@ def _authorize(state, sess, k, v, chat_token=""):
         return None
     if k == "ubt_chat":
         return _merge_chat(state, sess, v, chat_token)
+    if k in ("ubt_real_bank_tests","ubt_hidden_source_tests"):
+        return None
     if k == "ubt_real_bank_meta":
         return None
     if k == "ubt_site_controls":
@@ -3565,6 +3657,7 @@ def _snapshot(tok="", claim=""):
     db["ubt_content_security_status"]=_jdump({"count":int(security.get(sess["uid"],{}).get("count",0)),"uid":sess["uid"]})
     _real_bank_cached(state)
     db["ubt_real_bank_meta"] = state["real_bank_meta_cache"]
+    db["ubt_real_bank_tests"] = _jdump([{k:t[k] for k in ("id","title","subject")} | {"count":len(t["questions"])} for t in _real_named_tests(state)])
     db["ubt_daily_motivation"] = _jdump(_daily_motivation())
     db["ubt_chat"] = chat
     deliveries = _jload(db.get("ubt_teacher_deliveries", "[]"), list, [])
@@ -5489,10 +5582,55 @@ body.test-active{margin:0!important;padding:0!important;overflow-x:hidden}body.t
 <script type="text/plain" id="app-src">
 
 
+function realExamActive(){
+ return typeof st!=='undefined'&&!!st.secureExam&&!st.verifiedExam&&st.questions?.some(q=>q.realBank)&&(st.realExamStarted||document.getElementById('s-test')?.classList.contains('active'));
+}
+let realSourceRows=[],realSourceLoaded=0,realSourceLoading=false,realSourcePage=0;
+async function renderRealSourceInventory(host,force=false){
+ if(!user?.isAdmin||user.id!=='admin')return;
+ if(force||!realSourceLoaded||Date.now()-realSourceLoaded>30000){
+  if(realSourceLoading)return;realSourceLoading=true;host.textContent='Тесттер тізімі жүктелуде…';
+  try{const r=await authCall('real_bank_manage',{action:'list'});if(!r.ok)throw Error(r.msg);realSourceRows=r.items;realSourceLoaded=Date.now()}catch(e){host.textContent=e.message;return}finally{realSourceLoading=false}
+ }
+ const query=(document.getElementById('u-bank-search')?.value||'').trim().toLowerCase(),subject=document.getElementById('u-bank-subject')?.value||'';
+ const rows=realSourceRows.filter(t=>(!subject||t.subject===subject)&&(!query||t.title.toLowerCase().includes(query)));
+ realSourcePage=Math.min(realSourcePage,Math.max(0,Math.ceil(rows.length/40)-1));
+ host.innerHTML=`<div class="row" style="justify-content:space-between"><h3>Барлық тесттер · ${rows.length}</h3><button class="btn btn-s btn-sm" onclick="renderRealSourceInventory(document.getElementById('u-bank-list'),true)">Жаңарту</button><button class="btn btn-p btn-sm" onclick="showRealNamedTests()">ҰБТ базасындағы тесттер</button></div><p class="sub" style="margin:12px 0">Қосу — тестті ҰБТ базасына көшіреді. ҰБТ базасынан өшіру — түпнұсқаны сақтайды. Толық өшіру — екі базадан да жояды.</p>`+rows.slice(realSourcePage*40,realSourcePage*40+40).map(t=>`<div class="item"><div class="info"><h4>${esc(t.title)}</h4><p>${esc(subjName(t.subject))} · ${t.count} сұрақ${t.added?' · ✅ ҰБТ базасында':''}</p></div><div class="acts" style="flex-wrap:wrap"><button class="btn btn-p btn-sm" onclick="manageRealSource('add',${jsq(t.id)},'',this)">${t.added?'ҰБТ базасында жаңарту':'ҰБТ базасына қосу'}</button><button class="btn btn-s btn-sm" ${t.added?'':'disabled'} onclick="manageRealSource('remove',${jsq(t.id)},'',this)">ҰБТ базасынан өшіру</button><button class="btn btn-d btn-sm" onclick="manageRealSource('delete',${jsq(t.id)},'',this)">Толық өшіру</button></div></div>`).join('')+`<div class="row"><button class="btn btn-s btn-sm" ${realSourcePage?'':'disabled'} onclick="realSourcePage--;renderRealSourceInventory(document.getElementById('u-bank-list'))">←</button><span>${realSourcePage+1} / ${Math.max(1,Math.ceil(rows.length/40))}</span><button class="btn btn-s btn-sm" ${(realSourcePage+1)*40<rows.length?'':'disabled'} onclick="realSourcePage++;renderRealSourceInventory(document.getElementById('u-bank-list'))">→</button></div>`;
+}
+async function manageRealSource(action,sourceId,namedId,button){
+ if(!user?.isAdmin||user.id!=='admin')return;
+ if(action==='delete'&&!confirm('Тестті бастапқы базадан және ҰБТ базасынан толық өшіру керек пе?'))return;
+ if(action==='remove'&&!confirm('Тестті тек ҰБТ базасынан алып тастау керек пе? Түпнұсқа сақталады.'))return;
+ button.disabled=true;
+ try{const r=await authCall('real_bank_manage',{action,sourceId,namedId});if(!r.ok)throw Error(r.msg);realSourceLoaded=0;await window.__bridge.refresh();if(document.getElementById('s-real-named')?.classList.contains('active'))renderRealNamedTests();else await renderRealSourceInventory(document.getElementById('u-bank-list'),true)}catch(e){alert(e.message)}finally{button.disabled=false}
+}
+let realNamedPage=0;
+function showRealNamedTests(){
+ if(!user)return;closeAppMenu();
+ if(!document.getElementById('s-real-named')){
+  const el=document.createElement('section');el.id='s-real-named';el.className='screen';el.innerHTML='<div class="wrap wide"><button class="btn btn-s btn-sm" onclick="goHome()">← Басты бет</button><div class="hdr" style="margin-top:20px"><h2>🎯 ҰБТ базасы</h2></div><div id="real-named-list"></div></div>';document.body.appendChild(el);
+ }
+ showScr('s-real-named');renderRealNamedTests();
+}
+function renderRealNamedTests(){
+ const host=document.getElementById('real-named-list');if(!host||!user)return;
+ const owner=user.isAdmin&&user.id==='admin',all=LS.get('ubt_real_bank_tests',[]);realNamedPage=Math.min(realNamedPage,Math.max(0,Math.ceil(all.length/30)-1));const rows=all.slice(realNamedPage*30,realNamedPage*30+30);
+ host.innerHTML=(owner?'<div class="row" style="margin-bottom:18px"><button class="btn btn-p" onclick="showQuestionBank()">Базадан тест қосу</button><button class="btn btn-s" onclick="showRealUbtBank()">Пәндік және жалпы 140 тест</button></div>':'')+(rows.length?rows.map(t=>`<div class="item"><div class="info"><h3>${esc(t.title)}</h3><p>${esc(subjName(t.subject))} · ${t.count} сұрақ</p></div><div class="acts"><button class="btn btn-p" onclick="startRealNamedTest(${jsq(t.id)},this)">Тапсыру</button>${owner?`<button class="btn btn-d btn-sm" onclick="manageRealSource('remove','',${jsq(t.id)},this)">ҰБТ базасынан өшіру</button>`:''}</div></div>`).join(''):'<div class="card"><p>Әзірге тест жоқ.</p></div>');
+ if(all.length>30)host.insertAdjacentHTML('beforeend',`<div class="row"><button class="btn btn-s" ${realNamedPage?'':'disabled'} onclick="realNamedPage--;renderRealNamedTests()">←</button><span>${realNamedPage+1} / ${Math.ceil(all.length/30)}</span><button class="btn btn-s" ${(realNamedPage+1)*30<all.length?'':'disabled'} onclick="realNamedPage++;renderRealNamedTests()">→</button></div>`);
+}
+async function startRealNamedTest(id,button){
+ if(realExamActive())return;button.disabled=true;
+ try{
+  const actor=user?.id,r=await authCall('start_exam',{testId:'realnamed:'+id});if(!user||user.id!==actor)return;if(!r.ok)throw Error(r.msg);
+  st=baseState();st.isRealUbt=true;st.secureExam=r.exam;st.questions=r.questions.map(q=>({...q,realBank:true,subjectName:q.subjectName||r.topic}));st.subjectName=r.topic;st.timerSeconds=r.timer;beginTest();
+ }catch(e){alert(e.message)}finally{button.disabled=false}
+}
+
 // Isolated UNT bank: only counts are synced; questions arrive through server exams.
 let realUbtStarting=false;
 async function showRealUbtBank(){
  if(!user){alert('Алдымен аккаунтыңызға кіріңіз');return}
+ if(!(user.isAdmin&&user.id==='admin')){showRealNamedTests();return}
  closeAppMenu();
  if(!document.getElementById('s-real-ubt')){
   const screen=document.createElement('section');screen.id='s-real-ubt';screen.className='screen';
@@ -5505,7 +5643,7 @@ async function showRealUbtBank(){
   full.querySelector('#real-full-p1').value='math';full.querySelector('#real-full-p2').value='physics';
   document.body.appendChild(screen);
  }
- showScr('s-real-ubt');chooseRealUbtSubject(realUbtSubject);
+ showScr('s-real-ubt');if(!document.getElementById('real-owner-names'))document.querySelector('#s-real-ubt .wrap').insertAdjacentHTML('afterbegin','<button id="real-owner-names" class="btn btn-p" style="margin:12px 0" onclick="showRealNamedTests()">ҰБТ базасындағы тесттер · атауларымен</button>');chooseRealUbtSubject(realUbtSubject);
 
 }
 let realUbtSubject='history';
@@ -5589,6 +5727,7 @@ function syncRefresh(){
     if(id==='s-ubt140'||id==='s-question-bank'){if(bankChanged)renderUbt140()}
     else if(id==='s-subj'){if(bankChanged)renderBankSubjectList()}
     else if(id==='s-real-ubt'&&keys.includes('ubt_real_bank_meta'))renderRealUbtBank();
+    else if(id==='s-real-named'&&keys.includes('ubt_real_bank_tests'))renderRealNamedTests();
     else if(id==='s-formulas')renderFormulas();
     else if(id==='s-gloss')showGloss();
     else if(id==='s-home'&&(!keys.length||keys.some(k=>/ubt_(plan|streak|qotd|season|daily)/.test(k))))renderHomeExtras();
@@ -5887,7 +6026,7 @@ function adminDelThread(key){
   if(adminOpenThread===key)adminOpenThread=null;
   renderAdminChat();
 }
-function doLogout(){
+function doLogout(){if(realExamActive()){alert('ҰБТ тестін аяқтамай аккаунттан шығуға болмайды');return}
   try{authCall('logout',{})}catch(e){}
   window.__token='';window.__chatToken='';LS.set('ubt_current',null);user=null;chatLogin=null;
   try{window.__bridge.clearLocal()}catch(e){}
@@ -6500,7 +6639,7 @@ document.addEventListener('keydown',e=>{
   if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}
   else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}
 });
-function showScr(id){const target=document.getElementById(id);if(!target||!target.classList.contains('screen'))return;closeAppMenu(false);if(id!=='s-test'&&!lock.on){shieldOff();hideOv();document.getElementById('exam-window-guard')?.classList.remove('show')}document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));target.classList.add('active');document.body.classList.toggle('test-active',id==='s-test');try{chromeSync()}catch(e){}}
+function showScr(id){if(id!=='s-test'&&realExamActive()){alert('ҰБТ тестін алдымен аяқтаңыз');return}const target=document.getElementById(id);if(!target||!target.classList.contains('screen'))return;closeAppMenu(false);if(id!=='s-test'&&!lock.on){shieldOff();hideOv();document.getElementById('exam-window-guard')?.classList.remove('show')}document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));target.classList.add('active');document.body.classList.toggle('test-active',id==='s-test');try{chromeSync()}catch(e){}}
 function goHome(){if(st.secureExam){showResultRetry('Тест нәтижесін жіберіңіз немесе жауаптарды файлға сақтаңыз.');return}if(lock.on)return;stopTimer();st=baseState();showScr('s-home')}
 
 const BANK={
@@ -6851,7 +6990,7 @@ function beginTest(){
       const order=[...new Set(prepared.map(q=>q.subjectName||'Басқа пән'))];
       st.questions=order.flatMap(name=>shuf(prepared.filter(q=>(q.subjectName||'Басқа пән')===name)));
     }else{st.questions=shuf(prepared)}
-    st.currentIndex=0;st.answers={};st.flags={};if(st.secureExam)rememberPendingResult('active');showScr('s-test');renderNav();renderQ();startTimer();updateProg();if(st.isSubjectPractice||st.isMistakes){lockEnd();lock.viol=0;lockFs()}else lockStart();
+    st.currentIndex=0;st.answers={};st.flags={};st.realExamStarted=!!st.secureExam&&st.questions.some(q=>q.realBank);if(st.secureExam)rememberPendingResult('active');showScr('s-test');renderNav();renderQ();startTimer();updateProg();if(st.isSubjectPractice||st.isMistakes){lockEnd();lock.viol=0;lockFs()}else lockStart();
   };
 }
 const PERIODIC_ROWS=[
@@ -8164,7 +8303,7 @@ function pendingResultKey(){return 'ubt_pending_result_'+user.id}
 function rememberPendingResult(phase='submit'){
   try{
     // Persist small answer updates without serializing all images on every tap.
-    sessionStorage.setItem(pendingResultKey(),JSON.stringify({phase,exam:st.secureExam,answers:st.answers,subjectName:st.subjectName,viol:lock.viol,currentIndex:st.currentIndex,is140:!!st.is140}));
+    sessionStorage.setItem(pendingResultKey(),JSON.stringify({phase,exam:st.secureExam,answers:st.answers,subjectName:st.subjectName,viol:lock.viol,currentIndex:st.currentIndex,is140:!!st.is140,realExamStarted:!!st.realExamStarted}));
     if(st.pendingQuestionsRef!==st.questions){
       try{sessionStorage.setItem(pendingResultKey()+'_questions',JSON.stringify(st.questions));st.pendingQuestionsRef=st.questions}catch(e){}
     }
@@ -8214,7 +8353,7 @@ function restorePendingResult(){
   if(!data||typeof data.exam!=='string'||!data.answers)return;
   if(!Array.isArray(data.questions)){try{data.questions=JSON.parse(sessionStorage.getItem(pendingResultKey()+'_questions')||'[]')}catch(e){data.questions=[]}}
   if(!Array.isArray(data.questions))data.questions=[];
-  st=baseState();st.is140=!!data.is140;st.secureExam=data.exam;st.answers=data.answers;st.questions=data.questions;st.subjectName=data.subjectName;
+  st=baseState();st.is140=!!data.is140;st.realExamStarted=!!data.realExamStarted;st.secureExam=data.exam;st.answers=data.answers;st.questions=data.questions;st.subjectName=data.subjectName;
   lock.viol=data.viol||0;
   if(data.phase==='active'){
     st.currentIndex=Math.max(0,Math.min(Number(data.currentIndex)||0,st.questions.length-1));
@@ -8873,6 +9012,7 @@ function returnToTest(){
 }
 function lockViolation(){
   if(!lock.on||lock.paused)return;
+  if(realExamActive()){showOv('Тестке қайтыңыз','ҰБТ тестін аяқтағанша басқа бөлімге өтуге болмайды.');return}
   const now=Date.now();if(now-lock.last<1200)return;lock.last=now;
   lock.viol++;updViol();logViol('Тесттен/толық экраннан шығу');
   if(lock.viol>=MAX_VIOL){
@@ -8899,10 +9039,10 @@ document.addEventListener('keydown',e=>{
   const bad=/^F(1|3|5|6|7|10|11|12)$/.test(k)||k==='ContextMenu'||k==='PrintScreen'||(c&&/^[a-z]$/i.test(k))||(c&&e.shiftKey)||(e.altKey&&/^Arrow(Left|Right)$/.test(k));
   if(bad){e.preventDefault();e.stopPropagation();return false}
 },true);
-function onBeforeUnload(e){if(lock.on){e.preventDefault();e.returnValue='Тест жүріп жатыр!';return e.returnValue}}
+function onBeforeUnload(e){if(lock.on||realExamActive()){e.preventDefault();e.returnValue='Тест жүріп жатыр!';return e.returnValue}}
 window.addEventListener('beforeunload',onBeforeUnload);
 try{window.parent.addEventListener('beforeunload',onBeforeUnload)}catch(e){}
-window.addEventListener('popstate',()=>{if(lock.on){try{history.pushState({lock:1},'',location.href)}catch(e){}}});
+window.addEventListener('popstate',()=>{if(lock.on||realExamActive()){try{history.pushState({lock:1},'',location.href)}catch(e){}}});
 const isAdminNow=()=>!!(user&&user.isAdmin&&user.id==='admin');
 function syncAdminClass(){document.body.classList.toggle('is-admin',isAdminNow())}
 function inField(t){return !!(t&&t.closest&&t.closest('input,textarea,[contenteditable="true"]'))}
@@ -10828,7 +10968,7 @@ function renderUbt140(refreshBank=true){
 let questionBankFolders=[];
 function bankTestSources(){
   const builtins=bankTestSources.builtins||(bankTestSources.builtins=__UBT_BANK_DATA__);
-  return [...allTests().filter(t=>!t.assignmentId&&(user.isAdmin||t.authorId===user.id||(isTeacherUser()&&(t.isPublic||t.status==='approved')))), ...(user.isAdmin||isTeacherUser()?builtins:[])];
+  return [...allTests().filter(t=>!t.assignmentId&&(user.isAdmin||t.authorId===user.id||(isTeacherUser()&&(t.isPublic||t.status==='approved')))), ...(user.isAdmin||isTeacherUser()?builtins:[])].filter(t=>!LS.get('ubt_hidden_source_tests',[]).includes(t.id));
 }
 function startQuestionBankFolder(index){
   const f=questionBankFolders[index];if(!f||!f.questions.length)return;
@@ -10850,6 +10990,7 @@ function loadQuestionBankFolder(details){
 }
 function renderUbtBank(){
   const el=document.getElementById('u-bank-list');if(!el||!user)return;
+  if(user.isAdmin&&user.id==='admin'){renderRealSourceInventory(el);return;}
   const bank=ubtQuestionBank(false),filter=document.getElementById('u-bank-subject').value;
   const query=document.getElementById('u-bank-search').value.trim().toLowerCase();
   const owner=document.getElementById('u-bank-owner').value,used=new Set();
@@ -11914,6 +12055,8 @@ const start=startSession;startSession=async function(r){await start.apply(this,a
 window.addEventListener('pagehide',()=>{LS.set('ubt_current',null)});window.addEventListener('pageshow',event=>{if(event.persisted&&user)doLogout()});
 render();
 })();
+
+(function(){const logout=doLogout;doLogout=function(){if(realExamActive()){alert('ҰБТ тестін алдымен аяқтаңыз');return}return logout.apply(this,arguments)}})();
 </script>
 <script>
 (function(){
