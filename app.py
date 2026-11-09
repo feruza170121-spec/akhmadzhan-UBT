@@ -10974,7 +10974,7 @@ function classBoard(){
 }
 function showClassRanking(){
   const board=classBoard().slice(0,10),cups=['🏆','🥈','🥉'],medals=['🥇','🥈','🥉'];
-  document.getElementById('rank-sub').textContent='Үздік сыныптар · оқушылардың орташа ұпайы бойынша';
+  document.getElementById('rank-sub').textContent='🏫 Сыныптар рейтингі · оқушылардың орташа ұпайы бойынша';
   document.getElementById('rank-podium').innerHTML=board.length?`<div class="podium">`+[1,0,2].filter(i=>board[i]).map(i=>`<div class="pod p${i+1}"><div class="pcup">${cups[i]}</div><div class="pname">${esc(board[i].name)}</div><div class="ppts">⭐ ${board[i].avg}</div><div class="pbase">${i+1}</div></div>`).join('')+`</div>`:'';
   const el=document.getElementById('rank-list');
   if(!board.length)el.innerHTML='<div class="empty"><div class="ic">🏫</div><p>Әзірге оқушысы бар сынып жоқ</p></div>';
@@ -10989,11 +10989,11 @@ let rankMode='all';
 function showRanking(mode){
   if(mode)rankMode=mode;
   checkRollover();
-  const tabs=[['all','Жалпы'],['w','Апта'],['m','Ай'],['cls','🏫 Үздік сынып']];
+  const tabs=[['all','👤 Адамдар рейтингі'],['cls','🏫 Сыныптар рейтингі'],['w','Апталық рейтинг'],['m','Айлық рейтинг']];
   document.getElementById('rank-tabs').innerHTML=tabs.map(t=>`<button class="btn ${rankMode===t[0]?'btn-p':'btn-s'} btn-sm" onclick="showRanking(${jsq(t[0])})">${t[1]}</button>`).join('');
   if(rankMode==='cls'){showClassRanking();return}
   let board;
-  if(rankMode==='all'){board=getLeaderboard();document.getElementById('rank-sub').textContent='Ең көп ұпай жинағандар'}
+  if(rankMode==='all'){board=getLeaderboard();document.getElementById('rank-sub').textContent='👤 Адамдар рейтингі · жеке жинаған ұпайы бойынша'}
   else{
     const tag=rankMode+'_'+(rankMode==='w'?weekKey():monthKey());
     board=seasonBoard(tag);
