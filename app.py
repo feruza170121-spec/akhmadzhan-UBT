@@ -13307,7 +13307,61 @@ syncRefresh=function(){const r=securitySync.apply(this,arguments);wipeLegacyAnsw
 const securitySchoolDialog=schoolCreatePersonDialog;
 schoolCreatePersonDialog=function(){securitySubjectUI();const r=securitySchoolDialog.apply(this,arguments);document.getElementById('school-new-profile-pair-wrap').hidden=schoolState.kind==='teachers';document.getElementById('school-new-profile-pair').innerHTML=pairOptions([]);return r};
 const securityAdminView=adminViewUser;
-adminViewUser=function(id){if(!user?.isAdmin)return openPubProfile(id);let profileMap=LS.get('ubt_profiles',{});let target=Object.values(profileMap||{}).find(p=>p&&p.id===id);if(!target){const localProfile=schoolData()?.byId?.get(id);if(localProfile){profileMap=profileMap||{};profileMap[localProfile.name||id]=localProfile;LS.set('ubt_profiles',profileMap);target=localProfile;schoolCache.p=null}}const r=securityAdminView.apply(this,arguments);if(user?.isAdmin){document.getElementById('owner-pair-editor')?.remove();target=target||Object.values(LS.get('ubt_profiles',{})).find(p=>p&&p.id===id);const host=document.getElementById('s-admin-user')||document.querySelector('.screen.active .wrap');if(host&&target){const box=document.createElement('div');box.id='owner-pair-editor';box.className='card';box.innerHTML='<h3>Оқушының бейіндік пәндері</h3><select id="owner-profile-pair">'+pairOptions(target.profilePair||[])+'</select><button class="btn btn-p" style="margin-top:12px">Сақтау</button>';box.querySelector('button').onclick=async()=>{const pair=readPair('owner-profile-pair');const res=await authCall('owner_set_pair',{uid:id,pair});if(!res.ok)return alert(res.msg);await window.__bridge.refresh();alert('Пән жұбы өзгертілді')};const sub=document.createElement('section');sub.className='card';sub.style.marginTop='14px';sub.innerHTML='<h3>✦ Осы профильге тариф беру</h3><p class="sub">'+esc(target.name||'Қолданушы')+' · Pro / Premium / Класс тарифін осы жерден қосыңыз.</p><label>Мерзімі (күн)<input id="profile-premium-days" type="number" min="1" max="3650" value="30"></label><div class="row" style="margin-top:12px;flex-wrap:wrap"><button type="button" class="btn btn-p" data-plan="pro">Pro беру</button><button type="button" class="btn btn-p" data-plan="premium">Premium беру</button><button type="button" class="btn btn-p" data-plan="class">Класс беру</button><button type="button" class="btn btn-d" data-plan="free">Тарифті алып тастау</button></div><p class="sub" id="profile-premium-status" role="status"></p>';sub.querySelectorAll('button[data-plan]').forEach(b=>b.onclick=async()=>{const days=Number(sub.querySelector('#profile-premium-days').value),status=sub.querySelector('#profile-premium-status');if(!Number.isInteger(days)||days<1||days>3650){status.textContent='Мерзімі 1–3650 күн болсын';return}b.disabled=true;try{const result=await authCall('owner_subscription_set',{uid:id,plan:b.dataset.plan,days});if(!result.ok){status.textContent=result.msg||'Қате';return}status.textContent=(target.name||'Қолданушы')+' · '+result.subscription.plan+' · '+premiumDate(result.subscription.expires);await window.__bridge.refresh()}finally{b.disabled=false}});host.append(box,sub)}}return r};
+// Robust owner profile manager: resolves the selected person from both the local
+// profile cache and the school directory, then opens the management screen.
+adminViewUser=function(id){
+ if(!user||!user.isAdmin){return openPubProfile(id)}
+ id=String(id||'');
+ let profiles=LS.get('ubt_profiles',{});
+ let target=Object.values(profiles||{}).find(p=>p&&String(p.id)===id);
+ if(!target){
+   const schoolPerson=schoolData()?.byId?.get(id);
+   if(schoolPerson){target=schoolPerson;profiles=profiles||{};profiles[target.login||target.name||id]=target;LS.set('ubt_profiles',profiles);schoolCache.p=null;}
+ }
+ if(!target){alert('Профиль табылмады. Тізімді жаңартып, қайта ашыңыз.');return}
+ // Keep the original profile editor's data source in sync before opening it.
+ profiles=LS.get('ubt_profiles',{});profiles=profiles||{};
+ const key=Object.keys(profiles).find(k=>profiles[k]&&String(profiles[k].id)===id)||target.login||target.name||id;
+ profiles[key]=target;LS.set('ubt_profiles',profiles);schoolCache.p=null;
+ viewingUserId=id;
+ const stats=getUserStats(id);
+ setAv(document.getElementById('uv-avatar'),id,target.name);
+ document.getElementById('uv-name').textContent=(target.name||'Қолданушы')+(stats.verified?' ✓':'');
+ document.getElementById('uv-info').textContent=`${target.role==='teacher'?'👨‍🏫 Мұғалім · '+subjName(target.teacherSubject||'other'):'👤 Оқушы'} · ⭐ ${stats.points||0} · ${stats.title||'атақ жоқ'} · ${starStr(stats.stars||0)}`;
+ const teacherOn=target.role==='teacher'&&target.teacherApproved;
+ const jsonEnabled=!!(siteControls().jsonUsers||{})[id];
+ document.getElementById('uv-actions').innerHTML=`
+  <button class="btn ${teacherOn?'btn-s':'btn-ok'}" onclick="adminSetTeacher(${jsq(id)},${!teacherOn})">${teacherOn?'👨‍🏫 Мұғалім мәртебесін алу':'👨‍🏫 Мұғалім ету'}</button>
+  <button class="btn ${stats.verified?'btn-ok':'btn-s'}" onclick="adminToggleVerify(${jsq(id)})">${stats.verified?'✅ Расталған':'✓ Растау белгісі'}</button>
+  <button class="btn btn-w" onclick="adminSetTitle(${jsq(id)})">🏅 Атақ беру</button>
+  <button class="btn btn-s" onclick="adminSetStars(${jsq(id)})">⭐ Жұлдыз беру (${String(stats.stars||0).replace('.',',')})</button>
+  <button class="btn ${jsonEnabled?'btn-ok':'btn-s'}" onclick="adminSetJsonPermission(${jsq(id)},${!jsonEnabled})">${jsonEnabled?'✅ JSON жүктеуге рұқсат бар':'⬇ JSON жүктеуге рұқсат беру'}</button>
+  ${target.role==='teacher'?`<button class="btn btn-p" onclick="schoolOpenPerson(${jsq(id)})">📁 Мұғалімнің тесттері мен сыныптары</button>`:''}
+  <button class="btn btn-d uv-danger" onclick="adminDelUser(${jsq(id)})">🗑 Профильді өшіру</button>`;
+ document.getElementById('uv-login').value=target.name||'';
+ document.getElementById('uv-curpass').value='🔒 хэштелген (көрсетілмейді)';
+ const hist=LS.get('ubt_hist_'+id,[]);
+ document.getElementById('uv-hist').innerHTML=hist.length?hist.map(h=>`<div class="item"><div class="info"><h4>${esc(h.topic||'Тест')}</h4><p>${esc(h.date||'')}</p></div><div style="font-weight:700;color:var(--p)">${h.score}/${h.max}</div></div>`).join(''):'<p class="sub">Тест тапсырмаған</p>';
+ const vl=LS.get('ubt_viol_'+id,[]);
+ document.getElementById('uv-hist').innerHTML+=`<h4 style="margin:14px 0 6px">⚠ Бұзушылықтар (${vl.length})</h4>`+(vl.length?vl.slice(0,40).map(v=>`<div class="item"><div class="info"><h4 style="font-size:13px">${esc(v.k||'')}</h4><p>${esc(v.t||'')}${v.test?' · '+esc(v.test):''}</p></div></div>`).join(''):'<p class="sub">Бұзушылық жоқ</p>');
+ const mistakes=LS.get('ubt_mistakes_'+id,[]);
+ document.getElementById('uv-mist').innerHTML=mistakes.length?mistakes.map(q=>`<div class="item"><div class="info"><h4>${esc((q.text||'').substring(0,80))}</h4><p>${esc(q.subjectName||'')}</p></div></div>`).join(''):'<p class="sub">Қате жоқ</p>';
+ document.getElementById('uv-newpass').value='';
+ renderProgress('uv-chart',null,getProg(id));
+ showScr('s-user-view');
+ // Add profile-specific controls after the management screen is populated.
+ document.getElementById('owner-pair-editor')?.remove();
+ const host=document.querySelector('#s-user-view .wrap');
+ if(host){
+  const pair=document.createElement('section');pair.id='owner-pair-editor';pair.className='card';
+  pair.innerHTML='<h3>Оқушының бейіндік пәндері</h3><select id="owner-profile-pair">'+pairOptions(target.profilePair||[])+'</select><button type="button" class="btn btn-p" style="margin-top:12px">Пән жұбын сақтау</button>';
+  pair.querySelector('button').onclick=async()=>{const selected=readPair('owner-profile-pair');const res=await authCall('owner_set_pair',{uid:id,pair:selected});if(!res.ok)return alert(res.msg||'Сақтау қатесі');await window.__bridge.refresh();alert('Пән жұбы өзгертілді')};
+  const sub=document.createElement('section');sub.className='card';sub.style.marginTop='14px';
+  sub.innerHTML='<h3>✦ Осы профильге тариф беру</h3><p class="sub">'+esc(target.name||'Қолданушы')+' · Pro / Premium / Класс тарифін қосу немесе алып тастау.</p><label>Мерзімі (күн)<input id="profile-premium-days" type="number" min="1" max="3650" value="30"></label><div class="row" style="margin-top:12px;flex-wrap:wrap"><button type="button" class="btn btn-p" data-plan="pro">Pro беру</button><button type="button" class="btn btn-p" data-plan="premium">Premium беру</button><button type="button" class="btn btn-p" data-plan="class">Класс беру</button><button type="button" class="btn btn-d" data-plan="free">Тарифті алып тастау</button></div><p class="sub" id="profile-premium-status" role="status"></p>';
+  sub.querySelectorAll('button[data-plan]').forEach(button=>button.onclick=async()=>{const days=Number(sub.querySelector('#profile-premium-days').value),status=sub.querySelector('#profile-premium-status');if(button.dataset.plan!=='free'&&(!Number.isInteger(days)||days<1||days>3650)){status.textContent='Мерзімі 1–3650 күн болсын';return}button.disabled=true;try{const result=await authCall('owner_subscription_set',{uid:id,plan:button.dataset.plan,days:button.dataset.plan==='free'?1:days});if(!result.ok){status.textContent=result.msg||'Қате';return}status.textContent=button.dataset.plan==='free'?'Тариф алынды':(target.name||'Қолданушы')+' · '+result.subscription.plan+' · '+premiumDate(result.subscription.expires);await window.__bridge.refresh()}finally{button.disabled=false}});
+  host.append(pair,sub);
+ }
+};
 const securityMyTests=showMyTests;
 showMyTests=function(){const r=securityMyTests.apply(this,arguments);if(user&&(user.isAdmin||user.isJuniorAdmin||isTeacherUser()))document.querySelectorAll('#s-mytests .item').forEach(row=>{const start=row.querySelector('[onclick^="startUserTest("]');if(!start)return;const match=start.getAttribute('onclick').match(/startUserTest\((.*)\)/);if(!match)return;let id;try{id=JSON.parse(match[1].replace(/&quot;/g,'"'))}catch(e){return}const t=allTests().find(t=>t.id===id);if(!t||t.authorId!==user.id||row.querySelector('.personal-send-test'))return;if(isTeacherUser()&&!user.isAdmin&&t.subject!==(findUserByLogin(user.name)||{}).teacherSubject)return;const b=document.createElement('button');b.className='btn btn-s btn-sm personal-send-test';b.textContent='Оқушыға жіберу';b.onclick=async()=>{const login=prompt('Тіркелген оқушының логині:');if(!login)return;b.disabled=true;const res=await authCall('send_personal_test',{testId:id,login});b.disabled=false;alert(res.ok?'Тест оқушыға жіберілді':res.msg)};row.querySelector('.acts')?.appendChild(b)});return r};
 const securitySendDialog=schoolClassSendDialog;schoolClassSendDialog=function(){const r=securitySendDialog.apply(this,arguments);securitySubjectUI();return r};
