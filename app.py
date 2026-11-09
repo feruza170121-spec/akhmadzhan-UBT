@@ -3,6 +3,8 @@ import base64
 import binascii
 import hashlib
 import hmac
+import io
+import zipfile
 import datetime
 import json
 import math
@@ -26,7 +28,9 @@ _NO_SYNC = ("ubt_current", "ubt_dark", "ubt_ui_lang")
 
 _TABLE = "ubt_kv"
 _BOOK_BUCKET = "ubt-books"
-_MAX_BOOK_BYTES = 5 * 1024 * 1024
+_MAX_BOOK_BYTES = 15 * 1024 * 1024
+_MAX_BOOK_ZIP_BYTES = 60 * 1024 * 1024
+_MAX_BOOK_ZIP_COUNT = 11
 
 _PBKDF_ITER = 100_000
 _MIN_PASS = 10
@@ -137,6 +141,11 @@ def _book_storage_bucket(conf):
         bucket = _book_storage(conf, "GET", "bucket/" + _BOOK_BUCKET)
         if bucket.get("public") is True:
             raise ValueError("Кітаптар қоймасы жабық болуы тиіс")
+        current_limit = bucket.get("file_size_limit") or bucket.get("fileSizeLimit") or 0
+        if int(current_limit or 0) < _MAX_BOOK_BYTES:
+            _book_storage(conf, "PUT", "bucket/" + _BOOK_BUCKET,
+                          _jdump({"public": False, "file_size_limit": _MAX_BOOK_BYTES,
+                                  "allowed_mime_types": ["application/pdf"]}).encode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code != 404:
             raise
@@ -3249,6 +3258,72 @@ def _handle_req(state, sid, rq):
     if typ == "explain_review":
         return _explain_review(state, sess, d)
 
+    if typ == "book_zip_add":
+        if not sess or not sess["admin"]:
+            return {"ok": False, "msg": "ZIP кітаптарды тек басты админ жүктей алады"}
+        subject, encoded = d.get("subject"), d.get("base64")
+        allowed = {"history", "reading", "mathlit", "math", "physics", "chemistry", "biology",
+                   "geography", "informatics", "english", "kazakh", "worldhistory", "law", "other"}
+        if subject not in allowed or not isinstance(encoded, str) or len(encoded) > (_MAX_BOOK_ZIP_BYTES * 4 // 3 + 16):
+            return {"ok": False, "msg": "Пәнді және 60 МБ-қа дейінгі ZIP файлын таңдаңыз"}
+        try:
+            archive_data = base64.b64decode(encoded, validate=True)
+            if not 22 <= len(archive_data) <= _MAX_BOOK_ZIP_BYTES:
+                raise ValueError("ZIP көлемі 60 МБ-тан аспауы керек")
+            with zipfile.ZipFile(io.BytesIO(archive_data), "r") as archive:
+                pdf_infos = [item for item in archive.infolist()
+                             if not item.is_dir() and item.filename.lower().endswith(".pdf")]
+                if len(pdf_infos) != _MAX_BOOK_ZIP_COUNT:
+                    raise ValueError("ZIP ішінде дәл 11 PDF файл болуы керек")
+                extracted = []
+                seen_names = set()
+                for item in pdf_infos:
+                    name = os.path.basename(item.filename.replace("\\", "/"))
+                    if not name or name in seen_names or item.flag_bits & 0x1:
+                        raise ValueError("PDF файл атаулары қайталанбауы және архив құпиясөзбен қорғалмауы керек")
+                    seen_names.add(name)
+                    if item.file_size < 10 or item.file_size > _MAX_BOOK_BYTES:
+                        raise ValueError("Әр PDF 15 МБ-тан аспауы керек")
+                    payload = archive.read(item)
+                    if not payload.startswith(b"%PDF-") or len(payload) != item.file_size:
+                        raise ValueError("ZIP ішіндегі файлдардың бірі жарамды PDF емес")
+                    title = os.path.splitext(name)[0].strip()[:120]
+                    if not title:
+                        raise ValueError("PDF файл атауы бос болмауы керек")
+                    extracted.append((title, payload))
+        except (binascii.Error, ValueError, zipfile.BadZipFile, RuntimeError, OSError) as exc:
+            return {"ok": False, "msg": str(exc) or "ZIP файлын оқу мүмкін болмады"}
+        conf = _sb_conf()
+        if not conf or conf[1].startswith("sb_publishable_"):
+            return {"ok": False, "msg": "Кітаптарды сақтау үшін серверде Supabase құпия кілті қажет"}
+        with state["lock"]:
+            books = _jload(state["db"].get("ubt_books", "[]"), list, [])
+            if len(books) + len(extracted) > 200:
+                return {"ok": False, "msg": "Кітап санының шегі: 200"}
+            uploaded_paths = []
+            added_books = []
+            try:
+                _book_storage_bucket(conf)
+                for title, payload in extracted:
+                    book_id = "book_" + secrets.token_hex(12)
+                    path = book_id + ".pdf"
+                    _book_storage(conf, "POST", "object/" + _BOOK_BUCKET + "/" + path,
+                                  data=payload, content_type="application/pdf")
+                    uploaded_paths.append(path)
+                    added_books.append({"id": book_id, "subject": subject, "title": title,
+                                        "size": len(payload), "created": int(time.time())})
+            except Exception:
+                for path in uploaded_paths:
+                    try:
+                        _book_storage(conf, "DELETE", "object/" + _BOOK_BUCKET + "/" + path)
+                    except Exception:
+                        pass
+                return {"ok": False, "msg": "ZIP-тегі кітаптар сақталмады. Supabase Storage рұқсатын және бос орынды тексеріңіз"}
+            books.extend(added_books)
+            _put(state, "ubt_books", _jdump(books))
+            _commit(state)
+        return {"ok": True, "count": len(added_books)}
+
     if typ == "book_add":
         if not sess or not sess["admin"]:
             return {"ok": False, "msg": "Кітапты тек админ жүктей алады"}
@@ -5900,8 +5975,14 @@ body:not(.primary-owner) input,body:not(.primary-owner) textarea,body:not(.prima
       <h3>➕ Кітап жүктеу · тек админ</h3>
       <div class="grid2"><div class="fg"><label>Пән</label><select id="library-subject"></select></div>
       <div class="fg"><label>Кітап атауы</label><input id="library-title" maxlength="120" placeholder="Мысалы: 8-сынып химия"></div></div>
-      <div class="fg"><label>PDF кітабы (5 МБ-қа дейін)</label><input id="library-file" type="file" accept=".pdf,application/pdf"></div>
-      <button class="btn btn-p" id="library-upload" onclick="uploadBook()">📤 Жүктеу</button><p class="sub" id="library-status" role="status"></p>
+      <div class="fg"><label>PDF кітабы (15 МБ-қа дейін)</label><input id="library-file" type="file" accept=".pdf,application/pdf"></div>
+      <button class="btn btn-p" id="library-upload" onclick="uploadBook()">📤 Бір PDF жүктеу</button>
+      <hr style="margin:18px 0;border-color:var(--line)">
+      <h3>📦 11 оқулықты бір ZIP файлмен жүктеу</h3>
+      <p class="sub">ZIP ішінде дәл 11 бөлек PDF болуы керек. Әр PDF 15 МБ-тан, ZIP 60 МБ-тан аспасын. Файл атауы кітап атауы ретінде көрсетіледі.</p>
+      <div class="fg"><label>11 PDF бар ZIP файлы</label><input id="library-zip" type="file" accept=".zip,application/zip,application/x-zip-compressed"></div>
+      <button class="btn btn-p" id="library-zip-upload" onclick="uploadBookZip()">📦 11 кітапты жүктеу</button>
+      <p class="sub" id="library-status" role="status"></p>
     </div>
     <div class="fg"><label>Пән бойынша қарау</label><select id="library-filter" onchange="renderLibrary()"></select></div>
     <div id="library-list"></div>
@@ -9118,6 +9199,27 @@ async function uploadBook(){
     status.textContent='✅ Кітап жүктелді';document.getElementById('library-title').value='';document.getElementById('library-file').value='';
     await window.__bridge.refresh();renderLibrary();
   }catch(e){status.textContent='❌ '+(e.message||'Жүктеу қатесі')}
+  finally{button.disabled=false}
+}
+async function uploadBookZip(){
+  if(!user||!user.isAdmin)return;
+  const subject=document.getElementById('library-subject').value;
+  const file=document.getElementById('library-zip').files[0];
+  if(!subject||!file){alert('Пәнді және ZIP файлын таңдаңыз');return}
+  if(file.size<22||file.size>60*1024*1024||!file.name.toLowerCase().endsWith('.zip')){alert('60 МБ-қа дейінгі ZIP файлын таңдаңыз');return}
+  const button=document.getElementById('library-zip-upload'),status=document.getElementById('library-status');
+  button.disabled=true;status.textContent='ZIP ішіндегі 11 PDF тексеріліп, жүктеліп жатыр…';
+  try{
+    const base64=await new Promise((resolve,reject)=>{
+      const reader=new FileReader();reader.onerror=()=>reject(new Error('ZIP файлы оқылмады'));
+      reader.onload=()=>resolve(String(reader.result).split(',',2)[1]||'');reader.readAsDataURL(file);
+    });
+    const result=await authCall('book_zip_add',{subject,base64});
+    if(!result.ok)throw new Error(result.msg||'ZIP жүктелмеді');
+    status.textContent='✅ '+result.count+' оқулық жеке PDF ретінде кітапханаға қосылды';
+    document.getElementById('library-zip').value='';
+    await window.__bridge.refresh();renderLibrary();
+  }catch(e){status.textContent='❌ '+(e.message||'ZIP жүктеу қатесі')}
   finally{button.disabled=false}
 }
 async function openBook(id){
