@@ -30,7 +30,7 @@ _TABLE = "ubt_kv"
 _BOOK_BUCKET = "ubt-books"
 _MAX_BOOK_BYTES = 15 * 1024 * 1024
 _MAX_BOOK_ZIP_BYTES = 60 * 1024 * 1024
-_MAX_BOOK_ZIP_COUNT = 11
+_MAX_BOOK_ZIP_COUNT = 200
 
 _PBKDF_ITER = 100_000
 _MIN_PASS = 10
@@ -2445,6 +2445,21 @@ def _real_manage_request(state,sess,d):
         if action == "list":
             named = {t["id"] for t in _real_named_tests(state)}
             return {"ok":True,"items":[{"id":t["id"],"title":str(t.get("topic") or "Тест"),"subject":t.get("subject"),"count":len(t.get("questions",[])),"added":"test_"+hashlib.sha256(t["id"].encode()).hexdigest()[:24] in named} for t in _real_source_tests(state)]}
+        if action == "delete_all":
+            # Owner-only bulk purge: originals, catalog entries and the copied/published real UBT bank.
+            sources = _real_source_tests(state)
+            hidden = set(_jload(state["db"].get("ubt_hidden_source_tests","[]"),list,[]))
+            hidden.update(t["id"] for t in sources)
+            hidden.update(t["id"] for t in globals().get("_BUILTIN_BANK_TESTS",[]) if isinstance(t,dict) and t.get("id"))
+            _put(state,"ubt_hidden_source_tests",_jdump(sorted(hidden)))
+            _put(state,"ubt_tests","[]")
+            catalog = _jload(state["db"].get("ubt_question_catalog","[]"),list,[])
+            for q in catalog:
+                if isinstance(q,dict): q["deleted"] = True
+            _put(state,"ubt_question_catalog",_jdump(catalog))
+            _put(state,"ubt_server_exam_real_bank","{}")
+            _commit(state)
+            return {"ok":True,"deleted":len(sources)}
         source = next((t for t in _real_source_tests(state) if t["id"]==d.get("sourceId")),None)
         ident = "test_"+hashlib.sha256(str(d.get("sourceId") or "").encode()).hexdigest()[:24]
         if action not in ("add","remove","delete"):return {"ok":False,"msg":"Әрекет қате"}
@@ -3273,15 +3288,19 @@ def _handle_req(state, sid, rq):
             with zipfile.ZipFile(io.BytesIO(archive_data), "r") as archive:
                 pdf_infos = [item for item in archive.infolist()
                              if not item.is_dir() and item.filename.lower().endswith(".pdf")]
-                if len(pdf_infos) != _MAX_BOOK_ZIP_COUNT:
-                    raise ValueError("ZIP ішінде дәл 11 PDF файл болуы керек")
+                if not 1 <= len(pdf_infos) <= _MAX_BOOK_ZIP_COUNT:
+                    raise ValueError("ZIP ішінде 1-ден 200-ге дейін PDF болуы керек")
                 extracted = []
                 seen_names = set()
                 for item in pdf_infos:
-                    name = os.path.basename(item.filename.replace("\\", "/"))
-                    if not name or name in seen_names or item.flag_bits & 0x1:
-                        raise ValueError("PDF файл атаулары қайталанбауы және архив құпиясөзбен қорғалмауы керек")
-                    seen_names.add(name)
+                    parts = [part for part in item.filename.replace("\\", "/").split("/") if part and part not in (".", "..")]
+                    name = parts[-1] if parts else ""
+                    if not name or item.filename.startswith("/") or item.flag_bits & 0x1:
+                        raise ValueError("PDF файл атауы жарамсыз немесе архив құпиясөзбен қорғалған")
+                    unique_key = item.filename.casefold()
+                    if unique_key in seen_names:
+                        raise ValueError("ZIP ішінде қайталанатын PDF жолдары бар")
+                    seen_names.add(unique_key)
                     if item.file_size < 10 or item.file_size > _MAX_BOOK_BYTES:
                         raise ValueError("Әр PDF 15 МБ-тан аспауы керек")
                     payload = archive.read(item)
@@ -3290,7 +3309,8 @@ def _handle_req(state, sid, rq):
                     title = os.path.splitext(name)[0].strip()[:120]
                     if not title:
                         raise ValueError("PDF файл атауы бос болмауы керек")
-                    extracted.append((title, payload))
+                    book_subject = next((part.lower() for part in parts[:-1] if part.lower() in allowed), subject)
+                    extracted.append((book_subject, title, payload))
         except (binascii.Error, ValueError, zipfile.BadZipFile, RuntimeError, OSError) as exc:
             return {"ok": False, "msg": str(exc) or "ZIP файлын оқу мүмкін болмады"}
         conf = _sb_conf()
@@ -3304,13 +3324,13 @@ def _handle_req(state, sid, rq):
             added_books = []
             try:
                 _book_storage_bucket(conf)
-                for title, payload in extracted:
+                for book_subject, title, payload in extracted:
                     book_id = "book_" + secrets.token_hex(12)
                     path = book_id + ".pdf"
                     _book_storage(conf, "POST", "object/" + _BOOK_BUCKET + "/" + path,
                                   data=payload, content_type="application/pdf")
                     uploaded_paths.append(path)
-                    added_books.append({"id": book_id, "subject": subject, "title": title,
+                    added_books.append({"id": book_id, "subject": book_subject, "title": title,
                                         "size": len(payload), "created": int(time.time())})
             except Exception:
                 for path in uploaded_paths:
@@ -5978,13 +5998,14 @@ body:not(.primary-owner) input,body:not(.primary-owner) textarea,body:not(.prima
       <div class="fg"><label>PDF кітабы (15 МБ-қа дейін)</label><input id="library-file" type="file" accept=".pdf,application/pdf"></div>
       <button class="btn btn-p" id="library-upload" onclick="uploadBook()">📤 Бір PDF жүктеу</button>
       <hr style="margin:18px 0;border-color:var(--line)">
-      <h3>📦 11 оқулықты бір ZIP файлмен жүктеу</h3>
-      <p class="sub">ZIP ішінде дәл 11 бөлек PDF болуы керек. Әр PDF 15 МБ-тан, ZIP 60 МБ-тан аспасын. Файл атауы кітап атауы ретінде көрсетіледі.</p>
-      <div class="fg"><label>11 PDF бар ZIP файлы</label><input id="library-zip" type="file" accept=".zip,application/zip,application/x-zip-compressed"></div>
-      <button class="btn btn-p" id="library-zip-upload" onclick="uploadBookZip()">📦 11 кітапты жүктеу</button>
+      <h3>📦 1–11 сыныптың барлық оқулығын бір ZIP-пен жүктеу</h3>
+      <p class="sub">Бір ZIP ішінде 1–200 PDF бола алады. Әр PDF 15 МБ-тан, ZIP 60 МБ-тан аспасын. PDF атауы кітап атауы болады. Пәндер бойынша бөлу үшін ZIP ішінде history, worldhistory, math сияқты пән атауы бар бума жасаңыз.</p>
+      <div class="fg"><label>Барлық оқулық салынған ZIP файлы</label><input id="library-zip" type="file" accept=".zip,application/zip,application/x-zip-compressed"></div>
+      <button class="btn btn-p" id="library-zip-upload" onclick="uploadBookZip()">📦 Барлық оқулықты жүктеу</button>
       <p class="sub" id="library-status" role="status"></p>
     </div>
-    <div class="fg"><label>Пән бойынша қарау</label><select id="library-filter" onchange="renderLibrary()"></select></div>
+    <div class="row" style="align-items:end;gap:10px;flex-wrap:wrap"><div class="fg" style="flex:1;min-width:220px"><label>Пән бойынша қарау</label><select id="library-filter" onchange="renderLibrary()"></select></div><button class="btn btn-s" id="library-download-all" onclick="downloadAllBooks()">⬇️ Барлық кітапты бір ZIP-пен жүктеу</button></div>
+    <p class="sub" id="library-download-status" role="status"></p>
     <div id="library-list"></div>
     <div class="row" style="margin-top:20px"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
   </div>
@@ -6624,7 +6645,15 @@ async function renderRealSourceInventory(host,force=false){
  const query=(document.getElementById('u-bank-search')?.value||'').trim().toLowerCase(),subject=document.getElementById('u-bank-subject')?.value||'';
  const rows=realSourceRows.filter(t=>(!subject||t.subject===subject)&&(!query||t.title.toLowerCase().includes(query)));
  realSourcePage=Math.min(realSourcePage,Math.max(0,Math.ceil(rows.length/40)-1));
- host.innerHTML=`<div class="row" style="justify-content:space-between"><h3>Барлық тесттер · ${rows.length}</h3><button class="btn btn-s btn-sm" onclick="renderRealSourceInventory(document.getElementById('u-bank-list'),true)">Жаңарту</button><button class="btn btn-p btn-sm" onclick="showRealNamedTests()">ҰБТ базасындағы тесттер</button></div><p class="sub" style="margin:12px 0">Қосу — тестті ҰБТ базасына көшіреді. ҰБТ базасынан өшіру — түпнұсқаны сақтайды. Толық өшіру — екі базадан да жояды.</p>`+rows.slice(realSourcePage*40,realSourcePage*40+40).map(t=>`<div class="item"><div class="info"><h4>${esc(t.title)}</h4><p>${esc(subjName(t.subject))} · ${t.count} сұрақ${t.added?' · ✅ ҰБТ базасында':''}</p></div><div class="acts" style="flex-wrap:wrap"><button class="btn btn-p btn-sm" onclick="manageRealSource('add',${jsq(t.id)},'',this)">${t.added?'ҰБТ базасында жаңарту':'ҰБТ базасына қосу'}</button><button class="btn btn-s btn-sm" ${t.added?'':'disabled'} onclick="manageRealSource('remove',${jsq(t.id)},'',this)">ҰБТ базасынан өшіру</button><button class="btn btn-d btn-sm" onclick="manageRealSource('delete',${jsq(t.id)},'',this)">Толық өшіру</button></div></div>`).join('')+`<div class="row"><button class="btn btn-s btn-sm" ${realSourcePage?'':'disabled'} onclick="realSourcePage--;renderRealSourceInventory(document.getElementById('u-bank-list'))">←</button><span>${realSourcePage+1} / ${Math.max(1,Math.ceil(rows.length/40))}</span><button class="btn btn-s btn-sm" ${(realSourcePage+1)*40<rows.length?'':'disabled'} onclick="realSourcePage++;renderRealSourceInventory(document.getElementById('u-bank-list'))">→</button></div>`;
+ host.innerHTML=`<div class="row" style="justify-content:space-between"><h3>Барлық тесттер · ${rows.length}</h3><button class="btn btn-s btn-sm" onclick="renderRealSourceInventory(document.getElementById('u-bank-list'),true)">Жаңарту</button><button class="btn btn-p btn-sm" onclick="showRealNamedTests()">ҰБТ базасындағы тесттер</button><button class="btn btn-d btn-sm" onclick="deleteAllRealSourceTests(this)">Барлық тестті толық өшіру</button></div><p class="sub" style="margin:12px 0">Қосу — тестті ҰБТ базасына көшіреді. ҰБТ базасынан өшіру — түпнұсқаны сақтайды. Толық өшіру — екі базадан да жояды. «Барлық тестті толық өшіру» барлық тестті, соның ішінде ҰБТ базасына қосылғандарын да өшіреді.</p>`+rows.slice(realSourcePage*40,realSourcePage*40+40).map(t=>`<div class="item"><div class="info"><h4>${esc(t.title)}</h4><p>${esc(subjName(t.subject))} · ${t.count} сұрақ${t.added?' · ✅ ҰБТ базасында':''}</p></div><div class="acts" style="flex-wrap:wrap"><button class="btn btn-p btn-sm" onclick="manageRealSource('add',${jsq(t.id)},'',this)">${t.added?'ҰБТ базасында жаңарту':'ҰБТ базасына қосу'}</button><button class="btn btn-s btn-sm" ${t.added?'':'disabled'} onclick="manageRealSource('remove',${jsq(t.id)},'',this)">ҰБТ базасынан өшіру</button><button class="btn btn-d btn-sm" onclick="manageRealSource('delete',${jsq(t.id)},'',this)">Толық өшіру</button></div></div>`).join('')+`<div class="row"><button class="btn btn-s btn-sm" ${realSourcePage?'':'disabled'} onclick="realSourcePage--;renderRealSourceInventory(document.getElementById('u-bank-list'))">←</button><span>${realSourcePage+1} / ${Math.max(1,Math.ceil(rows.length/40))}</span><button class="btn btn-s btn-sm" ${(realSourcePage+1)*40<rows.length?'':'disabled'} onclick="realSourcePage++;renderRealSourceInventory(document.getElementById('u-bank-list'))">→</button></div>`;
+}
+async function deleteAllRealSourceTests(button){
+ if(!user?.isAdmin||user.id!=='admin')return alert('Тек басты админ өшіре алады');
+ const count=realSourceRows.length;
+ if(!confirm(`НАЗАР АУДАРЫҢЫЗ! ${count} тесттің барлығы, соның ішінде ҰБТ базасына қосылған және жарияланған тесттер де толық өшіріледі. Бұл әрекетті қайтару мүмкін емес. Жалғастырасыз ба?`))return;
+ if(prompt('Растау үшін DELETE деп жазыңыз:')!=='DELETE')return alert('Өшіру тоқтатылды.');
+ button.disabled=true;button.textContent='Барлығы өшірілуде…';
+ try{const r=await authCall('real_bank_manage',{action:'delete_all'});if(!r.ok)throw Error(r.msg);realSourceRows=[];realSourceLoaded=0;realSourcePage=0;await window.__bridge.refresh();await renderRealSourceInventory(document.getElementById('u-bank-list'),true);alert(`${r.deleted||count} тест толық өшірілді.`)}catch(e){alert(e.message);button.disabled=false;button.textContent='Барлық тестті толық өшіру'}
 }
 async function manageRealSource(action,sourceId,namedId,button){
  if(!user?.isAdmin||user.id!=='admin')return;
@@ -9208,7 +9237,7 @@ async function uploadBookZip(){
   if(!subject||!file){alert('Пәнді және ZIP файлын таңдаңыз');return}
   if(file.size<22||file.size>60*1024*1024||!file.name.toLowerCase().endsWith('.zip')){alert('60 МБ-қа дейінгі ZIP файлын таңдаңыз');return}
   const button=document.getElementById('library-zip-upload'),status=document.getElementById('library-status');
-  button.disabled=true;status.textContent='ZIP ішіндегі 11 PDF тексеріліп, жүктеліп жатыр…';
+  button.disabled=true;status.textContent='ZIP ішіндегі PDF кітаптар тексеріліп, жүктеліп жатыр…';
   try{
     const base64=await new Promise((resolve,reject)=>{
       const reader=new FileReader();reader.onerror=()=>reject(new Error('ZIP файлы оқылмады'));
@@ -9220,6 +9249,32 @@ async function uploadBookZip(){
     document.getElementById('library-zip').value='';
     await window.__bridge.refresh();renderLibrary();
   }catch(e){status.textContent='❌ '+(e.message||'ZIP жүктеу қатесі')}
+  finally{button.disabled=false}
+}
+async function downloadAllBooks(){
+  if(!user){alert('Алдымен аккаунтыңызға кіріңіз');return}
+  const all=LS.get('ubt_books',[]);
+  const books=(Array.isArray(all)?all:[]).filter(b=>b&&b.id&&b.title);
+  const status=document.getElementById('library-download-status'),button=document.getElementById('library-download-all');
+  if(!books.length){status.textContent='Жүктейтін кітап жоқ';return}
+  button.disabled=true;const files={};let total=0;
+  try{
+    for(let i=0;i<books.length;i++){
+      status.textContent=`${i+1}/${books.length} кітап дайындалып жатыр…`;
+      const opened=await authCall('book_open',{id:books[i].id});
+      if(!opened.ok||!opened.url)throw new Error(opened.msg||'Кітап ашылмады: '+books[i].title);
+      const response=await fetch(opened.url);
+      if(!response.ok)throw new Error('PDF жүктелмеді: '+books[i].title);
+      const bytes=new Uint8Array(await response.arrayBuffer());total+=bytes.length;
+      if(total>100*1024*1024)throw new Error('Барлық PDF көлемі 100 МБ-тан асты. Кітаптарды пән бойынша бөліп жүктеңіз.');
+      let name=String(books[i].title||'Кітап').replace(/[\\/:*?"<>|]/g,'_').slice(0,100)+'.pdf';
+      if(files[name])name=(i+1)+'_'+name;
+      files[name]=bytes;
+    }
+    const zipped=pathZip(files);
+    pathDownload(new Blob([zipped],{type:'application/zip'}),'ubt_plus_barlyq_kitaptar.zip');
+    status.textContent='✅ '+books.length+' кітап бір ZIP файлға жиналды';
+  }catch(e){status.textContent='❌ '+(e.message||'Жүктеу қатесі')}
   finally{button.disabled=false}
 }
 async function openBook(id){
@@ -13399,7 +13454,7 @@ function pathShareClass(){const c=window.pathTeacherReport?.class;if(!c)return;c
 function pathPrintReport(){const r=window.pathTeacherReport;if(!r)return;const w=window.open('','_blank');if(!w){alert('PDF үшін қалқымалы терезені ашуға рұқсат беріңіз');return}w.document.open();w.document.write('<!doctype html><meta charset="utf-8"><title>Сынып есебі</title><style>body{font-family:Arial,sans-serif;padding:25px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #bbb;padding:8px;text-align:left}</style><h1>'+esc(r.class.name)+'</h1><p>'+esc(r.scope)+'</p>'+pathTeacherTable(r.rows));w.document.close();setTimeout(()=>w.print(),300)}
 // Minimal standards-based XLSX with inline strings; no external CDN or spreadsheet formulas.
 function pathExportExcel(){const r=window.pathTeacherReport;if(!r)return;const rows=[['Оқушы логині','Тест саны','Жауап саны','Соңғы балл','Максимум','Орташа %'],...r.rows.map(x=>[x.login,x.tests,x.answered,x.latest?.score??'',x.latest?.max??'',x.average??''])];const xml=v=>String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g,'');const sheet='<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'+rows.map((row,i)=>'<row r="'+(i+1)+'">'+row.map((v,j)=>{const ref=String.fromCharCode(65+j)+(i+1);return typeof v==='number'?'<c r="'+ref+'"><v>'+v+'</v></c>':'<c r="'+ref+'" t="inlineStr"><is><t xml:space="preserve">'+xml(v)+'</t></is></c>'}).join('')+'</row>').join('')+'</sheetData></worksheet>';const files={'[Content_Types].xml':'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>','_rels/.rels':'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>','xl/workbook.xml':'<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Сынып есебі" sheetId="1" r:id="rId1"/></sheets></workbook>','xl/_rels/workbook.xml.rels':'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>','xl/worksheets/sheet1.xml':sheet};pathDownload(new Blob([pathZip(files)],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),'class-report.xlsx')}
-function pathZip(files){const enc=new TextEncoder(),parts=[],central=[];let offset=0;function crc(bytes){let c=0xffffffff;for(const b of bytes){c^=b;for(let i=0;i<8;i++)c=(c>>>1)^((c&1)?0xedb88320:0)}return (c^0xffffffff)>>>0}for(const [name,value] of Object.entries(files)){const n=enc.encode(name),v=enc.encode(value),checksum=crc(v),h=new Uint8Array(30+n.length),d=new DataView(h.buffer);d.setUint32(0,0x04034b50,true);d.setUint16(4,20,true);d.setUint32(14,checksum,true);d.setUint32(18,v.length,true);d.setUint32(22,v.length,true);d.setUint16(26,n.length,true);h.set(n,30);parts.push(h,v);const c=new Uint8Array(46+n.length),cd=new DataView(c.buffer);cd.setUint32(0,0x02014b50,true);cd.setUint16(4,20,true);cd.setUint16(6,20,true);cd.setUint32(16,checksum,true);cd.setUint32(20,v.length,true);cd.setUint32(24,v.length,true);cd.setUint16(28,n.length,true);cd.setUint32(42,offset,true);c.set(n,46);central.push(c);offset+=h.length+v.length}const size=central.reduce((n,a)=>n+a.length,0),end=new Uint8Array(22),ed=new DataView(end.buffer);ed.setUint32(0,0x06054b50,true);ed.setUint16(8,central.length,true);ed.setUint16(10,central.length,true);ed.setUint32(12,size,true);ed.setUint32(16,offset,true);const all=[...parts,...central,end],out=new Uint8Array(all.reduce((n,a)=>n+a.length,0));let i=0;for(const a of all){out.set(a,i);i+=a.length}return out}
+function pathZip(files){const enc=new TextEncoder(),parts=[],central=[];let offset=0;function crc(bytes){let c=0xffffffff;for(const b of bytes){c^=b;for(let i=0;i<8;i++)c=(c>>>1)^((c&1)?0xedb88320:0)}return (c^0xffffffff)>>>0}for(const [name,value] of Object.entries(files)){const n=enc.encode(name),v=value instanceof Uint8Array?value:enc.encode(String(value)),checksum=crc(v),h=new Uint8Array(30+n.length),d=new DataView(h.buffer);d.setUint32(0,0x04034b50,true);d.setUint16(4,20,true);d.setUint32(14,checksum,true);d.setUint32(18,v.length,true);d.setUint32(22,v.length,true);d.setUint16(26,n.length,true);h.set(n,30);parts.push(h,v);const c=new Uint8Array(46+n.length),cd=new DataView(c.buffer);cd.setUint32(0,0x02014b50,true);cd.setUint16(4,20,true);cd.setUint16(6,20,true);cd.setUint32(16,checksum,true);cd.setUint32(20,v.length,true);cd.setUint32(24,v.length,true);cd.setUint16(28,n.length,true);cd.setUint32(42,offset,true);c.set(n,46);central.push(c);offset+=h.length+v.length}const size=central.reduce((n,a)=>n+a.length,0),end=new Uint8Array(22),ed=new DataView(end.buffer);ed.setUint32(0,0x06054b50,true);ed.setUint16(8,central.length,true);ed.setUint16(10,central.length,true);ed.setUint32(12,size,true);ed.setUint32(16,offset,true);const all=[...parts,...central,end],out=new Uint8Array(all.reduce((n,a)=>n+a.length,0));let i=0;for(const a of all){out.set(a,i);i+=a.length}return out}
 function pathDownload(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),30000)}
 async function pathOwnerLoad(){const r=await authCall('path',{action:'owner_overview'});if(pathTab!=='owner')return;const host=document.getElementById('path-content');if(!r.ok){host.textContent=r.msg;return}window.pathOwnerData=r;host.innerHTML=`<section class="card"><h2>Үздік сыныптар · басты админ</h2><p class="sub" style="margin:12px 0">${esc(r.method)}</p>${pathRanksTable(r.classes,false)}<label>Сыныпты таңдау<select id="path-owner-class" onchange="pathOwnerClassDetail()"><option value="">Таңдаңыз</option>${r.classes.map(c=>`<option value="${esc(c.id)}">${esc(c.name+' · '+c.school)}</option>`).join('')}</select></label><div id="path-owner-class-detail"></div></section><section class="card" style="margin-top:16px"><h2>Ата-ана байланыстарын бекіту</h2><p class="sub">WhatsApp арқылы тексергеннен кейін ғана бекітіңіз. Пароль талап етілмейді.</p>${r.requests.map((x,i)=>`<div class="item"><div><b>${esc(x.parentLogin||x.parent)}</b><p>Бала логині: ${esc(x.login)} · ${esc(x.status)}</p><p>${esc(x.note||'')}</p></div><div class="row"><button class="btn btn-p btn-sm" onclick="pathOwnerParent(${i},true,this)">Тексерілді / Бекіту</button><button class="btn btn-d btn-sm" onclick="pathOwnerParent(${i},false,this)">Қолжетімділікті жабу</button></div></div>`).join('')||'<p>Өтініш жоқ</p>'}</section><section class="card" style="margin-top:16px"><h2>Грант базасын жыл сайын жаңарту</h2><p style="margin:12px 0">Жыл, пән жұбы, конкурс/квота, балл түрі және HTTPS дереккөзі міндетті. Импорт бүкіл грант базасын ауыстырады. Алдымен көшірмесін сақтаңыз.</p><button class="btn btn-s" onclick="pathGrantExport(this)">Қазіргі JSON базасын жүктеу</button><label style="display:block;margin-top:12px">Жаңартылған JSON<input id="path-grant-file" type="file" accept="application/json,.json"></label><button class="btn btn-p" style="margin-top:12px" onclick="pathGrantImport(this)">JSON базасын тексеріп енгізу</button><p id="path-grant-status" role="status"></p></section>`}
 function pathOwnerClassDetail(){const c=window.pathOwnerData.classes.find(c=>c.id===document.getElementById('path-owner-class').value),host=document.getElementById('path-owner-class-detail');if(!c){host.textContent='';return}host.innerHTML=`<h3 style="margin-top:16px">${esc(c.name)}</h3><p>Мұғалімі: ${esc(c.teacher)} · Қатысу: ${c.active}/${c.students} (${c.participation}%)</p><p>Мектебі: ${esc(c.school)} · Орналасуы: ${esc(c.location||'—')}</p><div class="grid2" style="margin:12px 0"><label>Мектеп атауы<input id="path-school-name" maxlength="150" value="${esc(c.school==='Мектеп бекітілмеген'?'':c.school)}"></label><label>Қала / аудан<input id="path-school-location" maxlength="150" value="${esc(c.location||'')}"></label></div><button class="btn btn-p btn-sm" onclick="pathOwnerSchool(this)">Мектепті бекіту</button><div class="tscroll"><table><thead><tr><th>Оқушы логині</th><th>Соңғы толық ҰБТ</th><th>Тест саны</th><th>Мәлімет</th></tr></thead><tbody>${c.members.map((m,i)=>`<tr><td>${esc(m.login)}</td><td>${m.score??'—'}</td><td>${m.tests}</td><td><button class="btn btn-s btn-sm" onclick="pathOwnerStudent(${i},this)">Ашу</button></td></tr>`).join('')}</tbody></table></div><div id="path-owner-student"></div>`}
