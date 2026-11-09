@@ -627,18 +627,24 @@ _TRIAL_DAYS = 3
 def _subscription_info(state,sess):
     uid=sess['uid'];key='ubt_server_access_subscription_'+uid
     record=_jload(state['db'].get(key,'{}'),dict,{})
+    now=time.time()
     if not record:
-        record={'plan':'free','expires':0,'trialUsed':False,'trialUntil':0,'welcomeFull':1,'created':time.time()}
+        record={'plan':'free','expires':0,'trialUsed':True,'trialUntil':now+48*3600,'welcomeFull':1,'created':now}
         _put(state,key,_jdump(record))
-    now=time.time();staff=bool(sess.get('admin') and uid=='admin')
+    elif not record.get('trialStarted'):
+        record['trialStarted']=now
+        record['trialUsed']=True
+        record['trialUntil']=now+48*3600
+        _put(state,key,_jdump(record))
+    staff=bool(sess.get('admin') and uid=='admin')
     paid=record.get('plan') in ('pro','premium','class') and record.get('expires',0)>now
-    trial=False # Paid entitlements can only be granted by the owner.
+    trial=record.get('trialUntil',0)>now and not paid
     plan='staff' if staff else record.get('plan') if paid else 'free'
-    premium=staff or (paid and plan in ('premium','class'))
+    premium=staff or paid or trial
     subject_limit=5 if plan=='pro' else _FREE_SUBJECT_TESTS
     full_limit=3 if plan=='pro' else _FREE_FULL_TESTS
     usage=_subscription_usage(state,uid)
-    return {'uid':uid,'premium':premium,'staff':staff,'plan':plan,'paid':paid,'subjectLimit':subject_limit,'fullLimit':full_limit,'expires':record.get('expires',0) if paid else record.get('trialUntil',0) if trial else 0,'trialUsed':bool(record.get('trialUsed')),'trialDays':0,'welcomeFull':record.get('welcomeFull',0),'subjectRemaining':max(0,subject_limit-usage['subjectCount']),'fullRemaining':max(0,full_limit-usage['fullCount']),'dailyRemaining':max(0,1-usage['dailyCount']),'previewCount':_FREE_PREVIEW_QUESTIONS,'autoRenew':False}
+    return {'uid':uid,'premium':premium,'staff':staff,'plan':plan,'paid':paid,'subjectLimit':subject_limit,'fullLimit':full_limit,'expires':record.get('expires',0) if paid else record.get('trialUntil',0) if trial else 0,'trialUsed':bool(record.get('trialUsed')),'trialActive':bool(trial),'trialUntil':record.get('trialUntil',0),'trialDays':0,'welcomeFull':record.get('welcomeFull',0),'subjectRemaining':max(0,subject_limit-usage['subjectCount']),'fullRemaining':max(0,full_limit-usage['fullCount']),'dailyRemaining':max(0,1-usage['dailyCount']),'previewCount':_FREE_PREVIEW_QUESTIONS,'autoRenew':False}
 
 def _subscription_usage(state,uid):
     key='ubt_server_access_usage_'+uid
@@ -3049,6 +3055,10 @@ def _handle_req(state, sid, rq):
             return {'ok':False,'msg':'Мұғалім тек өзінің бекітілген пәнінен тест жібере алады'}
     if _closed(state) and not (sess and sess["uid"]=="admin") and typ not in ("login","logout"):
         return {"ok":False,"msg":"Сайт уақытша жабық. Тек басты админ кіре алады"}
+    if sess and sess.get("uid")!="admin" and typ not in ("login","resume","login_remembered","logout","subscription_status","subscription_trial","subscription_request","owner_subscription_list","owner_subscription_view","owner_subscription_set"):
+        entitlement=_subscription_info(state,sess)
+        if not entitlement.get("paid") and not entitlement.get("trialActive"):
+            return {"ok":False,"upgradeRequired":True,"expired":True,"msg":"48 сағаттық тегін қолжетімділік аяқталды. Жалғастыру үшін ақылы тарифті WhatsApp арқылы қосыңыз."}
     if typ in ("support_open","support_read","support_send","support_list"):
         return _support_request(state,sess,typ,d)
     if typ=="public_profile":
@@ -6726,7 +6736,7 @@ function importAll(inp){
 function getAdminPass(){return ''}
 function setAdminPass(p){}
 function authCall(type,data){
-  try{return window.__bridge.call(type,data)}catch(e){return Promise.resolve({ok:false,msg:'Серверге қосылу мүмкін болмады'})}
+  try{return window.__bridge.call(type,data).then(r=>{if(r&&r.expired&&user){showPremiumPanel(r.msg||'48 сағаттық тегін мерзім аяқталды.');}return r})}catch(e){return Promise.resolve({ok:false,msg:'Серверге қосылу мүмкін болмады'})}
 }
 function getChatClaim(){return window.__chatToken||''}
 let __busy=false;
@@ -13152,12 +13162,12 @@ function tariffWhatsApp(plan){return UBT_WHATSAPP+'?text='+encodeURIComponent('�
 function renderPremiumPanel(message=''){
  const host=document.getElementById('premium-panel');if(!host||!user)return;const e=subscriptionInfo();
  const plans=[
- {id:'free',name:'Тегін',tag:'Танысып көруге',items:['Күніне 2 пәндік тест','Аптасына 1 толық тест','Пәндік базадан 10 сұрақтық танысу жинағы','Соңғы нәтиже, күннің 5 сұрағы'],why:'Сайтпен танысып, күнделікті дайындық әдетін қалыптастыруға арналған. Сыйлық толық тест пен күннің тапсырмалары қосымша қолжетімді.'},
+ {id:'free',name:'Тегін',tag:'Алғашқы 48 сағатқа толық қолжетімділік',items:['Тіркелген сәттен бастап 48 сағат ашық','Осы уақытта сайттың мүмкіндіктерін тегін пайдаланыңыз','48 сағат біткен соң ақылы тариф қосылғанша кіру жабылады'],why:'Тегін қолжетімділік әр аккаунтқа бір рет, тіркелгеннен кейін 48 сағат беріледі.'},
  {id:'pro',name:'Pro',tag:'Тұрақты дайындыққа',price:'490 ₸ / ай',items:['Күніне 5 пәндік тест','Аптасына 3 толық тест','Пәндік жинақтар 10 сұрақпен қысқармайды','Толық нәтижелер тарихы және флешкарталар'],why:'Күн сайын бірнеше пәннен дайындалып, алдыңғы нәтижелерге қайта оралғысы келетін оқушыға. Жеке әлсіз тақырыптар талдауы Premium және Класс тарифтерінде.'},
  {id:'premium',name:'Premium',tag:'Жеке терең дайындыққа',price:'1 190 ₸ / ай',items:['Өз пәндеріңізден шектеусіз тест','Толық тарих және графиктер','Пәндік талдау, білім картасы, балл болжамы','Әлсіз тақырыптарға жеке жоспар, толық флешкарталар'],why:'Қай пәннен және тақырыптан қиналатынын анықтап, нәтижесіне қарай дайындық жоспарын құрғысы келетін оқушыға. Шектеусіз тест пән жұбы мен жария тесттің жеке ережелерін өзгертпейді.'},
  {id:'class',name:'Класс',tag:'Бірге дайындалатын топқа',price:'1 590 ₸ / 3 ай',items:['Әр қатысушыға Premium мүмкіндіктері','Басты админ 30 аккаунтқа дейін бірге қосады','Әр оқушының жеке нәтижесі мен пән жұбы сақталады','Қатысушылар тізімі мен мерзімі WhatsApp-та келісіледі'],why:'Сыныпқа немесе дайындық тобына бірге қолжетімділік алуға арналған. Бұл тариф мұғалім не админ рөлін бермейді; мұғалімнің сыныпқа қатысты құқығын басты админ бөлек бекітеді.'}
  ];
- host.innerHTML=`<div class="clean-hero"><div><span class="clean-eyebrow">ҰБТ PLUS · ТАРИФТЕР</span><h1>Өзіңізге ыңғайлы дайындықты таңдаңыз</h1><p>Қазіргі тариф: <b>${esc(tariffName(e.plan))}</b>${e.expires?' · '+premiumDate(e.expires)+' дейін':''}</p><p>Ақылы тарифті тек басты админ қосады. Бағасы мен мерзімін WhatsApp арқылы келісіңіз.</p></div></div>${message?`<div class="card" role="status">${esc(message)}</div>`:''}<div class="grid2" style="margin-top:18px">${plans.map(p=>`<article class="card" style="display:flex;flex-direction:column;gap:12px;${p.id==='premium'?'border:2px solid #6366f1;':''}"><div><span class="sub">${p.tag}</span><h2>${p.name}${e.plan===p.id?' · Сіздің тарифіңіз':''}</h2>${p.price?`<p style="font-size:20px;font-weight:700;margin-top:8px">${p.price}</p>`:''}</div><ul style="padding-left:20px;line-height:1.9">${p.items.map(i=>'<li>'+i+'</li>').join('')}</ul><div style="margin-top:auto">${p.id==='free'?'<p class="sub">Тіркеліп, тегін қолданыңыз</p>':`<a class="btn btn-p" style="display:inline-flex" href="${tariffWhatsApp(p.id)}" target="_blank" rel="noopener noreferrer">WhatsApp арқылы алу ↗</a>`}</div><details style="border-top:1px solid #71809655;padding-top:12px"><summary style="cursor:pointer;font-weight:600">Не үшін керек? Толығырақ</summary><p style="margin-top:12px;line-height:1.7">${p.why}</p></details></article>`).join('')}</div><div class="card" style="margin-top:18px"><h3>Сатып алу үшін WhatsApp-қа жазыңыз</h3><p style="margin:12px 0"><a href="${UBT_WHATSAPP}" target="_blank" rel="noopener noreferrer" style="font-size:21px;font-weight:700">8 705 636 0080 ↗</a></p><p>Тарифті таңдаңыз → логиніңізді жіберіңіз → бағасы мен мерзімін келісіңіз → басты админ қосады.</p><p class="sub" style="margin-top:10px">Сайт автоматты төлем алмайды. Пакетті қолданушы, мұғалім немесе кіші админ өздігінен қоса алмайды.</p><a class="btn btn-s" style="margin-top:14px" href="${UBT_WHATSAPP_GROUP}" target="_blank" rel="noopener noreferrer">WhatsApp тобына кіру ↗</a></div><div class="card" style="margin-top:18px"><h3>Барлығына ортақ</h3><p style="margin-top:10px">Калькулятор, Менделеев кестесі, тест нәтижесі және рұқсат етілген қате талдауы сақталады. Достармен жарыс, челлендж, диагностика және марафон өз ережелерімен жұмыс істейді.</p><p class="sub" style="margin-top:10px">Ортақ тест талдауы алғашқы тапсыруда 1 рет, өз тестіңіздікі барлығы 5 рет ашылады. Ақылы тариф осы қорғаныс пен пәндік шектеулерді өзгертпейді. Күндік лимит Қазақстан уақытымен 00:00-де, апталық лимит дүйсенбіде жаңарады.</p></div>`;
+ host.innerHTML=`<div class="clean-hero"><div><span class="clean-eyebrow">ҰБТ PLUS · ТАРИФТЕР</span><h1>Өзіңізге ыңғайлы дайындықты таңдаңыз</h1><p>Қазіргі тариф: <b>${esc(tariffName(e.plan))}</b>${e.expires?' · '+premiumDate(e.expires)+' дейін':''}</p>${e.trialActive?'<p style="font-weight:700;color:#0f766e">48 сағаттық тегін қолжетімділік белсенді</p>':(!e.paid&&e.plan==='free'?'<p style="font-weight:700;color:#b91c1c">Тегін мерзім аяқталған. Сайтты жалғастыру үшін ақылы тариф қосыңыз.</p>':'')}<p>Ақылы тарифті тек басты админ қосады. Бағасы мен мерзімін WhatsApp арқылы келісіңіз.</p></div></div>${message?`<div class="card" role="status">${esc(message)}</div>`:''}<div class="grid2" style="margin-top:18px">${plans.map(p=>`<article class="card" style="display:flex;flex-direction:column;gap:12px;${p.id==='premium'?'border:2px solid #6366f1;':''}"><div><span class="sub">${p.tag}</span><h2>${p.name}${e.plan===p.id?' · Сіздің тарифіңіз':''}</h2>${p.price?`<p style="font-size:20px;font-weight:700;margin-top:8px">${p.price}</p>`:''}</div><ul style="padding-left:20px;line-height:1.9">${p.items.map(i=>'<li>'+i+'</li>').join('')}</ul><div style="margin-top:auto">${p.id==='free'?'<p class="sub">Тіркеліп, тегін қолданыңыз</p>':`<a class="btn btn-p" style="display:inline-flex" href="${tariffWhatsApp(p.id)}" target="_blank" rel="noopener noreferrer">WhatsApp арқылы алу ↗</a>`}</div><details style="border-top:1px solid #71809655;padding-top:12px"><summary style="cursor:pointer;font-weight:600">Не үшін керек? Толығырақ</summary><p style="margin-top:12px;line-height:1.7">${p.why}</p></details></article>`).join('')}</div><div class="card" style="margin-top:18px"><h3>Сатып алу үшін WhatsApp-қа жазыңыз</h3><p style="margin:12px 0"><a href="${UBT_WHATSAPP}" target="_blank" rel="noopener noreferrer" style="font-size:21px;font-weight:700">8 705 636 0080 ↗</a></p><p>Тарифті таңдаңыз → логиніңізді жіберіңіз → бағасы мен мерзімін келісіңіз → басты админ қосады.</p><p class="sub" style="margin-top:10px">Сайт автоматты төлем алмайды. Пакетті қолданушы, мұғалім немесе кіші админ өздігінен қоса алмайды.</p><a class="btn btn-s" style="margin-top:14px" href="${UBT_WHATSAPP_GROUP}" target="_blank" rel="noopener noreferrer">WhatsApp тобына кіру ↗</a></div><div class="card" style="margin-top:18px"><h3>Барлығына ортақ</h3><p style="margin-top:10px">Калькулятор, Менделеев кестесі, тест нәтижесі және рұқсат етілген қате талдауы сақталады. Достармен жарыс, челлендж, диагностика және марафон өз ережелерімен жұмыс істейді.</p><p class="sub" style="margin-top:10px">Ортақ тест талдауы алғашқы тапсыруда 1 рет, өз тестіңіздікі барлығы 5 рет ашылады. Ақылы тариф осы қорғаныс пен пәндік шектеулерді өзгертпейді. Күндік лимит Қазақстан уақытымен 00:00-де, апталық лимит дүйсенбіде жаңарады.</p></div>`;
 }
 async function activatePremiumTrial(){showPremiumPanel('Тарифті қосу үшін басты админге WhatsApp арқылы жазыңыз.')}
 function requestPremium(){window.open(tariffWhatsApp('premium'),'_blank','noopener,noreferrer')}
