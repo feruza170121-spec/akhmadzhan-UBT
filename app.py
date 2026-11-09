@@ -428,7 +428,7 @@ def _subject_guard(state,sess,subject,questions=None):
     return ''
 
 def _public_question(q,index):
-                                                                                       
+    # Whitelist, rather than removing only "correct": explanations can contain answers.
     out = {k:q[k] for k in ('text','options','points','img','tbl','subject','subjectName','difficulty') if k in q}
     out['id']='examq'+str(index)
     return out
@@ -449,7 +449,7 @@ def _review_record(state,sess,exam,answers):
     ident='review_'+secrets.token_hex(18)
     records=_jload(state['db'].get('ubt_server_exam_review_records_'+sess['uid'],'{}'),dict,{})
     records[ident]={'uid':uid,'family':family,'own':own,'eligible':eligible,'questions':exam['questions'],'answers':answers,'topic':exam['topic'],'created':time.time(),'expires':time.time()+30*86400}
-                                                                                       
+    # Bound retained payloads per learner. Usage limits survive record expiry/deletion.
     mine=sorted(((r['created'],k) for k,r in records.items() if r.get('uid')==uid))
     for _,key in mine[:-100]:records.pop(key,None)
     history=_jload(state['db'].get('ubt_hist_'+uid,'[]'),list,[])
@@ -476,7 +476,7 @@ def _review_request(state,sess,typ,d):
         u=usage.get(rec['family'],{'attempts':0,'opens':0});limit=5 if rec['own'] else 1
         if not rec['eligible'] or (not rec['own'] and u['attempts']!=1) or u['opens']>=limit:return {'ok':False,'msg':'Қатемен жұмысты қарау лимиті аяқталған. Қайта тапсырғанда ортақ тест жауаптары ашылмайды.'}
         if any(e.get('uid')==sess['uid'] and not e.get('completed') and e.get('expires',0)>time.time() for e in state.get('exams',{}).values()):return {'ok':False,'msg':'Алдымен белсенді тестті аяқтаңыз'}
-                                                                                     
+        # Spend quota before returning any answer; refresh/new tab cannot restore it.
         u['opens']+=1;usage[rec['family']]=u
         for old in records.values():
             if old.get('uid')==sess['uid']:old['active']=False
@@ -528,7 +528,7 @@ def _profile_request(state,sess,typ,d):
         return {'ok':True,'pair':d['pair']}
 
 def _secure_snapshot(state,sess,db):
-                                                                                               
+    # Never deliver server bank/catalogue answers to non-owner learners, including old results.
     if sess['uid']!='admin':
         allowed=_allowed_subjects(state,sess)
         tests=_jload(db.get('ubt_tests','[]'),list,[])
@@ -577,7 +577,7 @@ def _exam_question_request(state,sess,d):
         if issue:return {'ok':False,'msg':issue,'upgradeRequired':True}
         return {'ok':True,'question':_public_question(exam['questions'][index],index)}
 
-                                                                                                    
+# Send capability is independent of account management. Junior admins may send only their own tests.
 def _send_personal_test(state,sess,d):
     if not sess or not (sess.get('admin') or sess.get('juniorAdmin') or _is_teacher(state,sess['uid'])):return {'ok':False,'msg':'Тест жіберуге рұқсат жоқ'}
     with state['lock']:
@@ -632,7 +632,7 @@ def _subscription_info(state,sess):
         _put(state,key,_jdump(record))
     now=time.time();staff=bool(sess.get('admin') and uid=='admin')
     paid=record.get('plan') in ('pro','premium','class') and record.get('expires',0)>now
-    trial=False                                                      
+    trial=False # Paid entitlements can only be granted by the owner.
     plan='staff' if staff else record.get('plan') if paid else 'free'
     premium=staff or (paid and plan in ('premium','class'))
     subject_limit=5 if plan=='pro' else _FREE_SUBJECT_TESTS
@@ -668,7 +668,7 @@ def _subscription_prepare(state,sess,exam):
     issue=_subscription_preflight(state,sess,exam)
     if issue:return issue
     info=_subscription_info(state,sess);exam['premiumAtStart']=info['premium']
-                                                                                                          
+    # Limit shared subject collections only; never restrict the author's own content or full-format exams.
     if info['plan']=='free' and _subscription_kind(exam)=='subject' and not exam.get('selfAuthored') and len(exam['questions'])>_FREE_PREVIEW_QUESTIONS:
         exam['questions']=exam['questions'][:_FREE_PREVIEW_QUESTIONS]
         exam['topic']+=' · Тегін танысу нұсқасы'
@@ -844,7 +844,7 @@ def _growth_request(state,sess,d):
         if action=='referral':
             ref=state['db'].get('ubt_server_access_invite_'+str(d.get('code','')).strip().upper())
             if not ref or ref==uid or r.get('referrer') or r.get('firstCompleted'):return {'ok':False,'msg':'Код жарамсыз немесе алғашқы тест тапсырылып қойған'}
-                                                                                
+            # One referred account per device; maximum five rewards per inviter.
             device=str(sess.get('device') or '')
             if not device:return {'ok':False,'msg':'Құрылғыны растау үшін аккаунтқа қайта кіріңіз'}
             dk='ubt_server_access_ref_device_'+hashlib.sha256(device.encode()).hexdigest()
@@ -895,7 +895,7 @@ def _growth_request(state,sess,d):
         attempts[tag]=token;_growth_put(state,uid,r);state['exams'][token]=exam;_save_exam(state,token);_commit(state)
         return {'ok':True,'exam':token,'questions':[_exam_question_meta(q,i) for i,q in enumerate(qs)],'topic':topic,'timer':900,'code':code}
 
-                                                                             
+# Admissions records are historical comparisons, never probability estimates.
 _PATH_GRANTS = [
  {'university':'Astana IT University','city':'Астана','group':'B057','program':'Ақпараттық технологиялар','pair':['math','informatics'],'year':2025,'score':80,'kind':'historical','quota':'general','source':'https://univision.kz/univ/119-astana-it-university/ball','sourceType':'secondary','checked':'2026-11-09'},
  {'university':'Astana IT University','city':'Астана','group':'B058','program':'Ақпараттық қауіпсіздік','pair':['math','informatics'],'year':2025,'score':85,'kind':'historical','quota':'general','source':'https://univision.kz/univ/119-astana-it-university/ball','sourceType':'secondary','checked':'2026-11-09'},
@@ -912,7 +912,7 @@ def _path_data(state,uid):
 def _path_events(state,uid):
     key='ubt_server_access_path_events_'+uid
     if key in state['db']:return _jload(state['db'][key],list,[])
-                                                                                         
+    # Migrate existing server-verified reviews without copying answer keys to the client.
     old=_jload(state['db'].get('ubt_server_exam_review_records_'+uid,'{}'),dict,{})
     rows=[]
     for rid,r in old.items():
@@ -2453,7 +2453,7 @@ def _real_manage_request(state,sess,d):
             for key in banks:
                 banks[key]=[q for q in banks[key] if (q.get("sourceTestId") or "legacy_"+hashlib.sha256((key+"|"+str(q.get("source") or "ҰБТ жинағы")).encode()).hexdigest()[:24])!=target]
         if action == "delete":
-                                                                                           
+            # Remove the original and tombstone its catalogue rows so they cannot reappear.
             rows = _jload(state["db"].get("ubt_tests","[]"),list,[])
             _put(state,"ubt_tests",_jdump([t for t in rows if t.get("id")!=source["id"]]))
             hidden = _jload(state["db"].get("ubt_hidden_source_tests","[]"),list,[])
@@ -2482,7 +2482,7 @@ def _real_bank_cached(state):
     return rows
 
 def _seed_real_bank_demo(state):
-                                                                                     
+    # One-time samples for preview; deliberately not labelled as past exam questions.
     with state["lock"]:
         if state["db"].get("ubt_server_exam_real_demo_v1"):
             return
@@ -2530,7 +2530,7 @@ def _real_bank_import(state, sess, d):
         with state["lock"]:
             banks = _jload(state["db"].get("ubt_server_exam_real_bank", "{}"), dict, {})
             rows = list(banks.get(subject, []))
-                                                                                      
+            # Reversed answer order must not create another copy of the same question.
             def identity(q):
                 return _jdump([" ".join(q["text"].split()).casefold(), sorted(" ".join(x.split()).casefold() for x in q["options"])])
             seen = {identity(q) for q in rows}
@@ -13147,17 +13147,17 @@ function showPremiumPanel(message=''){
 }
 const UBT_WHATSAPP='https://wa.me/77056360080';
 const UBT_WHATSAPP_GROUP='https://chat.whatsapp.com/JVVi7OPce5R0DOO9AjoeKQ?s=cl&p=a&iam=2';
-function tariffName(plan){return {free:'Тегін',pro:'Pro',premium:'Premium',class:'Max',staff:'Басты админ'}[plan]||'Тегін'}
+function tariffName(plan){return {free:'Тегін',pro:'Pro',premium:'Premium',class:'Класс',staff:'Басты админ'}[plan]||'Тегін'}
 function tariffWhatsApp(plan){return UBT_WHATSAPP+'?text='+encodeURIComponent('Сәлеметсіз бе! ҰБТ PLUS сайтындағы '+tariffName(plan)+' тарифін алғым келеді. Логинім: '+(user?.name||'')+(plan==='class'?'. Қатысушылар санын және мерзімін келіскім келеді.':'. Бағасы мен мерзімін білгім келеді.'))}
 function renderPremiumPanel(message=''){
  const host=document.getElementById('premium-panel');if(!host||!user)return;const e=subscriptionInfo();
  const plans=[
  {id:'free',name:'Тегін',tag:'Танысып көруге',items:['Күніне 2 пәндік тест','Аптасына 1 толық тест','Пәндік базадан 10 сұрақтық танысу жинағы','Соңғы нәтиже, күннің 5 сұрағы'],why:'Сайтпен танысып, күнделікті дайындық әдетін қалыптастыруға арналған. Сыйлық толық тест пен күннің тапсырмалары қосымша қолжетімді.'},
- {id:'pro',name:'Pro',tag:'Тұрақты дайындыққа',price:'Бағасын WhatsApp-та нақтылау',items:['Күніне 5 пәндік тест','Аптасына 3 толық тест','Пәндік жинақтар 10 сұрақпен қысқармайды','Толық нәтижелер тарихы және флешкарталар'],why:'Күн сайын бірнеше пәннен дайындалып, алдыңғы нәтижелерге қайта оралғысы келетін оқушыға. Жеке әлсіз тақырыптар талдауы Premium және Класс тарифтерінде.'},
- {id:'premium',name:'Premium',tag:'Жеке терең дайындыққа',price:'Бағасын WhatsApp-та нақтылау',items:['Өз пәндеріңізден шектеусіз тест','Толық тарих және графиктер','Пәндік талдау, білім картасы, балл болжамы','Әлсіз тақырыптарға жеке жоспар, толық флешкарталар'],why:'Қай пәннен және тақырыптан қиналатынын анықтап, нәтижесіне қарай дайындық жоспарын құрғысы келетін оқушыға. Шектеусіз тест пән жұбы мен жария тесттің жеке ережелерін өзгертпейді.'},
- {id:'class',name:'Max',tag:'3 айлық кеңейтілген дайындық',price:'1 590 ₸ / 3 ай',items:['Premium мүмкіндіктерінің барлығы','Өз пәндеріңізден шектеусіз тест','Толық тарих, графиктер және пәндік талдау','Білім картасы, балл болжамы және жеке оқу жоспары','WhatsApp арқылы қолдау'],why:'Үш ай бойы жүйелі әрі терең дайындалуға арналған. Тарифті төлем расталғаннан кейін басты админ қосады; мұғалім немесе админ рөлі автоматты түрде берілмейді.'}
+ {id:'pro',name:'Pro',tag:'Тұрақты дайындыққа',price:'490 ₸ / ай',items:['Күніне 5 пәндік тест','Аптасына 3 толық тест','Пәндік жинақтар 10 сұрақпен қысқармайды','Толық нәтижелер тарихы және флешкарталар'],why:'Күн сайын бірнеше пәннен дайындалып, алдыңғы нәтижелерге қайта оралғысы келетін оқушыға. Жеке әлсіз тақырыптар талдауы Premium және Класс тарифтерінде.'},
+ {id:'premium',name:'Premium',tag:'Жеке терең дайындыққа',price:'1 190 ₸ / ай',items:['Өз пәндеріңізден шектеусіз тест','Толық тарих және графиктер','Пәндік талдау, білім картасы, балл болжамы','Әлсіз тақырыптарға жеке жоспар, толық флешкарталар'],why:'Қай пәннен және тақырыптан қиналатынын анықтап, нәтижесіне қарай дайындық жоспарын құрғысы келетін оқушыға. Шектеусіз тест пән жұбы мен жария тесттің жеке ережелерін өзгертпейді.'},
+ {id:'class',name:'Класс',tag:'Бірге дайындалатын топқа',price:'1 590 ₸ / 3 ай',items:['Әр қатысушыға Premium мүмкіндіктері','Басты админ 30 аккаунтқа дейін бірге қосады','Әр оқушының жеке нәтижесі мен пән жұбы сақталады','Қатысушылар тізімі мен мерзімі WhatsApp-та келісіледі'],why:'Сыныпқа немесе дайындық тобына бірге қолжетімділік алуға арналған. Бұл тариф мұғалім не админ рөлін бермейді; мұғалімнің сыныпқа қатысты құқығын басты админ бөлек бекітеді.'}
  ];
- host.innerHTML=`<div class="clean-hero"><div><span class="clean-eyebrow">ҰБТ PLUS · ТАРИФТЕР</span><h1>Өзіңізге ыңғайлы дайындықты таңдаңыз</h1><p>Қазіргі тариф: <b>${esc(tariffName(e.plan))}</b>${e.expires?' · '+premiumDate(e.expires)+' дейін':''}</p><p>Max тарифі — 1 590 ₸ / 3 ай. Ақылы тарифті төлем расталғаннан кейін басты админ қосады.</p></div></div>${message?`<div class="card" role="status">${esc(message)}</div>`:''}<div class="grid2" style="margin-top:18px">${plans.map(p=>`<article class="card" style="display:flex;flex-direction:column;gap:12px;${p.id==='premium'?'border:2px solid #6366f1;':''}"><div><span class="sub">${p.tag}</span><h2>${p.name}${e.plan===p.id?' · Сіздің тарифіңіз':''}</h2><div style="font-size:20px;font-weight:800;margin-top:8px">${p.price||''}</div></div><ul style="padding-left:20px;line-height:1.9">${p.items.map(i=>'<li>'+i+'</li>').join('')}</ul><div style="margin-top:auto">${p.id==='free'?'<p class="sub">Тіркеліп, тегін қолданыңыз</p>':`<a class="btn btn-p" style="display:inline-flex" href="${tariffWhatsApp(p.id)}" target="_blank" rel="noopener noreferrer">WhatsApp арқылы алу ↗</a>`}</div><details style="border-top:1px solid #71809655;padding-top:12px"><summary style="cursor:pointer;font-weight:600">Не үшін керек? Толығырақ</summary><p style="margin-top:12px;line-height:1.7">${p.why}</p></details></article>`).join('')}</div><div class="card" style="margin-top:18px"><h3>Сатып алу үшін WhatsApp-қа жазыңыз</h3><p style="margin:12px 0"><a href="${UBT_WHATSAPP}" target="_blank" rel="noopener noreferrer" style="font-size:21px;font-weight:700">8 705 636 0080 ↗</a></p><p>Max тарифі: 1 590 ₸ / 3 ай. Тарифті таңдаңыз → логиніңізді жіберіңіз → төлемді келісіңіз → басты админ қосады.</p><p class="sub" style="margin-top:10px">Сайт автоматты төлем алмайды. Пакетті қолданушы, мұғалім немесе кіші админ өздігінен қоса алмайды.</p><a class="btn btn-s" style="margin-top:14px" href="${UBT_WHATSAPP_GROUP}" target="_blank" rel="noopener noreferrer">WhatsApp тобына кіру ↗</a></div><div class="card" style="margin-top:18px"><h3>Барлығына ортақ</h3><p style="margin-top:10px">Калькулятор, Менделеев кестесі, тест нәтижесі және рұқсат етілген қате талдауы сақталады. Достармен жарыс, челлендж, диагностика және марафон өз ережелерімен жұмыс істейді.</p><p class="sub" style="margin-top:10px">Ортақ тест талдауы алғашқы тапсыруда 1 рет, өз тестіңіздікі барлығы 5 рет ашылады. Ақылы тариф осы қорғаныс пен пәндік шектеулерді өзгертпейді. Күндік лимит Қазақстан уақытымен 00:00-де, апталық лимит дүйсенбіде жаңарады.</p></div>`;
+ host.innerHTML=`<div class="clean-hero"><div><span class="clean-eyebrow">ҰБТ PLUS · ТАРИФТЕР</span><h1>Өзіңізге ыңғайлы дайындықты таңдаңыз</h1><p>Қазіргі тариф: <b>${esc(tariffName(e.plan))}</b>${e.expires?' · '+premiumDate(e.expires)+' дейін':''}</p><p>Ақылы тарифті тек басты админ қосады. Бағасы мен мерзімін WhatsApp арқылы келісіңіз.</p></div></div>${message?`<div class="card" role="status">${esc(message)}</div>`:''}<div class="grid2" style="margin-top:18px">${plans.map(p=>`<article class="card" style="display:flex;flex-direction:column;gap:12px;${p.id==='premium'?'border:2px solid #6366f1;':''}"><div><span class="sub">${p.tag}</span><h2>${p.name}${e.plan===p.id?' · Сіздің тарифіңіз':''}</h2>${p.price?`<p style="font-size:20px;font-weight:700;margin-top:8px">${p.price}</p>`:''}</div><ul style="padding-left:20px;line-height:1.9">${p.items.map(i=>'<li>'+i+'</li>').join('')}</ul><div style="margin-top:auto">${p.id==='free'?'<p class="sub">Тіркеліп, тегін қолданыңыз</p>':`<a class="btn btn-p" style="display:inline-flex" href="${tariffWhatsApp(p.id)}" target="_blank" rel="noopener noreferrer">WhatsApp арқылы алу ↗</a>`}</div><details style="border-top:1px solid #71809655;padding-top:12px"><summary style="cursor:pointer;font-weight:600">Не үшін керек? Толығырақ</summary><p style="margin-top:12px;line-height:1.7">${p.why}</p></details></article>`).join('')}</div><div class="card" style="margin-top:18px"><h3>Сатып алу үшін WhatsApp-қа жазыңыз</h3><p style="margin:12px 0"><a href="${UBT_WHATSAPP}" target="_blank" rel="noopener noreferrer" style="font-size:21px;font-weight:700">8 705 636 0080 ↗</a></p><p>Тарифті таңдаңыз → логиніңізді жіберіңіз → бағасы мен мерзімін келісіңіз → басты админ қосады.</p><p class="sub" style="margin-top:10px">Сайт автоматты төлем алмайды. Пакетті қолданушы, мұғалім немесе кіші админ өздігінен қоса алмайды.</p><a class="btn btn-s" style="margin-top:14px" href="${UBT_WHATSAPP_GROUP}" target="_blank" rel="noopener noreferrer">WhatsApp тобына кіру ↗</a></div><div class="card" style="margin-top:18px"><h3>Барлығына ортақ</h3><p style="margin-top:10px">Калькулятор, Менделеев кестесі, тест нәтижесі және рұқсат етілген қате талдауы сақталады. Достармен жарыс, челлендж, диагностика және марафон өз ережелерімен жұмыс істейді.</p><p class="sub" style="margin-top:10px">Ортақ тест талдауы алғашқы тапсыруда 1 рет, өз тестіңіздікі барлығы 5 рет ашылады. Ақылы тариф осы қорғаныс пен пәндік шектеулерді өзгертпейді. Күндік лимит Қазақстан уақытымен 00:00-де, апталық лимит дүйсенбіде жаңарады.</p></div>`;
 }
 async function activatePremiumTrial(){showPremiumPanel('Тарифті қосу үшін басты админге WhatsApp арқылы жазыңыз.')}
 function requestPremium(){window.open(tariffWhatsApp('premium'),'_blank','noopener,noreferrer')}
@@ -13215,7 +13215,7 @@ let subscriptionAdminLoading=false;
 async function mountSubscriptionAdmin(){
  if(!user?.isAdmin||user.id!=='admin'||subscriptionAdminLoading)return;
  let host=document.getElementById('owner-subscriptions');if(!host){host=document.createElement('section');host.id='owner-subscriptions';host.className='card';document.querySelector('#s-admin .wrap')?.prepend(host)}
- host.innerHTML='<h3>Тарифтерді басқару · тек басты админ</h3><div class="grid2" style="margin-top:12px"><div class="fg"><label>Қолданушы логині</label><input id="subscription-target-login" maxlength="40" autocomplete="off"></div><div class="fg"><label>Мерзімі, күн</label><input id="subscription-target-days" type="number" min="1" max="3650" value="30"></div></div><div class="row"><button class="btn btn-s" onclick="ownerSubscriptionAction(\'view\',this)">Қарау</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'pro\',this)">Pro</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'premium\',this)">Premium</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'class\',this)">Класс</button><button class="btn btn-d" onclick="ownerSubscriptionAction(\'free\',this)">Тегінге қайтару</button></div><p id="owner-subscription-status" class="sub" role="status" style="margin-top:12px"></p><h4 style="margin-top:16px">Max · топқа беру</h4><p class="sub">30 адамға дейін, логиндерді әр жолға бөлек енгізіңіз. Мерзімі жоғарыдағы күн санымен беріледі.</p><textarea id="subscription-class-logins" rows="4" placeholder="Оқушы логиндері"></textarea><button class="btn btn-p" onclick="document.getElementById('subscription-target-days').value=90;ownerClassGrant(this)">Топқа Max беру · 90 күн</button><h4 style="margin-top:16px">Тариф өтініштері</h4><div id="subscription-pending-requests"></div>';
+ host.innerHTML='<h3>Тарифтерді басқару · тек басты админ</h3><div class="grid2" style="margin-top:12px"><div class="fg"><label>Қолданушы логині</label><input id="subscription-target-login" maxlength="40" autocomplete="off"></div><div class="fg"><label>Мерзімі, күн</label><input id="subscription-target-days" type="number" min="1" max="3650" value="30"></div></div><div class="row"><button class="btn btn-s" onclick="ownerSubscriptionAction(\'view\',this)">Қарау</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'pro\',this)">Pro</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'premium\',this)">Premium</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'class\',this)">Класс</button><button class="btn btn-d" onclick="ownerSubscriptionAction(\'free\',this)">Тегінге қайтару</button></div><p id="owner-subscription-status" class="sub" role="status" style="margin-top:12px"></p><h4 style="margin-top:16px">Класс · топқа беру</h4><p class="sub">30 адамға дейін, логиндерді әр жолға бөлек енгізіңіз. Мерзімі жоғарыдағы күн санымен беріледі.</p><textarea id="subscription-class-logins" rows="4" placeholder="Оқушы логиндері"></textarea><button class="btn btn-p" onclick="ownerClassGrant(this)">Топқа Класс беру</button><h4 style="margin-top:16px">Тариф өтініштері</h4><div id="subscription-pending-requests"></div>';
  subscriptionAdminLoading=true;try{const r=await authCall('owner_subscription_list',{});const list=document.getElementById('subscription-pending-requests');if(!list)return;list.textContent='';if(!r.ok){list.textContent=r.msg;return}if(!r.requests.length)list.textContent='Жаңа өтініш жоқ.';for(const item of r.requests){const row=document.createElement('div');row.className='item';const label=document.createElement('strong');label.textContent=item.name;const b=document.createElement('button');b.className='btn btn-s btn-sm';b.textContent='Таңдау';b.onclick=()=>{document.getElementById('subscription-target-login').value=item.name};row.append(label,b);list.appendChild(row)}}finally{subscriptionAdminLoading=false}
 }
 async function ownerSubscriptionAction(action,button){
