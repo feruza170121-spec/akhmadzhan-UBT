@@ -731,7 +731,7 @@ def _start_creative_exam(state,sess):
 _FREE_SUBJECT_TESTS = 2
 _FREE_FULL_TESTS = 1
 _FREE_PREVIEW_QUESTIONS = 10
-_TRIAL_DAYS = 3
+_TRIAL_DAYS = 1  # 24 сағаттық бір реттік танысу мерзімі
 
 def _subscription_info(state,sess):
     uid=sess['uid'];key='ubt_server_access_subscription_'+uid
@@ -746,10 +746,13 @@ def _subscription_info(state,sess):
         record['trialStarted']=now;record['trialUntil']=now+86400;record['trialUsed']=True
         _put(state,key,_jdump(record))
     staff=bool(sess.get('admin') and uid=='admin')
-    paid=record.get('plan') in ('pro','premium','class') and record.get('expires',0)>now
+    raw_plan=record.get('plan','free')
+    if raw_plan=='class':
+        raw_plan='max';record['plan']='max';_put(state,key,_jdump(record))
+    paid=raw_plan in ('pro','premium','max') and record.get('expires',0)>now
     trial=not paid and record.get('trialUntil',0)>now
-    plan='staff' if staff else record.get('plan') if paid else 'trial' if trial else 'free'
-    premium=staff or trial or (paid and plan in ('premium','class'))
+    plan='staff' if staff else raw_plan if paid else 'trial' if trial else 'free'
+    premium=staff or trial or (paid and plan in ('premium','max'))
     access_active=staff or paid or trial
     subject_limit=5 if plan=='pro' else _FREE_SUBJECT_TESTS
     full_limit=3 if plan=='pro' else _FREE_FULL_TESTS
@@ -846,7 +849,7 @@ def _subscription_request(state,sess,typ,d):
             return {'ok':True,'rows':rows[-1000:]}
         if typ=='owner_subscription_set' and d.get('logins') is not None:
             logins=d.get('logins');days=d.get('days',30)
-            if d.get('plan')!='class' or not isinstance(logins,list) or not 1<=len(logins)<=30 or type(days) is not int or not 1<=days<=3650:return {'ok':False,'msg':'Класс: 1–30 логин және 1–3650 күн енгізіңіз'}
+            if d.get('plan')!='max' or not isinstance(logins,list) or not 1<=len(logins)<=30 or type(days) is not int or not 1<=days<=3650:return {'ok':False,'msg':'Max: 1–30 логин және 1–3650 күн енгізіңіз'}
             names={str(p.get('name','')).casefold():p for p in _profiles(state).values()}
             targets=[]
             for login in logins:
@@ -854,7 +857,7 @@ def _subscription_request(state,sess,typ,d):
                 target=names[login.strip().casefold()]
                 if target['id']=='admin':return {'ok':False,'msg':'Басты админді топтық тарифке қоспаңыз'}
                 if target['id'] not in targets:targets.append(target['id'])
-            for target in targets:_subscription_request(state,sess,'owner_subscription_set',{'uid':target,'plan':'class','days':days})
+            for target in targets:_subscription_request(state,sess,'owner_subscription_set',{'uid':target,'plan':'max','days':days})
             return {'ok':True,'count':len(targets)}
         uid=str(d.get('uid') or '')
         profile=_person_profile(state,uid) if uid else next((p for p in _profiles(state).values() if str(p.get('name') or '').casefold()==str(d.get('login') or '').strip().casefold()),{})
@@ -863,7 +866,7 @@ def _subscription_request(state,sess,typ,d):
         target={'uid':uid,'admin':False,'juniorAdmin':uid in _admin_uids(state)}
         info=_subscription_info(state,target)
         if typ=='owner_subscription_view':return {'ok':True,'subscription':info,'name':profile.get('name'),'uid':uid}
-        if typ!='owner_subscription_set' or d.get('plan') not in ('free','pro','premium','class'):return {'ok':False,'msg':'Тарифті таңдаңыз'}
+        if typ!='owner_subscription_set' or d.get('plan') not in ('free','pro','premium','max'):return {'ok':False,'msg':'Тарифті таңдаңыз'}
         days=d.get('days',30)
         if type(days) is not int or not 1<=days<=3650:return {'ok':False,'msg':'Мерзім 1–3650 күн болсын'}
         key='ubt_server_access_subscription_'+uid;r=_jload(state['db'].get(key,'{}'),dict,{})
@@ -2162,8 +2165,17 @@ def _catalog_sync(state):
     for t in _jload(state["db"].get("ubt_tests", "[]"), list, []) + _BUILTIN_BANK_TESTS:
         if not isinstance(t, dict) or t.get("assignmentId") or t.get("receivedFromAdmin"):
             continue
+        author = t.get("authorId") or "admin"
+        if author not in ("admin", "system"):
+            author_profile = next((p for p in _profiles(state).values() if isinstance(p,dict) and p.get("id")==author),None)
+            if author_profile:
+                try:
+                    if _subscription_info(state,{"uid":author,"admin":False}).get("plan")=="pro":
+                        continue
+                except Exception:
+                    continue
         for q in t.get("questions", []):
-            add(q, t.get("authorId") or "admin", t.get("subject", "other"), t.get("topic") or "Тест", t.get("authorName"))
+            add(q, author, t.get("subject", "other"), t.get("topic") or "Тест", t.get("authorName"))
     if changed:
         _put(state, "ubt_question_catalog", _jdump(catalog))
         _commit(state)
@@ -3704,8 +3716,15 @@ def _handle_req_impl(state, sid, rq):
         if not device:
             return {"ok":False,"msg":"Браузер белгісі жоқ. Бетті жаңартып қайта көріңіз"}
         devices=_jload(state["db"].get("ubt_server_access_blocked_devices","{}"),dict,{})
-        if hashlib.sha256(device.encode()).hexdigest() in devices:
-            return {"ok":False,"msg":"Осы браузерден тіркелу бұғатталған. Себебі: "+str(devices[hashlib.sha256(device.encode()).hexdigest()].get("reason") or "Қауіпсіздік ережесі")+". Басты админге хабарласыңыз"}
+        device_hash=hashlib.sha256(device.encode()).hexdigest()
+        if device_hash in devices:
+            return {"ok":False,"msg":"Осы құрылғыдан тіркелу бұғатталған. Басты админге хабарласыңыз."}
+        trial_devices=_jload(state["db"].get("ubt_server_access_trial_devices","{}"),dict,{})
+        prior_uid=trial_devices.get(device_hash)
+        if prior_uid:
+            prior_profile=next((x for x in _profiles(state).values() if isinstance(x,dict) and x.get("id")==prior_uid),None)
+            prior_name=(prior_profile or {}).get("name") or "бұрынғы аккаунт"
+            return {"ok":False,"msg":"Бұл құрылғыда 1 күндік тегін мүмкіндік бұрын қолданылған. Қайта аккаунт ашып сынақты қайталау мүмкін емес. Бұрынғы аккаунтыңызға кіріңіз: "+str(prior_name)+". Құпиясөзді ұмытсаңыз, WhatsApp-қа жазыңыз."}
         name = _clean_name(d.get("name"))
         pw = str(d.get("pass") or "")[:200]
         if not name:
@@ -3746,6 +3765,9 @@ def _handle_req_impl(state, sid, rq):
             _put(state, "ubt_profiles", _jdump(profs))
             # Every new account gets exactly one 24-hour introductory access period.
             _put(state, "ubt_server_access_subscription_" + uid, _jdump({"plan":"free","expires":0,"trialUsed":True,"trialStarted":now,"trialUntil":now+86400,"welcomeFull":1,"created":now}))
+            # One introductory day per persistent browser/device token.
+            trial_devices[device_hash]=uid
+            _put(state,"ubt_server_access_trial_devices",_jdump(trial_devices))
             stats = _jload(state["db"].get("ubt_user_stats", "{}"), dict, {})
             stats[uid] = {"points": 0, "title": "", "stars": 0, "verified": False}
             _put(state, "ubt_user_stats", _jdump(stats))
@@ -4477,6 +4499,13 @@ def _authorize(state, sess, k, v, chat_token=""):
         return None
     if k.startswith("ubt_qbank_"):
         if k != "ubt_qbank_" + sess["uid"]:
+            return None
+        # Pro is a practice-only plan: it cannot add questions to the bank.
+        try:
+            access = _subscription_info(state, sess)
+            if access.get("plan") == "pro":
+                return None
+        except Exception:
             return None
         incoming = _jload(v, list, None)
         if incoming is None or len(incoming) > 10000:
@@ -6995,7 +7024,7 @@ function doRegister(){return guarded(async()=>{
   const r=await authCall('register',{name:name,pass:pass,profilePair,parent});
   if(!r.ok){alert(r.msg||'Қате');return}
   ['reg-name','reg-pass','reg-pass2'].forEach(i=>{const e=document.getElementById(i);if(e)e.value=''});
-  alert('✅ Тіркелу өтініші админге жіберілді. Админ рұқсат бергеннен кейін сайтқа кіре аласыз.');
+  alert('✅ Аккаунт дайын! 24 сағаттық тегін танысу мерзімі басталды.');
   showLoginBox();
   document.getElementById('login-name').value=name;
 })}
@@ -11494,7 +11523,7 @@ function doRegisterTeacher(){return guarded(async()=>{
   const r=await authCall('register',{name:name,pass:pass,teacher:true,info:info,subject});
   if(!r.ok){alert(r.msg||'Қате');return}
   ['tr-name','tr-info','tr-pass','tr-pass2','tr-subject'].forEach(i=>document.getElementById(i).value='');
-  alert('✅ Мұғалімнің тіркелу өтініші админге жіберілді. Рұқсат берілгеннен кейін ғана сайтқа кіре аласыз.');
+  alert('✅ Аккаунт ашылды! 24 сағаттық танысу мерзімі басталды. Мұғалім кабинеті админ бекіткеннен кейін ашылады.');
   showLoginBox();document.getElementById('login-name').value=name;
 })}
 function mutateProfile(id,fn){
@@ -13357,7 +13386,7 @@ adminViewUser=function(id){
   pair.innerHTML='<h3>Оқушының бейіндік пәндері</h3><select id="owner-profile-pair">'+pairOptions(target.profilePair||[])+'</select><button type="button" class="btn btn-p" style="margin-top:12px">Пән жұбын сақтау</button>';
   pair.querySelector('button').onclick=async()=>{const selected=readPair('owner-profile-pair');const res=await authCall('owner_set_pair',{uid:id,pair:selected});if(!res.ok)return alert(res.msg||'Сақтау қатесі');await window.__bridge.refresh();alert('Пән жұбы өзгертілді')};
   const sub=document.createElement('section');sub.className='card';sub.style.marginTop='14px';
-  sub.innerHTML='<h3>✦ Осы профильге тариф беру</h3><p class="sub">'+esc(target.name||'Қолданушы')+' · Pro / Premium / Класс тарифін қосу немесе алып тастау.</p><label>Мерзімі (күн)<input id="profile-premium-days" type="number" min="1" max="3650" value="30"></label><div class="row" style="margin-top:12px;flex-wrap:wrap"><button type="button" class="btn btn-p" data-plan="pro">Pro беру</button><button type="button" class="btn btn-p" data-plan="premium">Premium беру</button><button type="button" class="btn btn-p" data-plan="class">Класс беру</button><button type="button" class="btn btn-d" data-plan="free">Тарифті алып тастау</button></div><p class="sub" id="profile-premium-status" role="status"></p>';
+  sub.innerHTML='<h3>✦ Осы профильге тариф беру</h3><p class="sub">'+esc(target.name||'Қолданушы')+' · Pro / Premium / Max тарифін қосу немесе алып тастау.</p><label>Мерзімі (күн)<input id="profile-premium-days" type="number" min="1" max="3650" value="30"></label><div class="row" style="margin-top:12px;flex-wrap:wrap"><button type="button" class="btn btn-p" data-plan="pro">Pro беру</button><button type="button" class="btn btn-p" data-plan="premium">Premium беру</button><button type="button" class="btn btn-p" data-plan="max">Max беру</button><button type="button" class="btn btn-d" data-plan="free">Тарифті алып тастау</button></div><p class="sub" id="profile-premium-status" role="status"></p>';
   sub.querySelectorAll('button[data-plan]').forEach(button=>button.onclick=async()=>{const days=Number(sub.querySelector('#profile-premium-days').value),status=sub.querySelector('#profile-premium-status');if(button.dataset.plan!=='free'&&(!Number.isInteger(days)||days<1||days>3650)){status.textContent='Мерзімі 1–3650 күн болсын';return}button.disabled=true;try{const result=await authCall('owner_subscription_set',{uid:id,plan:button.dataset.plan,days:button.dataset.plan==='free'?1:days});if(!result.ok){status.textContent=result.msg||'Қате';return}status.textContent=button.dataset.plan==='free'?'Тариф алынды':(target.name||'Қолданушы')+' · '+result.subscription.plan+' · '+premiumDate(result.subscription.expires);await window.__bridge.refresh()}finally{button.disabled=false}});
   host.append(pair,sub);
  }
@@ -13386,7 +13415,7 @@ function showAccessLock(){
  let screen=document.getElementById('s-premium');
  if(!screen){screen=document.createElement('section');screen.id='s-premium';screen.className='screen';screen.innerHTML='<div class="wrap wide"><div id="premium-panel" style="margin-top:20px"></div></div>';document.body.appendChild(screen)}
  const host=document.getElementById('premium-panel');
- if(host)host.innerHTML=`<section class="card" style="max-width:720px;margin:8vh auto;padding:clamp(22px,5vw,42px);text-align:center"><div style="font-size:48px">🔒</div><h1 style="margin:12px 0">1 күндік тегін мүмкіндік аяқталды</h1><p style="line-height:1.8;margin:12px 0">Сайтты әрі қарай пайдалану үшін тарифті WhatsApp арқылы сатып алыңыз. Төлемді растағаннан кейін қолжетімділікті тек басты админ ашады.</p><p style="font-weight:800;font-size:20px;margin:18px 0">Логин: ${esc(user.name||'')}</p><a class="btn btn-p" style="display:inline-flex;justify-content:center;min-width:230px" href="${UBT_WHATSAPP+'?text='+encodeURIComponent('Сәлеметсіз бе! ҰБТ PLUS қолжетімділігін сатып алғым келеді. Логинім: '+(user.name||''))}" target="_blank" rel="noopener noreferrer">WhatsApp арқылы сатып алу ↗</a><p class="sub" style="margin-top:14px">8 705 636 0080</p><button class="btn btn-s btn-sm" style="margin-top:10px" onclick="checkGrantedAccess(this)">Тариф қосылды ма? Тексеру</button> <button class="btn btn-s btn-sm" style="margin-top:10px" onclick="doLogout()">Аккаунттан шығу</button></section>`;
+ if(host)host.innerHTML=`<section class="card" style="max-width:720px;margin:8vh auto;padding:clamp(22px,5vw,42px);text-align:center"><div style="font-size:48px">🔒</div><h1 style="margin:12px 0">1 күндік тегін мүмкіндік аяқталды</h1><p style="line-height:1.8;margin:12px 0">Тегін 24 сағаттық танысу аяқталды. Дайындықты жалғастыру үшін Pro (1 490 ₸), Premium (2 490 ₸) немесе Max (3 990 ₸) тарифін таңдаңыз. Төлемді растағаннан кейін басты админ қолжетімділікті ашады.</p><p style="font-weight:800;font-size:20px;margin:18px 0">Логин: ${esc(user.name||'')}</p><a class="btn btn-p" style="display:inline-flex;justify-content:center;min-width:230px" href="${UBT_WHATSAPP+'?text='+encodeURIComponent('Сәлеметсіз бе! ҰБТ PLUS қолжетімділігін сатып алғым келеді. Логинім: '+(user.name||''))}" target="_blank" rel="noopener noreferrer">WhatsApp арқылы сатып алу ↗</a><p class="sub" style="margin-top:14px">8 705 636 0080</p><button class="btn btn-s btn-sm" style="margin-top:10px" onclick="checkGrantedAccess(this)">Тариф қосылды ма? Тексеру</button> <button class="btn btn-s btn-sm" style="margin-top:10px" onclick="doLogout()">Аккаунттан шығу</button></section>`;
  showScr('s-premium');
 }
 function showTrialNotice(access){
@@ -13404,17 +13433,16 @@ async function checkGrantedAccess(button){
   showScr('s-home');showTrialNotice(r.subscription);alert('Қолжетімділік ашылды. Сәтті дайындық!');
  }finally{if(button&&button.isConnected)button.disabled=false}
 }
-function tariffName(plan){return {free:'Тегін',trial:'1 күндік сынақ',pro:'Pro',premium:'Premium',class:'Класс',staff:'Басты админ'}[plan]||'Тегін'}
-function tariffWhatsApp(plan){return UBT_WHATSAPP+'?text='+encodeURIComponent('Сәлеметсіз бе! ҰБТ PLUS сайтындағы '+tariffName(plan)+' тарифін алғым келеді. Логинім: '+(user?.name||'')+(plan==='class'?'. Қатысушылар санын және мерзімін келіскім келеді.':'. Бағасы мен мерзімін білгім келеді.'))}
+function tariffName(plan){return {free:'Тегін',trial:'1 күндік сынақ',pro:'Pro',premium:'Premium',max:'Max',class:'Max',staff:'Басты админ'}[plan]||'Тегін'}
+function tariffWhatsApp(plan){return UBT_WHATSAPP+'?text='+encodeURIComponent('Сәлеметсіз бе! ҰБТ PLUS сайтындағы '+tariffName(plan)+' тарифін алғым келеді. Логинім: '+(user?.name||'')+((plan==='max'||plan==='class')?'. Max тарифін және мерзімін алғым келеді.':'. Бағасы мен мерзімін білгім келеді.'))}
 function renderPremiumPanel(message=''){
  const host=document.getElementById('premium-panel');if(!host||!user)return;const e=subscriptionInfo();
  const plans=[
- {id:'free',name:'Тегін',tag:'Танысып көруге',items:['Күніне 2 пәндік тест','Аптасына 1 толық тест','Пәндік базадан 10 сұрақтық танысу жинағы','Соңғы нәтиже, күннің 5 сұрағы'],why:'Сайтпен танысып, күнделікті дайындық әдетін қалыптастыруға арналған. Сыйлық толық тест пен күннің тапсырмалары қосымша қолжетімді.'},
- {id:'pro',name:'Pro',tag:'Тұрақты дайындыққа',items:['Күніне 5 пәндік тест','Аптасына 3 толық тест','Пәндік жинақтар 10 сұрақпен қысқармайды','Толық нәтижелер тарихы және флешкарталар'],why:'Күн сайын бірнеше пәннен дайындалып, алдыңғы нәтижелерге қайта оралғысы келетін оқушыға. Жеке әлсіз тақырыптар талдауы Premium және Класс тарифтерінде.'},
- {id:'premium',name:'Premium',tag:'Жеке терең дайындыққа',items:['Өз пәндеріңізден шектеусіз тест','Толық тарих және графиктер','Пәндік талдау, білім картасы, балл болжамы','Әлсіз тақырыптарға жеке жоспар, толық флешкарталар'],why:'Қай пәннен және тақырыптан қиналатынын анықтап, нәтижесіне қарай дайындық жоспарын құрғысы келетін оқушыға. Шектеусіз тест пән жұбы мен жария тесттің жеке ережелерін өзгертпейді.'},
- {id:'class',name:'Класс',tag:'Бірге дайындалатын топқа',items:['Әр қатысушыға Premium мүмкіндіктері','Басты админ 30 аккаунтқа дейін бірге қосады','Әр оқушының жеке нәтижесі мен пән жұбы сақталады','Қатысушылар тізімі мен мерзімі WhatsApp-та келісіледі'],why:'Сыныпқа немесе дайындық тобына бірге қолжетімділік алуға арналған. Бұл тариф мұғалім не админ рөлін бермейді; мұғалімнің сыныпқа қатысты құқығын басты админ бөлек бекітеді.'}
+ {id:'pro',name:'Pro',price:'1 490 ₸ / 30 күн',tag:'Күнделікті дайындыққа',items:['Күніне 5 пәндік тестке дейін','Аптасына 3 толық сынақ тестке дейін','Пәндік тесттердегі 10 сұрақтық танысу шектеуі алынады','Тест нәтижелері мен жауаптар тарихы','Флешкарталар және жеке қателер дәптері'],why:'Тұрақты түрде өз бетімен дайындалатын оқушыға. Pro — тест орындау мен нәтижелерді бақылауға арналған. Pro қолданушысы сұрақтарды өзінің ортақ сұрақтар базасына жариялай алмайды.'},
+ {id:'premium',name:'Premium',price:'2 490 ₸ / 30 күн',tag:'ЕҢ ТИІМДІ · ЖЕКЕ ДАЙЫНДЫҚ',items:['Pro тарифіндегі барлық мүмкіндік','Өз пәндеріңізден шектеусіз дайындық','Пәндер бойынша толық аналитика және графиктер','Әлсіз тақырыптарды автоматты анықтау','Жеке дайындық жоспары және балл болжамы','Білім картасы және толық флешкарталар'],why:'ҰБТ балын жүйелі көтергісі келетін оқушыға. Нәтижелерді талдап, қай тақырыпты қайталау керегін көрсетеді. Сұрақтарды ортақ базаға енгізу тек админ мақұлдаған рұқсатпен орындалады.'},
+ {id:'max',name:'Max',price:'3 990 ₸ / 30 күн',tag:'ТОЛЫҚ МҮМКІНДІК · ЖОҒАРЫ ДЕҢГЕЙ',items:['Premium тарифіндегі барлық мүмкіндік','Жеке оқу жоспарын кеңейтілген бақылау','Барлық қолжетімді пәндік және толық сынақ режимдері','Premium-дегі барлық мүмкіндік','Жеке аккаунтқа арналған басым қолдау','Сұрақтар мен техникалық мәселелер бойынша WhatsApp-та админге тікелей жазу'],why:'Premium мүмкіндіктерінің бәрін алып, қосымша басым қолдауды қалайтын оқушыға. Max тарифі де сұрақтарды автоматты түрде ортақ базаға жарияламайды; ортақ базаны тек админ басқарады.'}
  ];
- host.innerHTML=`<div class="clean-hero"><div><span class="clean-eyebrow">ҰБТ PLUS · ТАРИФТЕР</span><h1>Өзіңізге ыңғайлы дайындықты таңдаңыз</h1><p>Қазіргі тариф: <b>${esc(tariffName(e.plan))}</b>${e.expires?' · '+premiumDate(e.expires)+' дейін':''}</p><p>Ақылы тарифті тек басты админ қосады. Бағасы мен мерзімін WhatsApp арқылы келісіңіз.</p></div></div>${message?`<div class="card" role="status">${esc(message)}</div>`:''}<div class="grid2" style="margin-top:18px">${plans.map(p=>`<article class="card" style="display:flex;flex-direction:column;gap:12px;${p.id==='premium'?'border:2px solid #6366f1;':''}"><div><span class="sub">${p.tag}</span><h2>${p.name}${e.plan===p.id?' · Сіздің тарифіңіз':''}</h2></div><ul style="padding-left:20px;line-height:1.9">${p.items.map(i=>'<li>'+i+'</li>').join('')}</ul><div style="margin-top:auto">${p.id==='free'?'<p class="sub">Тіркеліп, тегін қолданыңыз</p>':`<a class="btn btn-p" style="display:inline-flex" href="${tariffWhatsApp(p.id)}" target="_blank" rel="noopener noreferrer">WhatsApp арқылы алу ↗</a>`}</div><details style="border-top:1px solid #71809655;padding-top:12px"><summary style="cursor:pointer;font-weight:600">Не үшін керек? Толығырақ</summary><p style="margin-top:12px;line-height:1.7">${p.why}</p></details></article>`).join('')}</div><div class="card" style="margin-top:18px"><h3>Сатып алу үшін WhatsApp-қа жазыңыз</h3><p style="margin:12px 0"><a href="${UBT_WHATSAPP}" target="_blank" rel="noopener noreferrer" style="font-size:21px;font-weight:700">8 705 636 0080 ↗</a></p><p>Тарифті таңдаңыз → логиніңізді жіберіңіз → бағасы мен мерзімін келісіңіз → басты админ қосады.</p><p class="sub" style="margin-top:10px">Сайт автоматты төлем алмайды. Пакетті қолданушы, мұғалім немесе кіші админ өздігінен қоса алмайды.</p><a class="btn btn-s" style="margin-top:14px" href="${UBT_WHATSAPP_GROUP}" target="_blank" rel="noopener noreferrer">WhatsApp тобына кіру ↗</a></div><div class="card" style="margin-top:18px"><h3>Барлығына ортақ</h3><p style="margin-top:10px">Калькулятор, Менделеев кестесі, тест нәтижесі және рұқсат етілген қате талдауы сақталады. Достармен жарыс, челлендж, диагностика және марафон өз ережелерімен жұмыс істейді.</p><p class="sub" style="margin-top:10px">Ортақ тест талдауы алғашқы тапсыруда 1 рет, өз тестіңіздікі барлығы 5 рет ашылады. Ақылы тариф осы қорғаныс пен пәндік шектеулерді өзгертпейді. Күндік лимит Қазақстан уақытымен 00:00-де, апталық лимит дүйсенбіде жаңарады.</p></div>`;
+ host.innerHTML=`<div class="clean-hero"><div><span class="clean-eyebrow">ҰБТ PLUS · ДАЙЫНДЫҚ ЖҮЙЕСІ</span><h1>ҰБТ-ға сенімді дайындал. Нәтижеңді күн сайын өсір.</h1><p>Қазіргі тариф: <b>${esc(tariffName(e.plan))}</b>${e.expires?' · '+premiumDate(e.expires)+' дейін':''}</p><p>24 сағат тегін танысып көріңіз. Одан кейін өзіңізге сай тарифті таңдаңыз.</p></div></div>${message?`<div class="card" role="status">${esc(message)}</div>`:''}<div class="grid2" style="margin-top:18px">${plans.map(p=>`<article class="card" style="display:flex;flex-direction:column;gap:12px;${p.id==='premium'?'border:2px solid #6366f1;box-shadow:0 8px 30px #6366f122;':''}"><div><span class="sub">${p.tag}</span><h2>${p.name}</h2><div style="font-size:25px;font-weight:850;margin:8px 0">${p.price}</div><p class="sub">${p.id==='premium'?'Күніне шамамен 83 ₸':p.id==='pro'?'Күніне шамамен 50 ₸':'Күніне шамамен 133 ₸'}</p></div><ul style="padding-left:20px;line-height:1.85">${p.items.map(i=>'<li>'+i+'</li>').join('')}</ul><div style="margin-top:auto"><a class="btn ${p.id==='premium'?'btn-p':'btn-s'}" style="display:flex;justify-content:center;width:100%" href="${tariffWhatsApp(p.id)}" target="_blank" rel="noopener noreferrer">${p.id==='premium'?'Premium таңдау':'WhatsApp арқылы алу'} ↗</a></div><details style="border-top:1px solid #71809655;padding-top:12px"><summary style="cursor:pointer;font-weight:600">Бұл тариф кімге арналған?</summary><p style="margin-top:12px;line-height:1.7">${p.why}</p></details></article>`).join('')}</div><div class="card" style="margin-top:18px"><h3>Қалай сатып алуға болады?</h3><ol style="line-height:1.9;padding-left:22px"><li>Өзіңізге керек тарифті таңдаңыз.</li><li>WhatsApp-қа басып, логиніңізді жіберіңіз.</li><li>Төлемді Kaspi арқылы келісіп жасаңыз.</li><li>Төлемді тексерген соң басты админ тарифті қосады.</li></ol><p style="margin:12px 0"><a href="${UBT_WHATSAPP}" target="_blank" rel="noopener noreferrer" style="font-size:21px;font-weight:800">8 705 636 0080 ↗</a></p><p class="sub">Автоматты төлем әзірге қосылмаған. Тарифті тек басты админ белсендіреді. Жазылым автоматты түрде жаңартылмайды.</p><button class="btn btn-s" style="margin-top:12px" onclick="checkGrantedAccess(this)">Тариф қосылды ма? Тексеру</button></div><div class="card" style="margin-top:18px"><h3>Барлығына ортақ мүмкіндіктер</h3><p style="margin-top:10px;line-height:1.8">Мобильді және компьютерлік нұсқа · тест нәтижелері · күнделікті тапсырма · рейтинг пен челлендж · жеке профиль · мұғалім кабинеті · ата-ана бақылауы · қауіпсіздік сутаңбасы.</p><p class="sub" style="margin-top:10px">Сұрақтарды ортақ базаға бірден жариялау мүмкін емес. Әр ұсынылған сұрақ тексеріліп, админ мақұлдағаннан кейін ғана ортақ базаға енгізіледі.</p></div>`;
 }
 async function activatePremiumTrial(){showPremiumPanel('Тарифті қосу үшін басты админге WhatsApp арқылы жазыңыз.')}
 function requestPremium(){window.open(tariffWhatsApp('premium'),'_blank','noopener,noreferrer')}
@@ -13422,9 +13450,10 @@ function requestPremium(){window.open(tariffWhatsApp('premium'),'_blank','noopen
 async function startDailyFive(button){if(button)button.disabled=true;try{const r=await authCall('daily_five',{});if(!r.ok){alert(r.msg);return}st=baseState();st.secureExam=r.exam;st.questions=r.questions;st.subjectName=r.topic;st.timerSeconds=r.timer;st.isRealUbt=true;beginTest()}finally{if(button)button.disabled=false}}
 function subscriptionUI(){
  if(!user)return;
+ const nav=document.querySelector('#app-menu nav');if(nav){const seen=new Set();nav.querySelectorAll('button').forEach(b=>{const label=(b.textContent||'').replace(/\s+/g,' ').trim().toLocaleLowerCase();if(!label)return;if(seen.has(label))b.remove();else seen.add(label)})}
  let entry=document.getElementById('premium-menu-entry');if(!entry){entry=document.createElement('button');entry.id='premium-menu-entry';entry.className='app-menu-home';entry.textContent='✦ Тарифтер / WhatsApp';entry.onclick=()=>showPremiumPanel();document.querySelector('#app-menu nav')?.prepend(entry)}
  let daily=document.getElementById('daily-five-entry');if(!daily){daily=document.createElement('button');daily.id='daily-five-entry';daily.className='app-menu-home';daily.textContent='☀ Күннің 5 сұрағы';daily.onclick=()=>startDailyFive(daily);document.querySelector('#app-menu nav')?.prepend(daily)}
- const home=document.getElementById('ubd-home');if(home&&!document.getElementById('subscription-home-strip')){const strip=document.createElement('div');strip.id='subscription-home-strip';strip.className='card';strip.style.marginBottom='18px';const e=subscriptionInfo();strip.innerHTML=`<div class="row" style="justify-content:space-between"><div><b>${esc(tariffName(subscriptionInfo().plan))}</b><p class="sub">${hasPremium()?'Өз пәндеріңізден шектеусіз дайындық':'Бүгін '+(e.subjectRemaining??2)+' пәндік тест · сыйлық '+(e.welcomeFull??1)+' толық тест'}</p></div><button class="btn btn-p btn-sm" onclick="startDailyFive(this)">Күннің 5 сұрағы</button><button class="btn btn-s btn-sm" onclick="showPremiumPanel()">Тарифтерді көру</button></div>`;home.prepend(strip)}
+ const home=document.getElementById('ubd-home');if(home&&!document.getElementById('subscription-home-strip')){const strip=document.createElement('div');strip.id='subscription-home-strip';strip.className='card';strip.style.marginBottom='18px';const e=subscriptionInfo();strip.innerHTML=`<div class="row" style="justify-content:space-between"><div><b>${esc(tariffName(subscriptionInfo().plan))}</b><p class="sub">${hasPremium()?'Өз пәндеріңізден шектеусіз дайындық':'Бүгін '+(e.subjectRemaining??2)+' пәндік тест · сыйлық '+(e.welcomeFull??1)+' толық тест'}</p></div><button class="btn btn-p btn-sm" onclick="showPremiumPanel()">Тарифтер мен мүмкіндіктер</button></div>`;home.prepend(strip)}
 }
 const subscriptionAuthCall=authCall;
 authCall=async function(type,data){
@@ -13472,7 +13501,7 @@ let subscriptionAdminLoading=false;
 async function mountSubscriptionAdmin(){
  if(!user?.isAdmin||user.id!=='admin'||subscriptionAdminLoading)return;
  let host=document.getElementById('owner-subscriptions');if(!host){host=document.createElement('section');host.id='owner-subscriptions';host.className='card';document.querySelector('#s-admin .wrap')?.prepend(host)}
- host.innerHTML='<h3>Тарифтерді басқару · тек басты админ</h3><div class="grid2" style="margin-top:12px"><div class="fg"><label>Қолданушы логині</label><input id="subscription-target-login" maxlength="40" autocomplete="off"></div><div class="fg"><label>Мерзімі, күн</label><input id="subscription-target-days" type="number" min="1" max="3650" value="30"></div></div><div class="row"><button class="btn btn-s" onclick="ownerSubscriptionAction(\'view\',this)">Қарау</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'pro\',this)">Pro</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'premium\',this)">Premium</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'class\',this)">Класс</button><button class="btn btn-d" onclick="ownerSubscriptionAction(\'free\',this)">Тегінге қайтару</button></div><p id="owner-subscription-status" class="sub" role="status" style="margin-top:12px"></p><h4 style="margin-top:16px">Класс · топқа беру</h4><p class="sub">30 адамға дейін, логиндерді әр жолға бөлек енгізіңіз. Мерзімі жоғарыдағы күн санымен беріледі.</p><textarea id="subscription-class-logins" rows="4" placeholder="Оқушы логиндері"></textarea><button class="btn btn-p" onclick="ownerClassGrant(this)">Топқа Класс беру</button><h4 style="margin-top:16px">Тариф өтініштері</h4><div id="subscription-pending-requests"></div><h4 style="margin-top:16px">Әрекеттер журналы</h4><p class="sub">Премиум / Pro / Класс беру және тарифті алып тастау тарихы.</p><button class="btn btn-s btn-sm" onclick="ownerSubscriptionAuditExport(this)">Тариф журналын CSV жүктеу</button> <button class="btn btn-s btn-sm" onclick="ownerAdminAuditExport(this)">Барлық админ әрекетін Excel үшін жүктеу</button><div id="owner-subscription-audit-status" class="sub" role="status"></div>';
+ host.innerHTML='<h3>Тарифтерді басқару · тек басты админ</h3><div class="grid2" style="margin-top:12px"><div class="fg"><label>Қолданушы логині</label><input id="subscription-target-login" maxlength="40" autocomplete="off"></div><div class="fg"><label>Мерзімі, күн</label><input id="subscription-target-days" type="number" min="1" max="3650" value="30"></div></div><div class="row"><button class="btn btn-s" onclick="ownerSubscriptionAction(\'view\',this)">Қарау</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'pro\',this)">Pro</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'premium\',this)">Premium</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'max\',this)">Max</button><button class="btn btn-d" onclick="ownerSubscriptionAction(\'free\',this)">Тегінге қайтару</button></div><p id="owner-subscription-status" class="sub" role="status" style="margin-top:12px"></p><h4 style="margin-top:16px">Max · топқа беру</h4><p class="sub">30 адамға дейін, логиндерді әр жолға бөлек енгізіңіз. Мерзімі жоғарыдағы күн санымен беріледі.</p><textarea id="subscription-class-logins" rows="4" placeholder="Оқушы логиндері"></textarea><button class="btn btn-p" onclick="ownerClassGrant(this)">Топқа Max беру</button><h4 style="margin-top:16px">Тариф өтініштері</h4><div id="subscription-pending-requests"></div><h4 style="margin-top:16px">Әрекеттер журналы</h4><p class="sub">Premium / Pro / Max беру және тарифті алып тастау тарихы.</p><button class="btn btn-s btn-sm" onclick="ownerSubscriptionAuditExport(this)">Тариф журналын CSV жүктеу</button> <button class="btn btn-s btn-sm" onclick="ownerAdminAuditExport(this)">Барлық админ әрекетін Excel үшін жүктеу</button><div id="owner-subscription-audit-status" class="sub" role="status"></div>';
  subscriptionAdminLoading=true;try{const r=await authCall('owner_subscription_list',{});const list=document.getElementById('subscription-pending-requests');if(!list)return;list.textContent='';if(!r.ok){list.textContent=r.msg;return}if(!r.requests.length)list.textContent='Жаңа өтініш жоқ.';for(const item of r.requests){const row=document.createElement('div');row.className='item';const label=document.createElement('strong');label.textContent=item.name;const b=document.createElement('button');b.className='btn btn-s btn-sm';b.textContent='Таңдау';b.onclick=()=>{document.getElementById('subscription-target-login').value=item.name};row.append(label,b);list.appendChild(row)}}finally{subscriptionAdminLoading=false}
 }
 async function ownerSubscriptionAuditExport(button){
@@ -13524,7 +13553,7 @@ async function growthDuelResult(button){button.disabled=true;try{const code=docu
 async function growthShareResult(){const r=window.growthSummary.lastResult;if(!r)return;const c=document.createElement('canvas');c.width=1080;c.height=650;const x=c.getContext('2d');const g=x.createLinearGradient(0,0,1080,650);g.addColorStop(0,'#142348');g.addColorStop(1,'#285dda');x.fillStyle=g;x.fillRect(0,0,1080,650);x.fillStyle='#fff';x.font='bold 48px sans-serif';x.fillText('ҰБТ PLUS',70,100);x.font='30px sans-serif';x.fillText(String(r.topic).slice(0,45),70,190);x.font='bold 110px sans-serif';x.fillText(r.score+' / '+r.max,70,355);x.font='30px sans-serif';x.fillText('Күн сайын мақсатқа бір қадам!',70,470);x.font='24px sans-serif';x.fillText('Достар және челлендж',70,560);c.toBlob(async blob=>{if(!blob)return;const f=new File([blob],'ubt-result.png',{type:'image/png'});try{if(navigator.canShare?.({files:[f]})){await navigator.share({files:[f]});return}}catch(e){if(e.name==='AbortError')return}const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=f.name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),30000)},'image/png')}
 const growthSubscriptionUI=subscriptionUI;subscriptionUI=function(){growthSubscriptionUI();if(!user)return;const nav=document.querySelector('#app-menu nav');if(nav&&!document.getElementById('growth-menu-entry')){const b=document.createElement('button');b.id='growth-menu-entry';b.className='app-menu-home';b.textContent='🏆 Достар және челлендж';b.onclick=showGrowth;nav.prepend(b)}const home=document.getElementById('ubd-home');if(home&&!document.getElementById('growth-home-entry')){const b=document.createElement('button');b.id='growth-home-entry';b.className='btn btn-s';b.style.marginBottom='16px';b.textContent='🏆 Жарыс · Челлендж · 7 күндік марафон';b.onclick=showGrowth;home.prepend(b)}};subscriptionUI();
 
-async function ownerClassGrant(button){if(user?.id!=='admin')return;const logins=document.getElementById('subscription-class-logins').value.split(/\n|,/).map(x=>x.trim()).filter(Boolean),days=Number(document.getElementById('subscription-target-days').value),status=document.getElementById('owner-subscription-status');if(!logins.length||logins.length>30){status.textContent='1–30 логин енгізіңіз';return}button.disabled=true;try{const r=await authCall('owner_subscription_set',{plan:'class',logins,days});status.textContent=r.ok?r.count+' аккаунтқа Класс тарифі берілді.':r.msg;window.__bridge.refresh().catch(()=>{})}finally{button.disabled=false}}
+async function ownerClassGrant(button){if(user?.id!=='admin')return;const logins=document.getElementById('subscription-class-logins').value.split(/\n|,/).map(x=>x.trim()).filter(Boolean),days=Number(document.getElementById('subscription-target-days').value),status=document.getElementById('owner-subscription-status');if(!logins.length||logins.length>30){status.textContent='1–30 логин енгізіңіз';return}button.disabled=true;try{const r=await authCall('owner_subscription_set',{plan:'max',logins,days});status.textContent=r.ok?r.count+' аккаунтқа Max тарифі берілді.':r.msg;window.__bridge.refresh().catch(()=>{})}finally{button.disabled=false}}
 function whatsappLinksUI(){
  let style=document.getElementById('wa-contact-style');if(!style){style=document.createElement('style');style.id='wa-contact-style';style.textContent='#wa-contact-edge{position:fixed;right:12px;bottom:16px;z-index:950;display:flex;flex-direction:column;gap:7px;align-items:flex-end}#wa-contact-edge a{background:#128c52;color:white;padding:10px 14px;border-radius:14px;box-shadow:0 4px 18px #0003;text-decoration:none;font-size:13px;font-weight:600}#wa-contact-edge a:last-child{background:#1b304c}#wa-welcome-group{margin:14px 0;padding:14px;border:1px solid #25d36666;border-radius:16px;background:#25d3660d}#wa-welcome-group a{display:inline-flex;margin-top:8px}@media(max-width:600px){#wa-contact-edge{right:8px;bottom:10px}#wa-contact-edge a{padding:8px 10px;font-size:11px}}';document.head.appendChild(style)}
  let edge=document.getElementById('wa-contact-edge');if(!edge){edge=document.createElement('aside');edge.id='wa-contact-edge';edge.setAttribute('aria-label','WhatsApp байланыс');edge.innerHTML=`<a href="${UBT_WHATSAPP}" target="_blank" rel="noopener noreferrer" aria-label="WhatsApp: 8 705 636 0080">WhatsApp · 8 705 636 0080 ↗</a><a href="${UBT_WHATSAPP_GROUP}" target="_blank" rel="noopener noreferrer">WhatsApp тобы ↗</a>`;document.body.appendChild(edge)}
@@ -13532,7 +13561,7 @@ function whatsappLinksUI(){
  const host=user?document.getElementById('ubd-home'):document.getElementById('login-box')||document.getElementById('s-login')?.querySelector('.wrap')||document.getElementById('s-login');
  const old=document.getElementById('wa-welcome-group');if(host&&old?.parentElement!==host)old?.remove();
  if(host&&!document.getElementById('wa-welcome-group')){const box=document.createElement('div');box.id='wa-welcome-group';box.innerHTML=`<b>ҰБТ PLUS WhatsApp тобы</b><p class="sub" style="margin-top:5px">Топқа қосылу үшін төмендегі батырманы басыңыз.</p><a class="btn btn-s btn-sm" href="${UBT_WHATSAPP_GROUP}" target="_blank" rel="noopener noreferrer">Топқа кіру ↗</a>`;host.prepend(box)}
- const menu=document.getElementById('premium-menu-entry');if(menu)menu.textContent='✦ Тегін · Pro · Premium · Класс';
+ const menu=document.getElementById('premium-menu-entry');if(menu)menu.textContent='✦ Тегін · Pro · Premium · Max';
 }
 const whatsappSubscriptionUI=subscriptionUI;subscriptionUI=function(){whatsappSubscriptionUI();whatsappLinksUI()};
 subscriptionUI();
@@ -13640,7 +13669,7 @@ const UI_RU={
 };
 function uiLang(){return localStorage.getItem('ubt_ui_lang')==='ru'?'ru':'kk'}
 function uiLocale(){return uiLang()==='ru'?'ru-RU':'kk-KZ'}
-function uiTranslate(s){if(uiLang()!=='ru')return s;const raw=String(s),trim=raw.trim();if(UI_RU[trim])return raw.replace(trim,UI_RU[trim]);let text=raw.replace(/^([\s←→🏆🪙📚📜🎓🎯👨‍👩‍👧⚙✦☀]+)(.*?)(\s*)$/u,(m,a,b,c)=>UI_RU[b]?a+UI_RU[b]+c:m);const patterns=[[/ҰБТ/g,'ЕНТ'],[/Басты бет/g,'Главная'],[/Апталық лига/g,'Недельная лига'],[/Монета дүкені/g,'Магазин монет'],[/Диплом \/ сертификатты ашу/g,'Открыть диплом / сертификат'],[/Қола → Күміс → Алтын → Гауһар/g,'Бронза → Серебро → Золото → Бриллиант'],[/Тегін · Pro · Premium · Класс/g,'Бесплатно · Pro · Premium · Класс'],[/Бүгінгі рейтинг/g,'Рейтинг дня'],[/монетаға алу/g,'монет — купить'],[/Қола лигасы/g,'Бронзовая лига'],[/Күміс лигасы/g,'Серебряная лига'],[/Алтын лигасы/g,'Золотая лига'],[/Гауһар лигасы/g,'Бриллиантовая лига'],[/Серия:/g,'Серия:'],[/Қорғаныс:/g,'Защита:'],[/топта /g,'в группе '],[/ оқушы/g,' учеников'],[/ сұрақ/g,' вопросов'],[/ минут/g,' минут'],[/ тапсыру/g,' попыток'],[/ пайдаланылды/g,' использовано'],[/Алдыңғы апта:/g,'Предыдущая неделя:'],[/Деңгей сақталды/g,'Уровень сохранён'],[/Жоғарыладыңыз/g,'Повышение'],[/Төмендедіңіз/g,'Понижение'],[/ күн/g,' дней'],[/монета/g,'монет'],[/Апталық XP/g,'XP за неделю'],[/Соңғы толық/g,'Последний полный'],[/күн қалды/g,'дней осталось'],[/Күніне /g,'В день '],[/Аптасына /g,'В неделю '],[/пәндік тест/g,'предметных теста'],[/толық тест/g,'полных теста'],[/Сұрақ саны/g,'Количество вопросов'],[/Сұрақ /g,'Вопрос '],[/Жауап /g,'Ответ ']];for(const [a,b]of patterns)text=text.replace(a,b);return text}
+function uiTranslate(s){if(uiLang()!=='ru')return s;const raw=String(s),trim=raw.trim();if(UI_RU[trim])return raw.replace(trim,UI_RU[trim]);let text=raw.replace(/^([\s←→🏆🪙📚📜🎓🎯👨‍👩‍👧⚙✦☀]+)(.*?)(\s*)$/u,(m,a,b,c)=>UI_RU[b]?a+UI_RU[b]+c:m);const patterns=[[/ҰБТ/g,'ЕНТ'],[/Басты бет/g,'Главная'],[/Апталық лига/g,'Недельная лига'],[/Монета дүкені/g,'Магазин монет'],[/Диплом \/ сертификатты ашу/g,'Открыть диплом / сертификат'],[/Қола → Күміс → Алтын → Гауһар/g,'Бронза → Серебро → Золото → Бриллиант'],[/Тегін · Pro · Premium · Max/g,'Бесплатно · Pro · Premium · Класс'],[/Бүгінгі рейтинг/g,'Рейтинг дня'],[/монетаға алу/g,'монет — купить'],[/Қола лигасы/g,'Бронзовая лига'],[/Күміс лигасы/g,'Серебряная лига'],[/Алтын лигасы/g,'Золотая лига'],[/Гауһар лигасы/g,'Бриллиантовая лига'],[/Серия:/g,'Серия:'],[/Қорғаныс:/g,'Защита:'],[/топта /g,'в группе '],[/ оқушы/g,' учеников'],[/ сұрақ/g,' вопросов'],[/ минут/g,' минут'],[/ тапсыру/g,' попыток'],[/ пайдаланылды/g,' использовано'],[/Алдыңғы апта:/g,'Предыдущая неделя:'],[/Деңгей сақталды/g,'Уровень сохранён'],[/Жоғарыладыңыз/g,'Повышение'],[/Төмендедіңіз/g,'Понижение'],[/ күн/g,' дней'],[/монета/g,'монет'],[/Апталық XP/g,'XP за неделю'],[/Соңғы толық/g,'Последний полный'],[/күн қалды/g,'дней осталось'],[/Күніне /g,'В день '],[/Аптасына /g,'В неделю '],[/пәндік тест/g,'предметных теста'],[/толық тест/g,'полных теста'],[/Сұрақ саны/g,'Количество вопросов'],[/Сұрақ /g,'Вопрос '],[/Жауап /g,'Ответ ']];for(const [a,b]of patterns)text=text.replace(a,b);return text}
 Object.assign(UI_RU,{
 'Дүйсенбіде жаңа апта басталады. Кемінде 10 белсенді қатысушы болғанда үздік 5 жоғарылайды, соңғы 5 төмендейді. Қола лигасынан төмен түспейді, Гауһардан жоғары көтерілмейді.':'Новая неделя начинается в понедельник. При 10 активных участниках и более первые 5 повышаются, последние 5 понижаются. Ниже Бронзы и выше Бриллианта переходов нет.',
 'Күніне ең көбі 100 XP. Өз тестіңіз және бір жинақты сол күні қайталау жаңа XP бермейді. Тең ұпайда топқа ертерек қосылған қатысушы алда болады.':'Не более 100 XP в день. Свои тесты и повтор одного набора в тот же день не дают новых XP. При равных очках выше участник, вступивший в группу раньше.',
