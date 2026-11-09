@@ -502,7 +502,7 @@ def _start_personal_practice(state,sess,d):
     if not sess or sess.get('codeGuest'):return {'ok':False,'msg':'Аккаунтыңызға кіріңіз'}
     qs=d.get('questions');topic=str(d.get('topic') or 'Өз тестім')[:150]
     if not isinstance(qs,list) or not 1<=len(qs)<=500:return {'ok':False,'msg':'Тестте 1–500 сұрақ болуы керек'}
-    if any(not isinstance(q,dict) or q.get('realBank') or q.get('authorId') not in (None,'',sess['uid']) for q in qs):return {'ok':False,'msg':'Ортақ тестті тек өзінің Бастау батырмасымен тапсырыңыз'}
+    if any(not isinstance(q,dict) or q.get('realBank') or (q.get('authorId') not in (None,'',sess['uid']) and not (sess.get('admin') or sess.get('juniorAdmin') or _is_teacher(state,sess['uid']))) for q in qs):return {'ok':False,'msg':'Ортақ тестті тек өзінің Бастау батырмасымен тапсырыңыз'}
     clean=[]
     try:
         for q in qs:
