@@ -3052,10 +3052,58 @@ def _remember_request(state,sess,typ,d):
         if not active:return {"ok":False,"msg":"Аккаунтқа кіру мүмкін емес. Админге хабарласыңыз."}
         return {"ok":True,"token":active,"user":user}
 
+
+def _prize_request(state, sess, typ, d):
+    if not sess or sess.get("codeGuest"):
+        return {"ok":False,"msg":"Аккаунтыңызға кіріңіз"}
+    month=datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5))).strftime("%Y-%m")
+    with state["lock"]:
+        monthly=_jload(state["db"].get("ubt_season_m_"+month,"{}"),dict,{})
+        profiles=_profiles(state)
+        names={p.get("id"):p.get("name","Қолданушы") for p in profiles.values() if isinstance(p,dict) and p.get("accessApproved") is True}
+        people=sorted([{"uid":u,"name":names[u],"points":int(v)} for u,v in monthly.items() if u in names and type(v) is int and v>0],key=lambda x:(-x["points"],x["name"].casefold()))[:50]
+        classes=_jload(state["db"].get("ubt_classes","[]"),list,[])
+        cb=[]
+        for c in classes:
+            members=[u for u in set(c.get("students",[])) if u in names]
+            if members:
+                total=sum(int(monthly.get(u,0) or 0) for u in members)
+                cb.append({"id":c.get("id"),"name":c.get("name","Сынып"),"students":len(members),"points":total,"avg":round(total/len(members))})
+        cb.sort(key=lambda x:(-x["avg"],-x["points"],x["name"].casefold()))
+        awards=_jload(state["db"].get("ubt_server_access_monthly_awards","{}"),dict,{})
+        award=awards.get(month,{})
+        if typ=="prize_board":
+            return {"ok":True,"month":month,"people":people,"classes":cb[:30],"award":award,"isOwner":bool(sess.get("admin") and sess.get("uid")=="admin")}
+        if not(sess.get("admin") and sess.get("uid")=="admin"):
+            return {"ok":False,"msg":"Тек басты админ орындай алады"}
+        if typ=="owner_award_cash":
+            winner=next((x for x in people if x["uid"]==str(d.get("uid") or (people[0]["uid"] if people else ""))),None)
+            amount=str(d.get("amount") or "").strip()[:40]
+            if not winner or not amount:return {"ok":False,"msg":"Жеңімпазды және сыйлық мөлшерін енгізіңіз"}
+            award["cash"]={"uid":winner["uid"],"name":winner["name"],"points":winner["points"],"amount":amount,"awardedAt":time.time()}
+        elif typ=="owner_award_class":
+            winner=next((x for x in cb if x["id"]==str(d.get("classId") or (cb[0]["id"] if cb else ""))),None)
+            if not winner:return {"ok":False,"msg":"Қатысушысы бар сынып табылмады"}
+            cls=next(c for c in classes if c.get("id")==winner["id"])
+            until=time.time()+30*86400;granted=[]
+            for uid in set(cls.get("students",[])):
+                if uid not in names:continue
+                sk="ubt_server_access_subscription_"+uid
+                sub=_jload(state["db"].get(sk,"{}"),dict,{})
+                sub.update(plan="class",expires=until,classPrizeMonth=month)
+                _put(state,sk,_jdump(sub));granted.append(uid)
+            award["class"]={"id":winner["id"],"name":winner["name"],"avg":winner["avg"],"points":winner["points"],"students":len(granted),"expires":until,"awardedAt":time.time()}
+        else:return {"ok":False,"msg":"Әрекет жарамсыз"}
+        awards[month]=award
+        _put(state,"ubt_server_access_monthly_awards",_jdump(awards));_commit(state)
+        return {"ok":True,"award":award,"granted":len(granted) if typ=="owner_award_class" else 0}
+
 def _handle_req(state, sid, rq):
     typ = rq.get("type")
     d = rq.get("data") if isinstance(rq.get("data"), dict) else {}
     sess = _session(state, rq.get("tok"))
+    if typ in ("prize_board","owner_award_cash","owner_award_class"):
+        return _prize_request(state,sess,typ,d)
     if not isinstance(typ, str) or len(_jdump(d)) > 8_000_000:
         return {"ok": False, "msg": "Сұраныс тым үлкен немесе жарамсыз"}
     if sess and sess.get("juniorAdmin") and typ not in ('login', 'resume', 'login_remembered', 'logout', 'remember_account', 'forget_account', 'start_exam', 'start_personal_practice', 'growth', 'path', 'economy', 'subscription_status', 'subscription_trial', 'subscription_request', 'premium_dashboard', 'daily_five', 'exam_question', 'send_personal_test', 'review_open', 'review_close', 'resume_exam', 'finish_exam', 'cancel_exam', 'start_assigned_test', 'start_public_mix', 'exam_check_answer', 'explain_review', 'approved_test_list', 'notifications_list', 'save_public_test', 'remove_saved_public_test', 'public_profile', 'content_security_event', 'visit_record', 'support_open', 'support_read', 'support_send', 'messenger_contacts', 'messenger_thread', 'messenger_send', 'profile_animation_get', 'chat_claim', 'book_open'):
@@ -13741,6 +13789,35 @@ const uiSubscriptionUI=subscriptionUI;subscriptionUI=function(){uiSubscriptionUI
 
 </body>
 </html>
+"""
+
+
+html_code += r"""
+<script>
+(function(){
+if(window.__monthlyPrizePatch)return;window.__monthlyPrizePatch=true;
+const original=window.showRanking;
+if(typeof original!=="function")return;
+window.showRanking=function(mode){
+ const result=original.apply(this,arguments);
+ setTimeout(async()=>{
+  const host=document.getElementById('rank-hall');if(!host||!window.user)return;
+  const r=await authCall('prize_board',{});
+  if(!r||!r.ok)return;
+  const a=r.award||{},people=r.people||[],classes=r.classes||[];
+  const cash=a.cash?`💵 Ай жеңімпазы: <b>${esc(a.cash.name)}</b> · ${esc(a.cash.amount)}`:'Ай соңында ең көп ұпай жинаған қатысушыға ақшалай сыйлық беріледі.';
+  const classWin=a.class?`🎓 <b>${esc(a.class.name)}</b> сыныбының ${a.class.students} оқушысына 1 ай Premium берілді.`:'Үздік сыныптың барлық оқушысына 1 ай Premium беріледі.';
+  let controls='';
+  if(r.isOwner){
+   controls=`<div style="margin-top:12px"><select id="mp-person">${people.map(x=>`<option value="${esc(x.uid)}">${esc(x.name)} · ${x.points} ұпай</option>`).join('')}</select><input id="mp-amount" placeholder="Сыйлық мөлшері (мысалы, 10 000 тг)" style="padding:9px;margin:6px;width:100%"><button class="btn btn-p btn-sm" id="mp-cash">Ақшалай жүлдені бекіту</button><hr style="margin:10px 0"><select id="mp-class">${classes.map(x=>`<option value="${esc(x.id)}">${esc(x.name)} · орташа ${x.avg}</option>`).join('')}</select><button class="btn btn-p btn-sm" id="mp-premium" style="margin-top:6px">Үздік сыныпқа 1 ай Premium беру</button></div>`;
+  }
+  host.insertAdjacentHTML('afterbegin',`<div class="card" style="margin-bottom:14px"><h3>🎁 ${esc(r.month)} айының жүлде қоры</h3><p>${cash}</p><p>${classWin}</p><p class="sub">Айлық үздіктер: ${people.slice(0,3).map((x,i)=>`${i+1}. ${esc(x.name)} — ${x.points} ұпай`).join(' · ')||'Әзірге нәтиже жоқ'}</p><p class="sub">Үздік сыныптар: ${classes.slice(0,3).map((x,i)=>`${i+1}. ${esc(x.name)} — орташа ${x.avg}`).join(' · ')||'Нәтиже жоқ'}</p>${controls}</div>`);
+  const cashBtn=document.getElementById('mp-cash');if(cashBtn)cashBtn.onclick=async()=>{const amount=document.getElementById('mp-amount').value.trim();if(!amount)return alert('Сыйлық мөлшерін енгізіңіз');const z=await authCall('owner_award_cash',{uid:document.getElementById('mp-person').value,amount});alert(z.ok?'Жеңімпаз бекітілді':z.msg);if(z.ok)window.showRanking('m');};
+  const premBtn=document.getElementById('mp-premium');if(premBtn)premBtn.onclick=async()=>{if(!confirm('Осы сыныптың барлық оқушысына 30 күн Premium берілсін бе?'))return;const z=await authCall('owner_award_class',{classId:document.getElementById('mp-class').value});alert(z.ok?`${z.granted} оқушыға Premium берілді`:z.msg);if(z.ok)window.showRanking('cls');};
+ },150);return result;
+};
+})();
+</script>
 """
 
 html_code = html_code.replace("__UBT_BANK_DATA__", "[]")
