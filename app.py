@@ -466,11 +466,24 @@ def _profiles(state):
     return profiles
 
 def _migrate_profile_storage(state):
-    """One-time compatibility migration: split profile records into per-UID rows.
-    Keep an in-memory aggregate for legacy code and browser compatibility, but do
-    not write that large aggregate back to Supabase.
+    """Split profile records into per-UID rows and remove the old registration wait.
+    Existing pending accounts are allowed to sign in; teacher privileges remain
+    separately owner-approved. Keep the aggregate for legacy/browser compatibility.
     """
+    # Update per-user rows first because they take precedence when _profiles merges.
+    for key, raw in list(state["db"].items()):
+        if not key.startswith("ubt_profile_"):
+            continue
+        profile = _jload(raw, dict, {})
+        if isinstance(profile, dict) and profile.get("id") and profile.get("id") != "admin" and profile.get("accessApproved") is not True:
+            profile["accessApproved"] = True
+            _put(state, key, _jdump(profile))
     profiles = _profiles(state)
+    changed = False
+    for profile in profiles.values():
+        if isinstance(profile, dict) and profile.get("id") and profile.get("id") != "admin" and profile.get("accessApproved") is not True:
+            profile["accessApproved"] = True
+            changed = True
     if profiles:
         _put(state, "ubt_profiles", _jdump(profiles))
         _flush_async(state)
@@ -723,18 +736,25 @@ _TRIAL_DAYS = 3
 def _subscription_info(state,sess):
     uid=sess['uid'];key='ubt_server_access_subscription_'+uid
     record=_jload(state['db'].get(key,'{}'),dict,{})
+    now=time.time()
     if not record:
-        record={'plan':'free','expires':0,'trialUsed':False,'trialUntil':0,'welcomeFull':1,'created':time.time()}
+        record={'plan':'free','expires':0,'trialUsed':True,'trialStarted':now,'trialUntil':now+86400,'welcomeFull':1,'created':now}
         _put(state,key,_jdump(record))
-    now=time.time();staff=bool(sess.get('admin') and uid=='admin')
+    elif not record.get('trialStarted') and not record.get('trialUntil') and record.get('plan','free')=='free' and not record.get('expires',0):
+        # One-time migration: existing accounts receive their one-day introduction
+        # starting with their first visit after this access policy is deployed.
+        record['trialStarted']=now;record['trialUntil']=now+86400;record['trialUsed']=True
+        _put(state,key,_jdump(record))
+    staff=bool(sess.get('admin') and uid=='admin')
     paid=record.get('plan') in ('pro','premium','class') and record.get('expires',0)>now
-    trial=False # Paid entitlements can only be granted by the owner.
-    plan='staff' if staff else record.get('plan') if paid else 'free'
-    premium=staff or (paid and plan in ('premium','class'))
+    trial=not paid and record.get('trialUntil',0)>now
+    plan='staff' if staff else record.get('plan') if paid else 'trial' if trial else 'free'
+    premium=staff or trial or (paid and plan in ('premium','class'))
+    access_active=staff or paid or trial
     subject_limit=5 if plan=='pro' else _FREE_SUBJECT_TESTS
     full_limit=3 if plan=='pro' else _FREE_FULL_TESTS
     usage=_subscription_usage(state,uid)
-    return {'uid':uid,'premium':premium,'staff':staff,'plan':plan,'paid':paid,'subjectLimit':subject_limit,'fullLimit':full_limit,'expires':record.get('expires',0) if paid else record.get('trialUntil',0) if trial else 0,'trialUsed':bool(record.get('trialUsed')),'trialDays':0,'welcomeFull':record.get('welcomeFull',0),'subjectRemaining':max(0,subject_limit-usage['subjectCount']),'fullRemaining':max(0,full_limit-usage['fullCount']),'dailyRemaining':max(0,1-usage['dailyCount']),'previewCount':_FREE_PREVIEW_QUESTIONS,'autoRenew':False}
+    return {'uid':uid,'premium':premium,'staff':staff,'plan':plan,'paid':paid,'trialActive':trial,'trialUntil':int(record.get('trialUntil',0) or 0),'accessActive':access_active,'subjectLimit':subject_limit,'fullLimit':full_limit,'expires':record.get('expires',0) if paid else record.get('trialUntil',0) if trial else 0,'trialUsed':bool(record.get('trialUsed')),'trialDays':1 if trial else 0,'welcomeFull':record.get('welcomeFull',0),'subjectRemaining':max(0,subject_limit-usage['subjectCount']),'fullRemaining':max(0,full_limit-usage['fullCount']),'dailyRemaining':max(0,1-usage['dailyCount']),'previewCount':_FREE_PREVIEW_QUESTIONS,'autoRenew':False}
 
 def _subscription_usage(state,uid):
     key='ubt_server_access_usage_'+uid
@@ -848,8 +868,10 @@ def _subscription_request(state,sess,typ,d):
         if type(days) is not int or not 1<=days<=3650:return {'ok':False,'msg':'Мерзім 1–3650 күн болсын'}
         key='ubt_server_access_subscription_'+uid;r=_jload(state['db'].get(key,'{}'),dict,{})
         r['previousPlan']=r.get('plan','free');r['plan']=d['plan']
-        if d['plan']!='free':r['expires']=(max(time.time(),r.get('expires',0)) if r.get('previousPlan',r.get('plan'))==d['plan'] else time.time())+days*86400
-        else:r.update(expires=0,trialUntil=0)
+        if d['plan']!='free':
+            r['expires']=(max(time.time(),r.get('expires',0)) if r.get('previousPlan',r.get('plan'))==d['plan'] else time.time())+days*86400
+            r['trialUntil']=0
+        else:r.update(expires=0,trialUntil=0,trialUsed=True)
         _put(state,key,_jdump(r))
         _subscription_audit_add(state, sess, profile, d['plan'], days, r.get('expires',0))
         requests=_jload(state['db'].get('ubt_server_access_premium_requests','{}'),dict,{})
@@ -3140,6 +3162,11 @@ def _handle_req_impl(state, sid, rq):
     sess = _session(state, rq.get("tok"))
     if not isinstance(typ, str) or len(_jdump(d)) > 8_000_000:
         return {"ok": False, "msg": "Сұраныс тым үлкен немесе жарамсыз"}
+    if sess and not (sess.get("admin") or sess.get("juniorAdmin") or sess.get("codeGuest")):
+        entitlement = _subscription_info(state, sess)
+        allowed_after_expiry = {"resume", "logout", "subscription_status", "subscription_request"}
+        if not entitlement.get("accessActive") and typ not in allowed_after_expiry:
+            return {"ok":False,"locked":True,"msg":"1 күндік тегін пайдалану мерзімі аяқталды. Қолжетімділікті ашу үшін WhatsApp арқылы тариф алыңыз: 8 705 636 0080"}
     if sess and sess.get("juniorAdmin") and typ not in ('login', 'resume', 'login_remembered', 'logout', 'remember_account', 'forget_account', 'start_exam', 'start_personal_practice', 'growth', 'path', 'economy', 'subscription_status', 'subscription_trial', 'subscription_request', 'premium_dashboard', 'daily_five', 'exam_question', 'send_personal_test', 'review_open', 'review_close', 'resume_exam', 'finish_exam', 'cancel_exam', 'start_assigned_test', 'start_public_mix', 'exam_check_answer', 'explain_review', 'approved_test_list', 'notifications_list', 'save_public_test', 'remove_saved_public_test', 'public_profile', 'content_security_event', 'visit_record', 'support_open', 'support_read', 'support_send', 'messenger_contacts', 'messenger_thread', 'messenger_send', 'profile_animation_get', 'chat_claim', 'book_open'):
         return {"ok":False,"msg":"Кіші админде басқару құқығы жоқ. Тест тапсыру және өз тестін жүктеу ғана қолжетімді."}
     with state["lock"]:
@@ -3700,7 +3727,7 @@ def _handle_req_impl(state, sid, rq):
             ph_new = _hash_pw(pw)
             uid = _new_uid(state, key)
             prof = {"name": name, "id": uid, "isAdmin": False, "ph": ph_new,
-                    "accessApproved": False, "registeredAt": int(now)}
+                    "accessApproved": True, "registeredAt": int(now)}
             if d.get("parent") is True and not d.get("teacher"):
                 prof["role"]="parent"
             if not d.get("teacher") and d.get("parent") is not True:
@@ -3711,11 +3738,14 @@ def _handle_req_impl(state, sid, rq):
                 if subject not in _SUBJECT_NAMES:
                     return {"ok": False, "msg": "Мұғалім пәнін таңдаңыз"}
                 prof["role"] = "teacher"
+                # Teacher privileges remain owner-approved; registration itself is instant.
                 prof["teacherApproved"] = False
                 prof["teacherInfo"] = str(d.get("info") or "")[:200]
                 prof["teacherSubject"] = subject
             profs[key] = prof
             _put(state, "ubt_profiles", _jdump(profs))
+            # Every new account gets exactly one 24-hour introductory access period.
+            _put(state, "ubt_server_access_subscription_" + uid, _jdump({"plan":"free","expires":0,"trialUsed":True,"trialStarted":now,"trialUntil":now+86400,"welcomeFull":1,"created":now}))
             stats = _jload(state["db"].get("ubt_user_stats", "{}"), dict, {})
             stats[uid] = {"points": 0, "title": "", "stars": 0, "verified": False}
             _put(state, "ubt_user_stats", _jdump(stats))
@@ -6873,6 +6903,9 @@ async function startSession(r){
   window.__token=r.token;user=r.user;
   LS.set('ubt_current',Object.assign({},r.user,{token:r.token}));
   try{await window.__bridge.refresh()}catch(e){}
+  if(user&&!(user.isAdmin&&user.id==='admin')&&!user.isJuniorAdmin){
+    try{const access=await authCall('subscription_status',{});if(access&&access.ok){window.__ubtAccessState=access.subscription;window.__ubtAccessLocked=!access.subscription.accessActive}else{window.__ubtAccessState=null;window.__ubtAccessLocked=true}}catch(e){window.__ubtAccessState=null;window.__ubtAccessLocked=true}
+  }else{window.__ubtAccessState={accessActive:true,staff:true};window.__ubtAccessLocked=false}
   enterApp();
 }
 let user=null;
@@ -7143,7 +7176,9 @@ function enterApp(){
   setTimeout(restorePendingResult,0);
   refreshProfileBar();syncMaintenance();
   updateAdminInboxBadge();
+  if(window.__ubtAccessLocked){showAccessLock();return}
   showScr('s-home');
+  if(window.__ubtAccessState?.trialActive)showTrialNotice(window.__ubtAccessState);
 }
 function ownAdminLetters(){return user&&!user.isAdmin?LS.get('ubt_admin_letters',[]).filter(m=>m&&m.toUid===user.id):[]}
 function updateAdminInboxBadge(){
@@ -7713,7 +7748,7 @@ document.addEventListener('keydown',e=>{
   if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}
   else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}
 });
-function showScr(id){if(id!=='s-test'&&realExamActive()){alert('ҰБТ тестін алдымен аяқтаңыз');return}const target=document.getElementById(id);if(!target||!target.classList.contains('screen'))return;closeAppMenu(false);if(id!=='s-test'&&!lock.on){shieldOff();hideOv();document.getElementById('exam-window-guard')?.classList.remove('show')}document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));target.classList.add('active');document.body.classList.toggle('test-active',id==='s-test');try{chromeSync()}catch(e){}}
+function showScr(id){if(window.__ubtAccessLocked&&user&&!user.isAdmin&&!user.isJuniorAdmin&&!['s-premium','s-login'].includes(id)){showAccessLock();return}if(id!=='s-test'&&realExamActive()){alert('ҰБТ тестін алдымен аяқтаңыз');return}const target=document.getElementById(id);if(!target||!target.classList.contains('screen'))return;closeAppMenu(false);if(id!=='s-test'&&!lock.on){shieldOff();hideOv();document.getElementById('exam-window-guard')?.classList.remove('show')}document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));target.classList.add('active');document.body.classList.toggle('test-active',id==='s-test');try{chromeSync()}catch(e){}}
 function goHome(){if(st.secureExam){showResultRetry('Тест нәтижесін жіберіңіз немесе жауаптарды файлға сақтаңыз.');return}if(lock.on)return;stopTimer();st=baseState();showScr('s-home')}
 
 const BANK={
@@ -12484,10 +12519,10 @@ function schoolData(){
 }
 function schoolTabs(kind){return `<div class="school-tabs"><button class="btn ${kind==='teachers'?'btn-p':'btn-s'} btn-sm" onclick="showSchoolPeople('teachers')">Мұғалімдер</button><button class="btn ${kind==='students'?'btn-p':'btn-s'} btn-sm" onclick="showSchoolPeople('students')">Оқушылар</button><button class="btn ${kind==='classes'?'btn-p':'btn-s'} btn-sm" onclick="showSchoolClasses()">Сыныптар тізімі</button></div>`}
 function schoolAllowedStudents(data){
-  if(user.isAdmin)return null;
-  const ids=new Set([user.id]);
-  if(isTeacherUser())data.classes.filter(c=>c.teacherId===user.id).forEach(c=>(c.students||[]).forEach(id=>ids.add(id)));
-  return ids;
+  // Teachers can open every registered learner profile, not only their own class.
+  // The profile view contains public learning details and never exposes password hashes.
+  if(user.isAdmin||isTeacherUser())return null;
+  return new Set([user.id]);
 }
 function showSchoolPeople(kind='teachers'){
   if(!user)return;schoolState.kind=kind==='students'?'students':'teachers';schoolState.page=0;document.getElementById('s-school-people').dataset.kind=schoolState.kind;
@@ -12528,7 +12563,8 @@ async function schoolAction(button,type,data,onSuccess){
 }
 function schoolOpenPerson(id){
   const data=schoolData(),p=data.byId.get(id);if(!user||!p)return;
-  if(p.role!=='teacher'&&!user.isAdmin&&!schoolAllowedStudents(data).has(id)){alert('Бұл профильге рұқсат жоқ');return}
+  const allowed=schoolAllowedStudents(data);
+  if(p.role!=='teacher'&&!user.isAdmin&&allowed&&!allowed.has(id)){alert('Бұл профильге рұқсат жоқ');return}
   schoolState.person=id;schoolState.fileJob++;schoolState.fileReading=false;schoolState.kind=p.role==='teacher'?'teachers':'students';document.getElementById('s-school-person').dataset.kind=schoolState.kind;schoolState.imported=null;schoolState.fileName='';schoolRenderPerson();showScr('s-school-person');
 }
 function schoolRenderPerson(){
@@ -13291,7 +13327,30 @@ function showPremiumPanel(message=''){
 }
 const UBT_WHATSAPP='https://wa.me/77056360080';
 const UBT_WHATSAPP_GROUP='https://chat.whatsapp.com/JVVi7OPce5R0DOO9AjoeKQ?s=cl&p=a&iam=2';
-function tariffName(plan){return {free:'Тегін',pro:'Pro',premium:'Premium',class:'Класс',staff:'Басты админ'}[plan]||'Тегін'}
+function showAccessLock(){
+ if(!user)return;
+ let screen=document.getElementById('s-premium');
+ if(!screen){screen=document.createElement('section');screen.id='s-premium';screen.className='screen';screen.innerHTML='<div class="wrap wide"><div id="premium-panel" style="margin-top:20px"></div></div>';document.body.appendChild(screen)}
+ const host=document.getElementById('premium-panel');
+ if(host)host.innerHTML=`<section class="card" style="max-width:720px;margin:8vh auto;padding:clamp(22px,5vw,42px);text-align:center"><div style="font-size:48px">🔒</div><h1 style="margin:12px 0">1 күндік тегін мүмкіндік аяқталды</h1><p style="line-height:1.8;margin:12px 0">Сайтты әрі қарай пайдалану үшін тарифті WhatsApp арқылы сатып алыңыз. Төлемді растағаннан кейін қолжетімділікті тек басты админ ашады.</p><p style="font-weight:800;font-size:20px;margin:18px 0">Логин: ${esc(user.name||'')}</p><a class="btn btn-p" style="display:inline-flex;justify-content:center;min-width:230px" href="${UBT_WHATSAPP+'?text='+encodeURIComponent('Сәлеметсіз бе! ҰБТ PLUS қолжетімділігін сатып алғым келеді. Логинім: '+(user.name||''))}" target="_blank" rel="noopener noreferrer">WhatsApp арқылы сатып алу ↗</a><p class="sub" style="margin-top:14px">8 705 636 0080</p><button class="btn btn-s btn-sm" style="margin-top:10px" onclick="checkGrantedAccess(this)">Тариф қосылды ма? Тексеру</button> <button class="btn btn-s btn-sm" style="margin-top:10px" onclick="doLogout()">Аккаунттан шығу</button></section>`;
+ showScr('s-premium');
+}
+function showTrialNotice(access){
+ const host=document.querySelector('#s-home .wrap');if(!host||document.getElementById('ubt-trial-notice'))return;
+ const box=document.createElement('section');box.id='ubt-trial-notice';box.className='card';box.style.cssText='margin:0 0 16px;border:1px solid #d5a33b;background:linear-gradient(110deg,#fff7df,#fffdf5);color:#493710';
+ const until=Number(access.trialUntil||0),remaining=Math.max(0,until*1000-Date.now()),hours=Math.max(1,Math.ceil(remaining/3600000));
+ box.innerHTML='<b>⚠️ Ескерту: 1 күндік тегін қолжетімділік</b><p style="margin-top:8px;line-height:1.65">Тіркелгеннен кейін сайтты 24 сағат тегін қолдана аласыз. Мерзім аяқталған соң барлық бөлім жабылып, тек WhatsApp арқылы тариф сатып алу беті ашылады. Қолжетімділікті тек басты админ береді.</p><p style="margin-top:8px;font-weight:700">Қалған уақыт: шамамен '+hours+' сағат</p>';
+ host.prepend(box);
+}
+async function checkGrantedAccess(button){
+ if(!user||!window.__token)return; if(button)button.disabled=true;
+ try{const r=await authCall('subscription_status',{});if(!r.ok){alert(r.msg||'Қолжетімділікті тексеру мүмкін болмады');return}
+  window.__ubtAccessState=r.subscription;window.__ubtAccessLocked=!r.subscription.accessActive;
+  if(window.__ubtAccessLocked){alert('Тариф әлі қосылмаған. WhatsApp арқылы басты админге жазыңыз.');return}
+  showScr('s-home');showTrialNotice(r.subscription);alert('Қолжетімділік ашылды. Сәтті дайындық!');
+ }finally{if(button&&button.isConnected)button.disabled=false}
+}
+function tariffName(plan){return {free:'Тегін',trial:'1 күндік сынақ',pro:'Pro',premium:'Premium',class:'Класс',staff:'Басты админ'}[plan]||'Тегін'}
 function tariffWhatsApp(plan){return UBT_WHATSAPP+'?text='+encodeURIComponent('Сәлеметсіз бе! ҰБТ PLUS сайтындағы '+tariffName(plan)+' тарифін алғым келеді. Логинім: '+(user?.name||'')+(plan==='class'?'. Қатысушылар санын және мерзімін келіскім келеді.':'. Бағасы мен мерзімін білгім келеді.'))}
 function renderPremiumPanel(message=''){
  const host=document.getElementById('premium-panel');if(!host||!user)return;const e=subscriptionInfo();
