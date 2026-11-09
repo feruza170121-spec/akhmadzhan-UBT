@@ -4171,6 +4171,25 @@ body:not(.primary-owner) input,body:not(.primary-owner) textarea,body:not(.prima
 </style></head>
 <body>
 
+<style id="ubt-entry-splash-style">
+#ubt-entry-splash{position:fixed;inset:0;z-index:2147483647;display:flex;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(ellipse at top,#33457c,#101a35 70%);color:#fff;font-family:system-ui,sans-serif;pointer-events:auto;animation:ubt-splash-end 4s linear forwards}
+#ubt-entry-splash strong{font-size:clamp(34px,9vw,78px);letter-spacing:.15em;padding-left:.15em;animation:ubt-splash-arrive .65s ease-out both}
+#ubt-entry-splash span{margin-top:18px;font-size:18px;letter-spacing:.12em;color:#cbd4fc}
+#ubt-entry-splash i{width:160px;height:3px;margin-top:32px;background:#ffffff20;border-radius:4px;overflow:hidden}
+#ubt-entry-splash i:after{content:'';display:block;width:100%;height:100%;background:#a9b8ff;transform-origin:left;animation:ubt-splash-progress 4s linear both}
+@keyframes ubt-splash-arrive{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+@keyframes ubt-splash-progress{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+@keyframes ubt-splash-end{0%,92%{opacity:1;visibility:visible}99.99%{opacity:0;visibility:visible}100%{opacity:0;visibility:hidden;pointer-events:none}}
+@media(prefers-reduced-motion:reduce){#ubt-entry-splash strong,#ubt-entry-splash i:after{animation:none}#ubt-entry-splash{animation-timing-function:steps(1,end)}}
+</style>
+<div id="ubt-entry-splash" role="status" aria-label="ҰБТ PLUS — қош келдіңіз"><strong>WELCOME</strong><span>ҰБТ PLUS</span><i aria-hidden="true"></i></div>
+<script>
+(function(){
+  var splash=document.getElementById('ubt-entry-splash');
+  window.setTimeout(function(){if(splash)splash.remove();},4000);
+})();
+</script>
+
 <button id="theme-btn" class="btn btn-s" onclick="toggleTheme()" title="Қараңғы / жарық режим">🌙</button>
 <canvas id="confetti"></canvas>
 <div id="sync-ind" style="position:fixed;left:10px;bottom:10px;z-index:90;font-size:11px;padding:4px 10px;border-radius:22px;box-shadow:0 1px 6px rgba(0,0,0,.15)"></div>
