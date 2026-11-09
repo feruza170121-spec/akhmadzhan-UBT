@@ -510,6 +510,10 @@ def _start_personal_practice(state,sess,d):
         if not _exam_capacity(state,sess['uid']):return {'ok':False,'msg':'Алдымен белсенді тестті аяқтаңыз'}
         token=secrets.token_urlsafe(32)
         state['exams'][token]={'uid':sess['uid'],'testId':'own_'+family.split(':',1)[-1],'assignmentId':None,'classId':None,'owner':True,'reward':False,'publishedQuota':False,'questions':clean,'topic':topic,'is140':bool(d.get('is140')),'selfAuthored':True,'reviewFamily':family,'expires':time.time()+minutes*60+90}
+        issue=_subscription_prepare(state,sess,state['exams'][token])
+        if issue:
+            state['exams'].pop(token,None)
+            return {'ok':False,'msg':issue,'upgradeRequired':True}
         _save_exam(state,token)
     return {'ok':True,'exam':token,'questions':[_exam_question_meta(q,i) for i,q in enumerate(clean)],'topic':topic,'timer':minutes*60,'allowInstantFeedback':False}
 
@@ -541,6 +545,14 @@ def _secure_snapshot(state,sess,db):
                 db[key]=_jdump([{k:v for k,v in r.items() if k not in ('questions','answers')} for r in rows if isinstance(r,dict)])
             elif key.startswith('ubt_mistakes_'):
                 db[key]='[]'
+    info=_subscription_info(state,sess)
+    db['ubt_entitlement']=_jdump(info)
+    if not info['premium']:
+        for prefix in ('ubt_hist_','ubt_prog_'):
+            key=prefix+sess['uid']
+            if key in db:
+                rows=_jload(db[key],list,[])
+                db[key]=_jdump(rows[:1] if prefix=='ubt_hist_' else rows[-1:])
     return db
 
 def _exam_question_meta(q,index):
@@ -552,10 +564,15 @@ def _exam_question_request(state,sess,d):
         exam=state.get('exams',{}).get(str(d.get('exam') or ''))
         qid=str(d.get('questionId') or '')
         if not exam or exam.get('uid')!=sess['uid'] or exam.get('completed') or exam.get('expires',0)<time.time() or not re.fullmatch(r'examq\d+',qid):return {'ok':False,'msg':'Белсенді тест табылмады'}
+        if 'premiumAtStart' not in exam:
+            issue=_subscription_prepare(state,sess,exam)
+            if issue:return {'ok':False,'msg':issue,'upgradeRequired':True}
         index=int(qid[5:])
         if not 0<=index<len(exam['questions']):return {'ok':False,'msg':'Сұрақ табылмады'}
         issue=_subject_guard(state,sess,None,exam['questions'])
         if issue:return {'ok':False,'msg':issue}
+        issue=_subscription_charge(state,sess,exam,str(d.get('exam')))
+        if issue:return {'ok':False,'msg':issue,'upgradeRequired':True}
         return {'ok':True,'question':_public_question(exam['questions'][index],index)}
 
 # Send capability is independent of account management. Junior admins may send only their own tests.
@@ -593,8 +610,276 @@ def _start_creative_exam(state,sess):
             qs.extend(dict(q,subject=key,subjectName=_SUBJECT_NAMES[key],points=1) for q in secrets.SystemRandom().sample(banks[key],n))
         token=secrets.token_urlsafe(32);topic='Шығармашылық бағыт · 30 сұрақ'
         state['exams'][token]={'uid':sess['uid'],'testId':'real:creative','assignmentId':None,'classId':None,'owner':False,'reward':False,'publishedQuota':False,'questions':qs,'topic':topic,'selfAuthored':False,'reviewFamily':'creative','expires':time.time()+70*60+90}
+        issue=_subscription_prepare(state,sess,state['exams'][token])
+        if issue:
+            state['exams'].pop(token,None)
+            return {'ok':False,'msg':issue,'upgradeRequired':True}
         _save_exam(state,token)
         return {'ok':True,'exam':token,'questions':[_exam_question_meta(q,i) for i,q in enumerate(qs)],'topic':topic,'timer':70*60,'allowInstantFeedback':False}
+
+_FREE_SUBJECT_TESTS = 2
+_FREE_FULL_TESTS = 1
+_FREE_PREVIEW_QUESTIONS = 10
+_TRIAL_DAYS = 3
+
+def _subscription_info(state,sess):
+    uid=sess['uid'];key='ubt_server_access_subscription_'+uid
+    record=_jload(state['db'].get(key,'{}'),dict,{})
+    if not record:
+        record={'plan':'free','expires':0,'trialUsed':False,'trialUntil':0,'welcomeFull':1,'created':time.time()}
+        _put(state,key,_jdump(record))
+    now=time.time();staff=bool(sess.get('admin') or sess.get('juniorAdmin') or _is_teacher(state,uid))
+    paid=record.get('plan')=='premium' and record.get('expires',0)>now
+    trial=record.get('trialUntil',0)>now
+    premium=staff or paid or trial
+    usage=_subscription_usage(state,uid)
+    return {'uid':uid,'premium':premium,'staff':staff,'plan':'staff' if staff else 'premium' if paid else 'trial' if trial else 'free','expires':record.get('expires',0) if paid else record.get('trialUntil',0) if trial else 0,'trialUsed':bool(record.get('trialUsed')),'trialDays':_TRIAL_DAYS,'welcomeFull':record.get('welcomeFull',0),'subjectRemaining':max(0,_FREE_SUBJECT_TESTS-usage['subjectCount']),'fullRemaining':max(0,_FREE_FULL_TESTS-usage['fullCount']),'dailyRemaining':max(0,1-usage['dailyCount']),'previewCount':_FREE_PREVIEW_QUESTIONS,'autoRenew':False}
+
+def _subscription_usage(state,uid):
+    key='ubt_server_access_usage_'+uid
+    record=_jload(state['db'].get(key,'{}'),dict,{})
+    now=datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5)))
+    day,week=now.strftime('%Y-%m-%d'),now.strftime('%G-W%V')
+    if record.get('day')!=day:record.update(day=day,subjectCount=0,dailyCount=0)
+    if record.get('week')!=week:record.update(week=week,fullCount=0)
+    _put(state,key,_jdump(record))
+    return record
+
+def _subscription_kind(exam):
+    if exam.get('dailyPractice'):return 'daily'
+    if exam.get('is140') or exam.get('testId')=='real:creative' or len({q.get('subject') for q in exam.get('questions',[])})>=3:return 'full'
+    return 'subject'
+
+def _subscription_preflight(state,sess,exam):
+    info=_subscription_info(state,sess)
+    if info['premium']:return ''
+    kind=_subscription_kind(exam)
+    if kind=='daily' and not info['dailyRemaining']:return 'Бүгінгі 5 сұрақ ашылған. Жаңа сұрақтар ертең қолжетімді.'
+    if kind=='full' and not (info['welcomeFull'] or info['fullRemaining']):return 'Осы аптаның тегін толық тесті аяқталды. Premium-да толық тесттер шектеусіз.'
+    if kind=='subject' and not info['subjectRemaining']:return 'Бүгінгі 2 тегін пәндік тест пайдаланылды. Ертең жаңарады немесе Premium қосуға болады.'
+    return ''
+
+def _subscription_prepare(state,sess,exam):
+    issue=_subscription_preflight(state,sess,exam)
+    if issue:return issue
+    info=_subscription_info(state,sess);exam['premiumAtStart']=info['premium']
+    # Limit shared subject collections only; never restrict the author's own content or full-format exams.
+    if not info['premium'] and _subscription_kind(exam)=='subject' and not exam.get('selfAuthored') and len(exam['questions'])>_FREE_PREVIEW_QUESTIONS:
+        exam['questions']=exam['questions'][:_FREE_PREVIEW_QUESTIONS]
+        exam['topic']+=' · Тегін танысу нұсқасы'
+        exam['freePreview']=True
+        exam['expires']=min(exam['expires'],time.time()+30*60+90)
+    return ''
+
+def _subscription_charge(state,sess,exam,token):
+    if exam.get('quotaCharged'):return ''
+    if exam.get('premiumAtStart'):
+        exam['quotaCharged']=True;exam['quotaSource']='premium';_save_exam(state,token);return ''
+    issue=_subscription_preflight(state,sess,exam)
+    if issue:return issue
+    info=_subscription_info(state,sess);kind=_subscription_kind(exam)
+    if info['premium']:
+        exam['quotaCharged']=True;exam['quotaSource']='premium';_save_exam(state,token);return ''
+    usage=_subscription_usage(state,sess['uid']);source=kind
+    if kind=='daily':usage['dailyCount']+=1
+    elif kind=='full' and info['welcomeFull']:
+        key='ubt_server_access_subscription_'+sess['uid'];record=_jload(state['db'][key],dict,{})
+        record['welcomeFull']-=1;_put(state,key,_jdump(record));source='welcome'
+    elif kind=='full':usage['fullCount']+=1
+    else:usage['subjectCount']+=1
+    _put(state,'ubt_server_access_usage_'+sess['uid'],_jdump(usage));exam['quotaCharged']=True;exam['quotaSource']=source
+    _save_exam(state,token)
+    return ''
+
+def _subscription_request(state,sess,typ,d):
+    if not sess or sess.get('codeGuest'):return {'ok':False,'msg':'Аккаунтыңызға кіріңіз'}
+    with state['lock']:
+        if typ=='subscription_status':return {'ok':True,'subscription':_subscription_info(state,sess)}
+        if typ=='subscription_trial':
+            info=_subscription_info(state,sess)
+            if info['premium']:return {'ok':False,'msg':'Сізде Premium қазірдің өзінде белсенді'}
+            if info['trialUsed']:return {'ok':False,'msg':'Бұл аккаунт сынақ мерзімін бұрын пайдаланған'}
+            key='ubt_server_access_subscription_'+sess['uid'];r=_jload(state['db'][key],dict,{})
+            r.update(trialUsed=True,trialUntil=time.time()+_TRIAL_DAYS*86400);_put(state,key,_jdump(r));_commit(state)
+            return {'ok':True,'subscription':_subscription_info(state,sess)}
+        if typ=='subscription_request':
+            key='ubt_server_access_premium_requests';requests=_jload(state['db'].get(key,'{}'),dict,{})
+            old=requests.get(sess['uid'],{})
+            requests[sess['uid']]={'uid':sess['uid'],'name':sess.get('name') or 'Қолданушы','created':old.get('created',time.time()),'pending':True}
+            _put(state,key,_jdump(requests));_commit(state);return {'ok':True}
+        if not sess.get('admin') or sess['uid']!='admin':return {'ok':False,'msg':'Тек басты админ басқарады'}
+        if typ=='owner_subscription_list':
+            requests=_jload(state['db'].get('ubt_server_access_premium_requests','{}'),dict,{})
+            return {'ok':True,'requests':sorted([r for r in requests.values() if r.get('pending')],key=lambda r:r.get('created',0),reverse=True)[:50]}
+        uid=str(d.get('uid') or '')
+        profile=_person_profile(state,uid) if uid else next((p for p in _profiles(state).values() if str(p.get('name') or '').casefold()==str(d.get('login') or '').strip().casefold()),{})
+        if not profile:return {'ok':False,'msg':'Тіркелген қолданушыны таңдаңыз'}
+        uid=profile['id']
+        target={'uid':uid,'admin':False,'juniorAdmin':uid in _admin_uids(state)}
+        info=_subscription_info(state,target)
+        if typ=='owner_subscription_view':return {'ok':True,'subscription':info,'name':profile.get('name'),'uid':uid}
+        if typ!='owner_subscription_set' or d.get('plan') not in ('free','premium'):return {'ok':False,'msg':'Тарифті таңдаңыз'}
+        days=d.get('days',30)
+        if type(days) is not int or not 1<=days<=3650:return {'ok':False,'msg':'Мерзім 1–3650 күн болсын'}
+        key='ubt_server_access_subscription_'+uid;r=_jload(state['db'][key],dict,{})
+        r['plan']=d['plan']
+        if d['plan']=='premium':r['expires']=max(time.time(),r.get('expires',0))+days*86400
+        else:r.update(expires=0,trialUntil=0)
+        _put(state,key,_jdump(r))
+        requests=_jload(state['db'].get('ubt_server_access_premium_requests','{}'),dict,{})
+        if uid in requests:requests[uid]['pending']=False;_put(state,'ubt_server_access_premium_requests',_jdump(requests))
+        _commit(state);return {'ok':True,'subscription':_subscription_info(state,target)}
+
+def _premium_dashboard(state,sess):
+    if not sess:return {'ok':False,'msg':'Аккаунтыңызға кіріңіз'}
+    if not _subscription_info(state,sess)['premium']:return {'ok':False,'upgradeRequired':True,'msg':'Толық статистика мен жеке жоспар Premium-да қолжетімді'}
+    raw=state['db'].get('ubt_server_exam_review_records_'+sess['uid'],'{}')
+    stats={};topics={}
+    for result in _jload(raw,dict,{}).values():
+        for i,q in enumerate(result.get('questions',[])):
+            key=q.get('subject');title=q.get('source') or result.get('topic') or 'Тест'
+            if key not in _allowed_subjects(state,sess):continue
+            correct=result.get('answers',{}).get('examq'+str(i))==q.get('correct')
+            row=stats.setdefault(key,{'subject':key,'name':_SUBJECT_NAMES.get(key,key),'total':0,'correct':0})
+            row['total']+=1;row['correct']+=int(correct)
+            item=topics.setdefault((key,title),{'subject':key,'title':str(title)[:180],'total':0,'wrong':0})
+            item['total']+=1;item['wrong']+=int(not correct)
+    for row in stats.values():row['accuracy']=round(100*row['correct']/row['total'])
+    weakest=sorted((x for x in topics.values() if x['wrong']),key=lambda x:(-x['wrong']/x['total'],-x['wrong']))[:5]
+    return {'ok':True,'subjects':list(stats.values()),'weakTopics':weakest,'plan':[{'subject':x['subject'],'title':x['title'],'minutes':20,'questions':10} for x in weakest[:3]]}
+
+def _start_daily_five(state,sess):
+    if not sess or sess.get('codeGuest'):return {'ok':False,'msg':'Аккаунтыңызға кіріңіз'}
+    with state['lock']:
+        allowed=_allowed_subjects(state,sess)
+        if not allowed:return {'ok':False,'msg':'Алдымен пән жұбын таңдаңыз'}
+        usage=_subscription_usage(state,sess['uid']);day=usage['day']
+        key='ubt_server_access_daily_five_'+sess['uid'];old=_jload(state['db'].get(key,'{}'),dict,{})
+        existing=state.get('exams',{}).get(old.get('exam','')) if old.get('day')==day else None
+        if existing and not existing.get('completed') and existing.get('expires',0)>time.time():
+            return {'ok':True,'exam':old['exam'],'questions':[_exam_question_meta(q,i) for i,q in enumerate(existing['questions'])],'topic':existing['topic'],'timer':max(1,int(existing['expires']-time.time()-90)),'allowInstantFeedback':False}
+        if usage['dailyCount']>=1:return {'ok':False,'msg':'Бүгінгі 5 сұрақ ашылған. Ертең жаңа жинақ болады.'}
+        banks=_real_bank_cached(state);pool=[q for subject,rows in banks.items() if subject in allowed for q in rows[:_FREE_PREVIEW_QUESTIONS]]
+        if len(pool)<5:return {'ok':False,'msg':'Күндік жинақ үшін сіздің пәндеріңізге кемінде 5 сұрақ қосылуы керек'}
+        if not _exam_capacity(state,sess['uid']):return {'ok':False,'msg':'Алдымен белсенді тестті аяқтаңыз'}
+        seed=hashlib.sha256((sess['uid']+'|'+day).encode()).digest();selected=sorted(pool,key=lambda q:hashlib.sha256(seed+str(q.get('id') or q.get('text')).encode()).digest())[:5]
+        qs=[dict(q,subject=q.get('subject'),subjectName=_SUBJECT_NAMES[q['subject']],points=1) for q in selected]
+        token=secrets.token_urlsafe(32);topic='Күннің 5 сұрағы · '+day
+        exam={'uid':sess['uid'],'testId':'daily:'+day,'assignmentId':None,'classId':None,'owner':False,'reward':False,'publishedQuota':False,'questions':qs,'topic':topic,'selfAuthored':False,'dailyPractice':True,'reviewFamily':'daily:'+day,'expires':time.time()+15*60+90}
+        issue=_subscription_prepare(state,sess,exam)
+        if issue:return {'ok':False,'msg':issue,'upgradeRequired':True}
+        state['exams'][token]=exam;_put(state,key,_jdump({'day':day,'exam':token}));_save_exam(state,token)
+        return {'ok':True,'exam':token,'questions':[_exam_question_meta(q,i) for i,q in enumerate(qs)],'topic':topic,'timer':15*60,'allowInstantFeedback':False}
+
+def _growth_record(state,uid):
+    return _jload(state['db'].get('ubt_server_access_growth_'+uid,'{}'),dict,{})
+
+def _growth_put(state,uid,r):
+    _put(state,'ubt_server_access_growth_'+uid,_jdump(r))
+
+def _growth_day():
+    return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5))).strftime('%Y-%m-%d')
+
+def _growth_finish(state,sess,exam,result):
+    uid=sess['uid'];r=_growth_record(state,uid);day=_growth_day()
+    r.setdefault('completedDays',[])
+    if day not in r['completedDays']:r['completedDays']=(r['completedDays']+[day])[-90:]
+    r['lastResult']={'score':result.get('score',0),'max':result.get('max',len(exam['questions'])),'topic':exam.get('topic','Тест'),'at':time.time()}
+    mode=exam.get('growthMode')
+    if mode=='diagnostic':
+        rows={}
+        for i,q in enumerate(exam['questions']):
+            row=rows.setdefault(q['subject'],{'subject':q['subject'],'name':_SUBJECT_NAMES.get(q['subject'],q['subject']),'total':0,'correct':0})
+            row['total']+=1;row['correct']+=int(exam.get('growthAnswers',{}).get('examq'+str(i))==q['correct'])
+        r['diagnostic']=list(rows.values())
+    if mode=='marathon':
+        days=r.setdefault('marathon',[])
+        if day not in days and len(days)<7:days.append(day)
+    if mode=='duel':
+        key='ubt_server_access_duel_'+exam['growthCode'];duel=_jload(state['db'].get(key,'{}'),dict,{})
+        duel.setdefault('results',{})[uid]={'label':'Қатысушы '+str(duel.get('members',[]).index(uid)+1),'score':result.get('score',0),'max':result.get('max',10)}
+        _put(state,key,_jdump(duel))
+    if mode=='challenge':
+        key='ubt_server_access_challenge_'+day+'_'+hashlib.sha256(','.join(sorted(_allowed_subjects(state,sess))).encode()).hexdigest()[:12];board=_jload(state['db'].get(key,'{}'),dict,{})
+        board[uid]={'label':'Оқушы '+hashlib.sha256(uid.encode()).hexdigest()[:5],'score':result.get('score',0),'max':result.get('max',5)}
+        _put(state,key,_jdump(board))
+    if not r.get('firstCompleted'):
+        r['firstCompleted']=time.time();ref=r.get('referrer')
+        if ref:
+            sponsor=_growth_record(state,ref)
+            if sponsor.get('referralRewards',0)<5:
+                _subscription_info(state,{'uid':ref});key='ubt_server_access_subscription_'+ref
+                sub=_jload(state['db'][key],dict,{});sub['welcomeFull']=int(sub.get('welcomeFull',0))+1;_put(state,key,_jdump(sub))
+                sponsor['referralRewards']=sponsor.get('referralRewards',0)+1;_growth_put(state,ref,sponsor)
+    _growth_put(state,uid,r)
+
+def _growth_request(state,sess,d):
+    if not sess or sess.get('codeGuest'):return {'ok':False,'msg':'Аккаунтыңызға кіріңіз'}
+    with state['lock']:
+        uid=sess['uid'];r=_growth_record(state,uid);action=d.get('action','status');day=_growth_day()
+        if not r.get('invite'):
+            r['invite']=secrets.token_hex(6).upper();_growth_put(state,uid,r)
+            _put(state,'ubt_server_access_invite_'+r['invite'],uid)
+        if action=='duel_results':
+            duel=_jload(state['db'].get('ubt_server_access_duel_'+str(d.get('code','')).strip().upper(),'{}'),dict,{})
+            if uid not in duel.get('members',[]):return {'ok':False,'msg':'Тек жарыс қатысушылары көре алады'}
+            return {'ok':True,'results':list(duel.get('results',{}).values())}
+        if action=='status':
+            board=_jload(state['db'].get('ubt_server_access_challenge_'+day+'_'+hashlib.sha256(','.join(sorted(_allowed_subjects(state,sess))).encode()).hexdigest()[:12],'{}'),dict,{})
+            return {'ok':True,'invite':r['invite'],'rewards':r.get('referralRewards',0),'marathon':len(r.get('marathon',[])),'diagnostic':r.get('diagnostic',[]),'lastResult':r.get('lastResult'),'board':sorted(board.values(),key=lambda x:-x['score'])[:20]}
+        if action=='referral':
+            ref=state['db'].get('ubt_server_access_invite_'+str(d.get('code','')).strip().upper())
+            if not ref or ref==uid or r.get('referrer') or r.get('firstCompleted'):return {'ok':False,'msg':'Код жарамсыз немесе алғашқы тест тапсырылып қойған'}
+            # One referred account per device; maximum five rewards per inviter.
+            device=str(sess.get('device') or '')
+            if not device:return {'ok':False,'msg':'Құрылғыны растау үшін аккаунтқа қайта кіріңіз'}
+            dk='ubt_server_access_ref_device_'+hashlib.sha256(device.encode()).hexdigest()
+            if state['db'].get(dk):return {'ok':False,'msg':'Бұл құрылғы шақыру сыйлығын пайдаланған'}
+            if any(s.get('uid')==ref and s.get('device')==device for s in state.get('sessions',{}).values()):return {'ok':False,'msg':'Өзіңізді шақыруға болмайды'}
+            r['referrer']=ref;_growth_put(state,uid,r);_put(state,dk,uid);_commit(state);return {'ok':True}
+        mode=d.get('mode')
+        if action!='start' or mode not in ('duel','challenge','diagnostic','marathon'):return {'ok':False,'msg':'Әрекет жарамсыз'}
+        allowed=_allowed_subjects(state,sess)
+        if not allowed:return {'ok':False,'msg':'Алдымен пән жұбын таңдаңыз'}
+        if not _exam_capacity(state,uid):return {'ok':False,'msg':'Алдымен белсенді тестті аяқтаңыз'}
+        code=str(d.get('code') or '').strip().upper();duel=None
+        if mode=='duel' and not code:
+            if r.get('duelDay')!=day:r.update(duelDay=day,duelCreated=0)
+            if r.get('duelCreated',0)>=3:return {'ok':False,'msg':'Күніне 3 жарыс ашуға болады. Ертең жалғастырыңыз'}
+        if mode=='duel' and code:
+            duel=_jload(state['db'].get('ubt_server_access_duel_'+code,'{}'),dict,{})
+            if not duel or duel.get('expires',0)<time.time():return {'ok':False,'msg':'Жарыс табылмады немесе мерзімі аяқталған'}
+            if set(duel['subjects'])!=set(allowed):return {'ok':False,'msg':'Бұл жарысқа пән жұбы бірдей досыңыз қатыса алады'}
+            if uid in duel.get('results',{}):return {'ok':False,'msg':'Жарысты тапсырып қойдыңыз'}
+            if uid not in duel['members']:
+                if len(duel['members'])>=2:return {'ok':False,'msg':'Жарыста екі қатысушы бар'}
+                duel['members'].append(uid)
+            qs=duel['questions']
+        else:
+            if mode=='diagnostic' and r.get('diagnostic'):return {'ok':False,'msg':'Диагностика нәтижесі төменде көрсетілген'}
+            if mode=='marathon' and (day in r.get('marathon',[]) or len(r.get('marathon',[]))>=7):return {'ok':False,'msg':'Бүгінгі тапсырма аяқталды. Келесі күні жалғастырыңыз'}
+            banks=_real_bank_cached(state);pool=[q for sub,rows in banks.items() if sub in allowed for q in rows[:10]]
+            count=10 if mode in ('duel','diagnostic') else 5
+            if len(pool)<count:return {'ok':False,'msg':'Пәндеріңіз бойынша сұрақтар жеткіліксіз'}
+            seed=day+'|'+','.join(sorted(allowed)) if mode=='challenge' else secrets.token_hex(16)
+            qs=sorted(pool,key=lambda q:hashlib.sha256((seed+str(q.get('id') or q.get('text'))).encode()).hexdigest())[:count]
+            if mode=='duel':
+                code=secrets.token_hex(5).upper();duel={'questions':qs,'subjects':list(allowed),'members':[uid],'results':{},'expires':time.time()+86400}
+        tag=mode+':'+(code if mode=='duel' else 'once' if mode=='diagnostic' else day)
+        attempts=r.setdefault('attempts',{})
+        if tag in attempts:
+            existing=state['exams'].get(attempts[tag])
+            if existing and not existing.get('completed') and existing.get('expires',0)>time.time():
+                return {'ok':True,'exam':attempts[tag],'questions':[_exam_question_meta(q,i) for i,q in enumerate(existing['questions'])],'topic':existing['topic'],'timer':max(1,int(existing['expires']-time.time()-90)),'code':code}
+            return {'ok':False,'msg':'Бұл тапсырмаға бүгінгі мүмкіндік пайдаланылған'}
+        if duel:
+            if uid==duel['members'][0] and not d.get('code'):r['duelCreated']=r.get('duelCreated',0)+1
+            _put(state,'ubt_server_access_duel_'+code,_jdump(duel))
+        topic={'duel':'Досыңмен жарыс','challenge':'Күннің челленджі','diagnostic':'Бастапқы диагностика','marathon':'7 күндік марафон'}[mode]
+        token=secrets.token_urlsafe(32)
+        exam={'uid':uid,'testId':'growth:'+tag,'assignmentId':None,'classId':None,'owner':False,'reward':False,'publishedQuota':False,'questions':[dict(q,points=1) for q in qs],'topic':topic,'selfAuthored':False,'reviewFamily':_review_fingerprint(qs),'expires':time.time()+15*60+90,'premiumAtStart':True,'growthMode':mode,'growthCode':code}
+        attempts[tag]=token;_growth_put(state,uid,r);state['exams'][token]=exam;_save_exam(state,token);_commit(state)
+        return {'ok':True,'exam':token,'questions':[_exam_question_meta(q,i) for i,q in enumerate(qs)],'topic':topic,'timer':900,'code':code}
 
 def _new_session(state, uid, name, admin, device=""):
     admin = uid == "admin"
@@ -747,6 +1032,9 @@ def _resume_exam(state, sess, d):
             return {"ok": False, "msg": "Тест табылмады немесе мерзімі өтті"}
         if exam.get("completed"):
             return {"ok": True, "completed": True}
+        if 'premiumAtStart' not in exam:
+            issue=_subscription_prepare(state,sess,exam)
+            if issue:return {'ok':False,'msg':issue,'upgradeRequired':True}
         remaining = max(0, math.ceil(exam["expires"] - time.time() - 90))
         issue=_subject_guard(state,sess,None,exam['questions'])
         if issue:return {'ok':False,'msg':issue}
@@ -915,13 +1203,17 @@ def _start_exam(state, sess, d):
                                  "limit": test.get("limit"), "publishedQuota": published, "publishedLimit": _approved_limit(test), "questions": [dict(q) for q in qs],
                                  "topic": (str(test.get("subjectName") or "") + " · " + str(test.get("topic") or "Тест")).strip(" ·"),
                                  "expires": time.time() + timer + 90}
+        issue=_subscription_prepare(state,sess,state['exams'][nonce])
+        if issue:
+            state['exams'].pop(nonce,None)
+            return {'ok':False,'msg':issue,'upgradeRequired':True}
         _save_exam(state, nonce)
 
         allow_instant = False
-        visible = [_exam_question_meta(q,i) for i,q in enumerate(qs)]
+        visible = [_exam_question_meta(q,i) for i,q in enumerate(state['exams'][nonce]['questions'])]
         return {"ok": True, "exam": nonce, "questions": visible,
                 "allowInstantFeedback": allow_instant,
-                "topic": state["exams"][nonce]["topic"], "timer": timer}
+                "topic": state["exams"][nonce]["topic"], "timer": max(1,int(state["exams"][nonce]["expires"]-time.time()-90)), "freePreview":bool(state["exams"][nonce].get("freePreview"))}
 
 def _start_public_mix(state, sess, d):
     return {"ok":False,"msg":"Мақұлданған тесттерді өз лимитімен «Админ мақұлдаған тесттер» бөлімінен жеке тапсырыңыз"}
@@ -939,6 +1231,12 @@ def _finish_exam(state, sess, d):
             return {k:v for k,v in exam["completed"].items() if k not in ("questions","answers")}
         if exam["expires"] < time.time():
             return {"ok": False, "msg": "Тест мерзімі өтті"}
+        if 'premiumAtStart' not in exam:
+            issue=_subscription_prepare(state,sess,exam)
+            if issue:return {'ok':False,'msg':issue,'upgradeRequired':True}
+        issue=_subscription_charge(state,sess,exam,token)
+        if issue:return {'ok':False,'msg':issue,'upgradeRequired':True}
+
         if exam.get("publishedQuota"):
             current=next((t for t in _jload(state["db"].get("ubt_tests","[]"),list,[]) if isinstance(t,dict) and t.get("id")==exam["testId"]),None)
             limit=_approved_limit(current) if current else exam.get("publishedLimit",1)
@@ -1026,6 +1324,9 @@ def _finish_exam(state, sess, d):
             bucket=usage.setdefault(exam["testId"],{})
             bucket[sess["uid"]]=int(bucket.get(sess["uid"],0))+1
             _put(state,"ubt_server_access_public_attempts",_jdump(usage))
+        exam["growthAnswers"] = answers
+        _growth_finish(state,sess,exam,result)
+        exam.pop("growthAnswers",None)
         exam["completed"] = result
         exam["expires"] = time.time() + 86400
         _save_exam(state, token)
@@ -2359,7 +2660,7 @@ def _handle_req(state, sid, rq):
     sess = _session(state, rq.get("tok"))
     if not isinstance(typ, str) or len(_jdump(d)) > 8_000_000:
         return {"ok": False, "msg": "Сұраныс тым үлкен немесе жарамсыз"}
-    if sess and sess.get("juniorAdmin") and typ not in ('login', 'resume', 'login_remembered', 'logout', 'remember_account', 'forget_account', 'start_exam', 'start_personal_practice', 'exam_question', 'send_personal_test', 'review_open', 'review_close', 'resume_exam', 'finish_exam', 'cancel_exam', 'start_assigned_test', 'start_public_mix', 'exam_check_answer', 'explain_review', 'approved_test_list', 'notifications_list', 'save_public_test', 'remove_saved_public_test', 'public_profile', 'content_security_event', 'visit_record', 'support_open', 'support_read', 'support_send', 'messenger_contacts', 'messenger_thread', 'messenger_send', 'profile_animation_get', 'chat_claim', 'book_open'):
+    if sess and sess.get("juniorAdmin") and typ not in ('login', 'resume', 'login_remembered', 'logout', 'remember_account', 'forget_account', 'start_exam', 'start_personal_practice', 'growth', 'subscription_status', 'subscription_trial', 'subscription_request', 'premium_dashboard', 'daily_five', 'exam_question', 'send_personal_test', 'review_open', 'review_close', 'resume_exam', 'finish_exam', 'cancel_exam', 'start_assigned_test', 'start_public_mix', 'exam_check_answer', 'explain_review', 'approved_test_list', 'notifications_list', 'save_public_test', 'remove_saved_public_test', 'public_profile', 'content_security_event', 'visit_record', 'support_open', 'support_read', 'support_send', 'messenger_contacts', 'messenger_thread', 'messenger_send', 'profile_animation_get', 'chat_claim', 'book_open'):
         return {"ok":False,"msg":"Кіші админде басқару құқығы жоқ. Тест тапсыру және өз тестін жүктеу ғана қолжетімді."}
     with state["lock"]:
         now = time.time()
@@ -2452,6 +2753,14 @@ def _handle_req(state, sid, rq):
     if typ=="real_bank_manage":
         return _real_manage_request(state,sess,d)
 
+    if typ in ('subscription_status','subscription_trial','subscription_request','owner_subscription_list','owner_subscription_view','owner_subscription_set'):
+        return _subscription_request(state,sess,typ,d)
+    if typ=='premium_dashboard':
+        return _premium_dashboard(state,sess)
+    if typ=='growth':
+        return _growth_request(state,sess,d)
+    if typ=='daily_five':
+        return _start_daily_five(state,sess)
     if typ=='exam_question':
         return _exam_question_request(state,sess,d)
     if typ=='send_personal_test':
@@ -3540,6 +3849,8 @@ def _authorize(state, sess, k, v, chat_token=""):
     if k == "ubt_chat":
         return _merge_chat(state, sess, v, chat_token)
     if k in ("ubt_real_bank_tests","ubt_hidden_source_tests"):
+        return None
+    if k == "ubt_entitlement":
         return None
     if k == "ubt_real_bank_meta":
         return None
@@ -12448,6 +12759,108 @@ showMyTests=function(){const r=securityMyTests.apply(this,arguments);if(user&&(u
 const securitySendDialog=schoolClassSendDialog;schoolClassSendDialog=function(){const r=securitySendDialog.apply(this,arguments);securitySubjectUI();return r};
 const securityUbt140=startUbt140;startUbt140=async function(){securitySubjectUI();if(learnerAccount()&&currentPair()[0]==='creative'){const r=await authCall('start_exam',{testId:'real:all'});if(!r.ok)return alert(r.msg);st=baseState();st.secureExam=r.exam;st.questions=r.questions;st.subjectName=r.topic;st.timerSeconds=r.timer;st.isRealUbt=true;beginTest();return}return securityUbt140.apply(this,arguments)};
 securitySubjectUI();
+function subscriptionInfo(){const e=LS.get('ubt_entitlement',{});return user&&e.uid===user.id?e:{}}
+function hasPremium(){const e=subscriptionInfo();return !!(user&&(user.isAdmin||user.isJuniorAdmin||isTeacherUser()||(e.premium&&(e.staff||e.expires*1000>Date.now()))))}
+function premiumDate(seconds){return seconds?new Date(seconds*1000).toLocaleString('kk-KZ'):'—'}
+let premiumPanelLoading=false;
+function showPremiumPanel(message=''){
+ if(!user){showScr('s-login');return}
+ closeSecureReview();closeAppMenu();
+ let screen=document.getElementById('s-premium');if(!screen){screen=document.createElement('section');screen.id='s-premium';screen.className='screen';screen.innerHTML='<div class="wrap wide"><button class="btn btn-s btn-sm" onclick="goHome()">← Басты бет</button><div id="premium-panel" style="margin-top:20px"></div></div>';document.body.appendChild(screen)}
+ showScr('s-premium');renderPremiumPanel(message);
+ if(premiumPanelLoading)return;premiumPanelLoading=true;authCall('subscription_status',{}).then(r=>{if(r.ok){localStorage.setItem('ubt_entitlement',JSON.stringify(r.subscription));if(screen.classList.contains('active'))renderPremiumPanel(message)}}).finally(()=>premiumPanelLoading=false);
+}
+function renderPremiumPanel(message=''){
+ const host=document.getElementById('premium-panel');if(!host||!user)return;const e=subscriptionInfo(),premium=hasPremium();
+ host.innerHTML=`<div class="clean-hero"><div><span class="clean-eyebrow">ҰБТ PLUS</span><h1>${premium?'Premium қолжетімділігі белсенді':'Өз қарқыныңызбен дайындалыңыз'}</h1><p>${e.staff?'Қызметтік рөліңізге толық дайындық мүмкіндіктері берілген.':premium?'Мерзімі: '+premiumDate(e.expires):'Тегін дайындықты жалғастырыңыз немесе толық мүмкіндіктерді ашыңыз.'}</p></div></div>${message?`<div class="card" role="status" style="margin-bottom:15px">${esc(message)}</div>`:''}<div class="grid2"><div class="card"><h2>Тегін</h2><p style="margin:12px 0">Күніне 2 пәндік тест · Аптасына 1 толық тест</p><p>Бүгін қалғаны: <b>${e.subjectRemaining??2}</b> пәндік тест</p><p>Осы апта: <b>${e.fullRemaining??1}</b> толық тест</p><p>Сыйлық толық тест: <b>${e.welcomeFull??1}</b></p><p style="margin-top:12px">Күніне 5 қосымша сұрақ · Соңғы нәтиже · Шағын флешкарта жинағы · Жалпы дайындық жоспары</p></div><div class="card" style="border:2px solid #6366f1"><h2>✦ Premium</h2><p style="margin:12px 0">Өз пәндеріңізден шектеусіз тест пен толық сұрақтар базасы</p><p>Толық тарих және графиктер · Пәндер бойынша талдау · Әлсіз тақырыптарға жеке жоспар · Толық флешкарталар</p>${!premium&&!e.trialUsed?'<button class="btn btn-p" style="margin-top:18px" onclick="activatePremiumTrial(this)">3 күн тегін сынау</button>':''}${!e.staff?'<button class="btn btn-s" style="margin-top:12px" onclick="requestPremium(this)">Premium туралы өтініш жіберу</button>':''}<p class="sub" style="margin-top:12px">Карта талап етілмейді. Автоматты төлем алынбайды. Ақылы мерзімді басты админ растайды.</p></div></div><div class="card" style="margin-top:18px"><h3>Тегін де сақталатын мүмкіндіктер</h3><p style="margin-top:10px">Тест нәтижесі, рұқсат етілген қате талдауы, калькулятор және Менделеев кестесі.</p><p class="sub" style="margin-top:8px">Ортақ тест жауаптары тек алғашқы тапсырудан кейін 1 рет, өз тестіңіз — барлығы 5 рет ашылады. Premium бұл лимитті және пәндік шектеулерді өзгертпейді.</p><p class="sub" style="margin-top:8px">Күндік лимит Қазақстан уақытымен түнгі 00:00-де, апталық лимит дүйсенбіде жаңарады. Лимит алғашқы сұрақ ашылғанда есептеледі.</p></div>`;
+}
+async function activatePremiumTrial(button){button.disabled=true;try{const r=await authCall('subscription_trial',{});if(!r.ok){alert(r.msg);return}localStorage.setItem('ubt_entitlement',JSON.stringify(r.subscription));renderPremiumPanel('Үш күндік сынақ қосылды. Мерзімі аяқталғанда төлем алынбайды.');window.__bridge.refresh().catch(()=>{})}finally{button.disabled=false}}
+async function requestPremium(button){button.disabled=true;try{const r=await authCall('subscription_request',{});alert(r.ok?'Өтініш басты админге жіберілді. Бұл батырма ақша алмайды.':r.msg)}finally{button.disabled=false}}
+async function startDailyFive(button){if(button)button.disabled=true;try{const r=await authCall('daily_five',{});if(!r.ok){alert(r.msg);return}st=baseState();st.secureExam=r.exam;st.questions=r.questions;st.subjectName=r.topic;st.timerSeconds=r.timer;st.isRealUbt=true;beginTest()}finally{if(button)button.disabled=false}}
+function subscriptionUI(){
+ if(!user)return;
+ let entry=document.getElementById('premium-menu-entry');if(!entry){entry=document.createElement('button');entry.id='premium-menu-entry';entry.className='app-menu-home';entry.textContent='✦ Premium / Тегін лимиттер';entry.onclick=()=>showPremiumPanel();document.querySelector('#app-menu nav')?.prepend(entry)}
+ let daily=document.getElementById('daily-five-entry');if(!daily){daily=document.createElement('button');daily.id='daily-five-entry';daily.className='app-menu-home';daily.textContent='☀ Күннің 5 сұрағы';daily.onclick=()=>startDailyFive(daily);document.querySelector('#app-menu nav')?.prepend(daily)}
+ const home=document.getElementById('ubd-home');if(home&&!document.getElementById('subscription-home-strip')){const strip=document.createElement('div');strip.id='subscription-home-strip';strip.className='card';strip.style.marginBottom='18px';const e=subscriptionInfo();strip.innerHTML=`<div class="row" style="justify-content:space-between"><div><b>${hasPremium()?'✦ Premium':'Тегін дайындық'}</b><p class="sub">${hasPremium()?'Өз пәндеріңізден шектеусіз дайындық':'Бүгін '+(e.subjectRemaining??2)+' пәндік тест · сыйлық '+(e.welcomeFull??1)+' толық тест'}</p></div><button class="btn btn-p btn-sm" onclick="startDailyFive(this)">Күннің 5 сұрағы</button><button class="btn btn-s btn-sm" onclick="showPremiumPanel()">${hasPremium()?'Мерзімін көру':'3 күн тегін сынау'}</button></div>`;home.prepend(strip)}
+}
+const subscriptionAuthCall=authCall;
+authCall=async function(type,data){
+ const r=await subscriptionAuthCall(type,data);
+ if(r?.upgradeRequired){
+  if(type==='exam_question'&&st.secureExam===data?.exam){const token=st.secureExam;st.secureExam=null;subscriptionAuthCall('cancel_exam',{exam:token}).catch(()=>{});try{sessionStorage.removeItem(pendingResultKey());sessionStorage.removeItem(pendingResultKey()+'_questions')}catch(e){}lockEnd();st=baseState();setTimeout(()=>showPremiumPanel(r.msg),0)}
+  else if(!realExamActive())setTimeout(()=>showPremiumPanel(r.msg),0);
+ }
+ return r;
+};
+const subscriptionShow=showScr;
+showScr=function(id){const r=subscriptionShow.apply(this,arguments);subscriptionUI();return r};
+const subscriptionSync=syncRefresh;
+syncRefresh=function(){const r=subscriptionSync.apply(this,arguments);document.getElementById('subscription-home-strip')?.remove();subscriptionUI();if(document.getElementById('s-premium')?.classList.contains('active'))renderPremiumPanel();return r};
+const subscriptionSession=startSession;
+startSession=async function(){await subscriptionSession.apply(this,arguments);document.getElementById('subscription-home-strip')?.remove();subscriptionUI()};
+const subscriptionFlashCards=flashCards;
+flashCards=function(key){
+ // Paid flashcards never bypass protected answer-review limits.
+ if(key.startsWith('test:')){const t=allTests().find(t=>t.id===key.slice(5));if(!t||t.authorId!==user?.id||t.assignmentId||t.receivedFromAdmin)return []}
+ const cards=subscriptionFlashCards.apply(this,arguments);
+ if(key.startsWith('flash:'))return cards;
+ return hasPremium()?cards:cards.slice(0,10);
+};
+const subscriptionShowFlash=showFlash;
+showFlash=function(){const r=subscriptionShowFlash.apply(this,arguments);let note=document.getElementById('free-flash-note');if(!hasPremium()&&!note){note=document.createElement('p');note.id='free-flash-note';note.className='sub';note.textContent='Тегін танысу жинағы: әр дереккөзден 10 карточкаға дейін. Өз карточкаларыңыз шектелмейді.';document.querySelector('#s-flash .wrap')?.prepend(note)}if(note)note.hidden=hasPremium();return r};
+const subscriptionAnalytics=showAnalytics;
+showAnalytics=function(){if(!hasPremium()){showPremiumPanel('Толық статистика мен пәндік талдау Premium-да қолжетімді. Соңғы нәтиже мен қате талдауы тегін.');return}const r=subscriptionAnalytics.apply(this,arguments);loadPremiumDashboard('s-analytics');return r};
+const subscriptionKnowledge=showKnowledgeMap;
+showKnowledgeMap=function(){if(!hasPremium()){showPremiumPanel('Әлсіз тақырыптар мен білім картасы Premium-да қолжетімді.');return}return subscriptionKnowledge.apply(this,arguments)};
+const subscriptionForecast=showScoreForecast;
+showScoreForecast=function(){if(!hasPremium()){showPremiumPanel('Толық нәтижелер бойынша болжам Premium-да қолжетімді.');return}return subscriptionForecast.apply(this,arguments)};
+const subscriptionPlanner=showPlanner;
+showPlanner=function(){
+ if(hasPremium()){const r=subscriptionPlanner.apply(this,arguments);loadPremiumDashboard('s-plan');return r}
+ let screen=document.getElementById('s-free-plan');if(!screen){screen=document.createElement('section');screen.id='s-free-plan';screen.className='screen';screen.innerHTML='<div class="wrap"><button class="btn btn-s btn-sm" onclick="goHome()">← Басты бет</button><div class="card" style="margin-top:18px"><h2>Жалпы дайындық жоспары</h2><p style="margin:14px 0">Күн сайын: 20 минут тақырып қайталау, күннің 5 сұрағын орындау және соңғы тесттің қателерін талдау.</p><p>Апта сайын: бір толық ҰБТ жаттығуын тапсырып, қиналған пәнді қайта оқу.</p><div class="row" style="margin-top:18px"><button class="btn btn-p" onclick="startDailyFive(this)">Күннің 5 сұрағы</button><button class="btn btn-s" onclick="showPremiumPanel()">Жеке жоспарды ашу</button></div></div></div>';document.body.appendChild(screen)}showScr('s-free-plan');
+};
+async function loadPremiumDashboard(screenId){
+ const screen=document.getElementById(screenId);if(!screen)return;
+ const r=await authCall('premium_dashboard',{});if(!r.ok)return;
+ screen.querySelector('.premium-progress-details')?.remove();const box=document.createElement('section');box.className='card premium-progress-details';box.style.margin='16px 0';
+ box.innerHTML='<h3>Жеке пәндік талдау</h3>'+(r.subjects.length?'<div class="tscroll"><table><thead><tr><th>Пән</th><th>Қаралған сұрақ</th><th>Дұрыс жауап үлесі</th></tr></thead><tbody>'+r.subjects.map(x=>`<tr><td>${esc(x.name)}</td><td>${x.total}</td><td>${x.accuracy}%</td></tr>`).join('')+'</tbody></table></div>':'<p class="sub">Алдымен тест аяқтаңыз. Жоспар нақты нәтижелеріңізден құрылады.</p>')+'<h4 style="margin-top:16px">Қайталауға ұсынылатын тақырыптар</h4>'+(r.plan.length?r.plan.map(x=>`<div class="item"><div><b>${esc(x.title)}</b><p class="sub">${esc(subjName(x.subject))} · ${x.minutes} минут қайталау · ${x.questions} сұрақпен бекіту</p></div></div>`).join(''):'<p class="sub">Әзірге қате тақырыптар анықталмады.</p>');screen.querySelector('.wrap')?.prepend(box);
+}
+let subscriptionAdminLoading=false;
+async function mountSubscriptionAdmin(){
+ if(!user?.isAdmin||user.id!=='admin'||subscriptionAdminLoading)return;
+ let host=document.getElementById('owner-subscriptions');if(!host){host=document.createElement('section');host.id='owner-subscriptions';host.className='card';document.querySelector('#s-admin .wrap')?.prepend(host)}
+ host.innerHTML='<h3>Premium жазылымдарын басқару</h3><div class="grid2" style="margin-top:12px"><div class="fg"><label>Қолданушы логині</label><input id="subscription-target-login" maxlength="40" autocomplete="off"></div><div class="fg"><label>Мерзімі, күн</label><input id="subscription-target-days" type="number" min="1" max="3650" value="30"></div></div><div class="row"><button class="btn btn-s" onclick="ownerSubscriptionAction(\'view\',this)">Қарау</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'premium\',this)">Premium беру / ұзарту</button><button class="btn btn-d" onclick="ownerSubscriptionAction(\'free\',this)">Тегінге қайтару</button></div><p id="owner-subscription-status" class="sub" role="status" style="margin-top:12px"></p><h4 style="margin-top:16px">Premium өтініштері</h4><div id="subscription-pending-requests"></div>';
+ subscriptionAdminLoading=true;try{const r=await authCall('owner_subscription_list',{});const list=document.getElementById('subscription-pending-requests');if(!list)return;list.textContent='';if(!r.ok){list.textContent=r.msg;return}if(!r.requests.length)list.textContent='Жаңа өтініш жоқ.';for(const item of r.requests){const row=document.createElement('div');row.className='item';const label=document.createElement('strong');label.textContent=item.name;const b=document.createElement('button');b.className='btn btn-s btn-sm';b.textContent='Таңдау';b.onclick=()=>{document.getElementById('subscription-target-login').value=item.name};row.append(label,b);list.appendChild(row)}}finally{subscriptionAdminLoading=false}
+}
+async function ownerSubscriptionAction(action,button){
+ if(!user?.isAdmin||user.id!=='admin')return;const login=document.getElementById('subscription-target-login').value.trim(),days=Number(document.getElementById('subscription-target-days').value),status=document.getElementById('owner-subscription-status');if(!login){status.textContent='Логинді енгізіңіз';return}button.disabled=true;
+ try{const r=await authCall(action==='view'?'owner_subscription_view':'owner_subscription_set',{login,plan:action==='premium'?'premium':'free',days});if(!r.ok){status.textContent=r.msg;return}status.textContent=(r.name||login)+' · '+r.subscription.plan+' · мерзімі: '+premiumDate(r.subscription.expires);window.__bridge.refresh().catch(()=>{})}finally{button.disabled=false}
+}
+const subscriptionAdmin=showAdmin;showAdmin=function(){const r=subscriptionAdmin.apply(this,arguments);mountSubscriptionAdmin();return r};
+subscriptionUI();
+
+// Compact engagement hub; existing test screens and security remain in use.
+async function showGrowth(){
+ if(!user)return;closeAppMenu();closeSecureReview();let s=document.getElementById('s-growth');if(!s){s=document.createElement('section');s.id='s-growth';s.className='screen';s.innerHTML='<div class="wrap wide"><button class="btn btn-s btn-sm" onclick="goHome()">← Басты бет</button><h1 style="margin:18px 0">Достар және челлендж</h1><div id="growth-body" aria-live="polite">Жүктелуде…</div></div>';document.body.appendChild(s)}showScr('s-growth');
+ const r=await authCall('growth',{action:'status'});if(!r.ok){document.getElementById('growth-body').textContent=r.msg;return}window.growthSummary=r;
+ const card=(title,text,buttons)=>`<div class="card"><h2>${title}</h2><p style="margin:12px 0">${text}</p>${buttons}</div>`;
+ const b=(label,mode)=>`<button class="btn btn-p" onclick="growthStart('${mode}',this)">${label}</button>`;
+ document.getElementById('growth-body').innerHTML='<div class="grid2">'+
+ card('Досыңмен жарыс','Бірдей 10 сұрақ · 15 минут · пән жұбы бірдей екі қатысушы. Күніне 3 жарыс ашуға болады.',b('Жарыс ашу','duel')+'<input id="growth-duel-code" class="inp" maxlength="10" placeholder="Досыңыздың жарыс коды" style="margin:12px 0"><button class="btn btn-s" onclick="growthStart(\'duel\',this,true)">Кодпен қатысу</button><button class="btn btn-s" onclick="growthDuelResult(this)">Жарыс нәтижесі</button><div id="growth-duel-results"></div>')+
+ card('Күннің челленджі','Күн сайын 5 сұрақ. Пән жұбыңыздағы оқушылармен бірдей жинақ.',b('Қатысу','challenge'))+
+ card('Бастапқы диагностика','10 сұрақ арқылы дайындық деңгейіңізді тексеріңіз. Бір рет тегін.',r.diagnostic.length?r.diagnostic.map(x=>`<p>${esc(x.name)}: ${x.correct}/${x.total} — ${x.correct/x.total<.6?'Қайталауға көңіл бөліңіз':'Жаттығуды жалғастырыңыз'}</p>`).join(''):b('Деңгейімді білу','diagnostic'))+
+ card('7 күндік марафон',`Аяқталған күндер: <b>${r.marathon}/7</b>. Күніне 5 сұрақ, үзілістен кейін жалғастыруға болады. ${r.marathon===7?'🏅 Марафон аяқталды!':''}`,r.marathon<7?b('Бүгінгі тапсырма','marathon'):'')+
+ card('Дос шақыру',`Сіздің код: <b>${esc(r.invite)}</b>. Досыңыз алғашқы тестін аяқтаса, сізге 1 толық тест. Сыйлық: ${r.rewards}/5. Досы кодты алғашқы тестіне дейін енгізеді.`, '<button class="btn btn-s" onclick="growthShareInvite()">Шақыруды бөлісу</button><input id="growth-invite-code" class="inp" maxlength="12" placeholder="Сізді шақырған досыңыздың коды" style="margin:12px 0"><button class="btn btn-s" onclick="growthReferral(this)">Кодты енгізу</button>')+
+ card('Нәтиже карточкасы','Соңғы аяқталған тестіңіздің нәтижесін сурет ретінде сақтаңыз. Жауаптар көрсетілмейді.',r.lastResult?'<button class="btn btn-p" onclick="growthShareResult()">Карточканы сақтау / бөлісу</button>':'Алдымен бір тестті аяқтаңыз.')+'</div><div class="card" style="margin-top:18px"><h2>Бүгінгі рейтинг</h2><p class="sub">Қатысушылар жасырын атпен көрсетіледі. Әр пән жұбының жинағы бөлек.</p>'+ (r.board.length?r.board.map((x,i)=>`<p>${i+1}. ${esc(x.label)} — ${x.score}/${x.max}</p>`).join(''):'Әзірге нәтиже жоқ.')+'</div>';
+}
+async function growthStart(mode,button,join=false){button.disabled=true;try{const code=join?document.getElementById('growth-duel-code').value.trim():'';if(join&&!code){alert('Жарыс кодын енгізіңіз');return}const r=await authCall('growth',{action:'start',mode,code});if(!r.ok){alert(r.msg);return}if(r.code){localStorage.setItem('ubt_growth_duel_'+user.id,r.code);await growthShareText('ҰБТ PLUS: бірге жарысайық! «Достар және челлендж» бөлімінде осы кодты енгіз: '+r.code)}st=baseState();st.secureExam=r.exam;st.questions=r.questions;st.subjectName=r.topic;st.timerSeconds=r.timer;st.isRealUbt=true;beginTest()}finally{button.disabled=false}}
+async function growthShareText(text){try{if(navigator.share){await navigator.share({text});return}await navigator.clipboard.writeText(text);alert('Көшірілді')}catch(e){if(e.name!=='AbortError')prompt('Мәтінді көшіріңіз:',text)}}
+function growthShareInvite(){growthShareText('ҰБТ PLUS-та бірге дайындалайық! Шақыру кодым: '+window.growthSummary.invite+'. Алғашқы тестке дейін «Достар және челлендж» бөлімінде енгіз. '+location.href.split('#')[0])}
+async function growthReferral(button){button.disabled=true;try{const r=await authCall('growth',{action:'referral',code:document.getElementById('growth-invite-code').value});alert(r.ok?'Код қабылданды. Алғашқы тестіңізді аяқтаңыз.':r.msg)}finally{button.disabled=false}}
+async function growthDuelResult(button){button.disabled=true;try{const code=document.getElementById('growth-duel-code').value.trim()||localStorage.getItem('ubt_growth_duel_'+user.id)||'';const r=await authCall('growth',{action:'duel_results',code});document.getElementById('growth-duel-results').textContent=r.ok?(r.results.length?r.results.map(x=>x.label+': '+x.score+'/'+x.max).join(' · '):'Қатысушылар тестті аяқтаған жоқ.'):r.msg}finally{button.disabled=false}}
+async function growthShareResult(){const r=window.growthSummary.lastResult;if(!r)return;const c=document.createElement('canvas');c.width=1080;c.height=650;const x=c.getContext('2d');const g=x.createLinearGradient(0,0,1080,650);g.addColorStop(0,'#142348');g.addColorStop(1,'#285dda');x.fillStyle=g;x.fillRect(0,0,1080,650);x.fillStyle='#fff';x.font='bold 48px sans-serif';x.fillText('ҰБТ PLUS',70,100);x.font='30px sans-serif';x.fillText(String(r.topic).slice(0,45),70,190);x.font='bold 110px sans-serif';x.fillText(r.score+' / '+r.max,70,355);x.font='30px sans-serif';x.fillText('Күн сайын мақсатқа бір қадам!',70,470);x.font='24px sans-serif';x.fillText('Достар және челлендж',70,560);c.toBlob(async blob=>{if(!blob)return;const f=new File([blob],'ubt-result.png',{type:'image/png'});try{if(navigator.canShare?.({files:[f]})){await navigator.share({files:[f]});return}}catch(e){if(e.name==='AbortError')return}const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=f.name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),30000)},'image/png')}
+const growthSubscriptionUI=subscriptionUI;subscriptionUI=function(){growthSubscriptionUI();if(!user)return;const nav=document.querySelector('#app-menu nav');if(nav&&!document.getElementById('growth-menu-entry')){const b=document.createElement('button');b.id='growth-menu-entry';b.className='app-menu-home';b.textContent='🏆 Достар және челлендж';b.onclick=showGrowth;nav.prepend(b)}const home=document.getElementById('ubd-home');if(home&&!document.getElementById('growth-home-entry')){const b=document.createElement('button');b.id='growth-home-entry';b.className='btn btn-s';b.style.marginBottom='16px';b.textContent='🏆 Жарыс · Челлендж · 7 күндік марафон';b.onclick=showGrowth;home.prepend(b)}};subscriptionUI();
+
 </script>
 <script>
 (function(){
