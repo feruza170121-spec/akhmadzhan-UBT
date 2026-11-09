@@ -598,30 +598,35 @@ def _start_exam(state, sess, d):
             if sess.get("codeGuest"):
                 return {"ok":False,"msg":"Аккаунтыңызға кіріңіз"}
             subject = tid[5:]
-            if subject not in _SUBJECT_NAMES and subject != "all":
-                return {"ok":False,"msg":"Пән табылмады"}
-            banks = _jload(state["db"].get("ubt_server_exam_real_bank", "{}"), dict, {})
-            pool = [dict(q,subject=key,subjectName=_SUBJECT_NAMES[key]) for key,rows in banks.items() if key in _SUBJECT_NAMES for q in rows] if subject == "all" else banks.get(subject, [])
-            count = d.get("count", 20)
-            minutes = d.get("minutes", 30)
-            if type(count) is not int or not 1 <= count <= 500 or type(minutes) is not int or not 1 <= minutes <= 300:
-                return {"ok":False,"msg":"Сұрақ саны 1–500, уақыт 1–300 минут болсын"}
-            if len(pool) < count:
-                return {"ok":False,"msg":"Бұл пәнде жеткілікті сұрақ жоқ. Қолжетімді: " + str(len(pool))}
+            banks = _real_bank_cached(state)
             rng = secrets.SystemRandom()
-            selected = rng.sample(pool,count)
             if subject == "all":
-                groups = {}
-                for q in pool: groups.setdefault(q["subject"], []).append(q)
-                if count >= len(groups):
-                    selected = [rng.choice(rows) for rows in groups.values()]
-                    used = {q["id"] for q in selected}
-                    selected += rng.sample([q for q in pool if q["id"] not in used], count-len(selected))
-                # Keep each subject together for the existing test navigation.
-                selected.sort(key=lambda q:list(_SUBJECT_NAMES).index(q["subject"]))
-            test = {"id":tid,"authorId":"system","topic":"ҰБТ базасы · аралас тест" if subject=="all" else "ҰБТ базасы",
-                    "subjectName":"Барлық пәндер" if subject=="all" else _SUBJECT_NAMES[subject],
-                    "questions":selected,"timerMin":minutes}
+                p1, p2 = d.get("p1"), d.get("p2")
+                profiles = set(_SUBJECT_NAMES) - {"history","reading","mathlit"}
+                if p1 not in profiles or p2 not in profiles or p1 == p2:
+                    return {"ok":False,"msg":"Екі түрлі бейіндік пәнді таңдаңыз"}
+                sections = [("history",20),("reading",10),("mathlit",10),(p1,40),(p2,40)]
+                missing = [_SUBJECT_NAMES[key]+": "+str(len(banks.get(key,[])))+"/"+str(n) for key,n in sections if len(banks.get(key,[])) < n]
+                if missing:
+                    return {"ok":False,"msg":"ҰБТ базасында толық тестке сұрақ жеткіліксіз: " + "; ".join(missing)}
+                selected = []
+                for key,n in sections:
+                    for i,q in enumerate(rng.sample(banks[key],n)):
+                        selected.append({**q,"subject":key,"subjectName":_SUBJECT_NAMES[key],"points":2 if n==40 and i>=30 else 1})
+                minutes = 240
+                title, subject_name = "ҰБТ базасы · жалпы тест · 140 балл", "5 пән"
+            else:
+                if subject not in _SUBJECT_NAMES:
+                    return {"ok":False,"msg":"Пән табылмады"}
+                count, minutes = d.get("count",20), d.get("minutes",30)
+                if type(count) is not int or not 1 <= count <= 500 or type(minutes) is not int or not 1 <= minutes <= 300:
+                    return {"ok":False,"msg":"Сұрақ саны 1–500, уақыт 1–300 минут болсын"}
+                pool = banks.get(subject,[])
+                if len(pool) < count:
+                    return {"ok":False,"msg":"Бұл пәнде жеткілікті сұрақ жоқ. Қолжетімді: " + str(len(pool))}
+                selected = [dict(q,subjectName=_SUBJECT_NAMES[subject]) for q in rng.sample(pool,count)]
+                title, subject_name = "ҰБТ базасы · пәндік тест", _SUBJECT_NAMES[subject]
+            test = {"id":tid,"authorId":"system","topic":title,"subjectName":subject_name,"questions":selected,"timerMin":minutes}
         if not test:
             test=_recover_received_test(state,sess,tid)
         if not test:
@@ -687,7 +692,7 @@ def _start_exam(state, sess, d):
             timer = 0
         timer = min(max(timer if timer > 0 else max(len(qs) * 90, 600), 60), 18000)
         state["exams"][nonce] = {"uid": uid, "testId": tid, "assignmentId": aid, "classId": test.get("classId"),
-                                 "owner": owner and not tid.startswith("real:"), "reward": bool(aid or test.get("classId") or test.get("adminApproved")),
+                                 "is140": tid == "real:all", "owner": owner and not tid.startswith("real:"), "reward": bool(aid or test.get("classId") or test.get("adminApproved")),
                                  "limit": test.get("limit"), "publishedQuota": published, "publishedLimit": _approved_limit(test), "questions": [dict(q) for q in qs],
                                  "topic": (str(test.get("subjectName") or "") + " · " + str(test.get("topic") or "Тест")).strip(" ·"),
                                  "expires": time.time() + timer + 90}
@@ -784,12 +789,12 @@ def _finish_exam(state, sess, d):
             prog_key = "ubt_prog_" + sess["uid"]
             prog = _jload(state["db"].get(prog_key, "[]"), list, [])
             result_id = "res_" + secrets.token_hex(12)
-            prog.append({"id": result_id, "t": int(time.time() * 1000), "score": score, "max": maximum, "topic": exam["topic"], "viol": 0, "serverVerified": True})
+            prog.append({"id": result_id, "t": int(time.time() * 1000), "score": score, "max": maximum, "topic": exam["topic"], "is140":bool(exam.get("is140")), "viol": 0, "serverVerified": True})
             _put(state, prog_key, _jdump(prog))
             hist_key = "ubt_hist_" + sess["uid"]
             hist = _jload(state["db"].get(hist_key, "[]"), list, [])
             hist.insert(0, {"id": result_id, "date": datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5))).strftime("%d.%m.%Y %H:%M"),
-                            "score": score, "max": maximum, "topic": exam["topic"], "answers": answers, "serverVerified": True,
+                            "score": score, "max": maximum, "topic": exam["topic"], "is140":bool(exam.get("is140")), "answers": answers, "serverVerified": True,
                             "questions": [{**q, "id": "examq" + str(i)} for i, q in enumerate(qs)]})
             _put(state, hist_key, _jdump(hist))
         review = [{**q, "id": "examq" + str(i)} for i, q in enumerate(qs)]
@@ -1482,6 +1487,17 @@ def _content_key(row, kind):
         return _jdump([row.get("subject"), sorted({_content_key(q,"question") for q in row.get("questions",[]) if isinstance(q,dict)})])
     fields = ("c","t","d") if kind == "glossary" else ("subject","title","body")
     return _jdump([norm(row.get(k)) for k in fields])
+
+def _real_bank_cached(state):
+    """Parse a large bank once per committed version, reuse for start and metadata."""
+    raw = state["db"].get("ubt_server_exam_real_bank", "{}")
+    cached = state.get("real_bank_cache")
+    if cached is not None and cached[0] is raw:
+        return cached[1]
+    rows = _jload(raw, dict, {})
+    state["real_bank_cache"] = (raw, rows)
+    state["real_bank_meta_cache"] = _jdump({key:len(qs) for key,qs in rows.items() if key in _SUBJECT_NAMES and isinstance(qs,list)})
+    return rows
 
 def _seed_real_bank_demo(state):
     # One-time samples for preview; deliberately not labelled as past exam questions.
@@ -3547,8 +3563,8 @@ def _snapshot(tok="", claim=""):
         for t in _jload(db.get("ubt_tests","[]"),list,[]) if isinstance(t,dict) and t.get("id") in saved_ids and _approved_test(t)])
     security=_jload(state["db"].get("ubt_server_access_content_security","{}"),dict,{})
     db["ubt_content_security_status"]=_jdump({"count":int(security.get(sess["uid"],{}).get("count",0)),"uid":sess["uid"]})
-    real_banks = _jload(state["db"].get("ubt_server_exam_real_bank", "{}"), dict, {})
-    db["ubt_real_bank_meta"] = _jdump({key:len(rows) for key, rows in real_banks.items() if key in _SUBJECT_NAMES and isinstance(rows,list)})
+    _real_bank_cached(state)
+    db["ubt_real_bank_meta"] = state["real_bank_meta_cache"]
     db["ubt_daily_motivation"] = _jdump(_daily_motivation())
     db["ubt_chat"] = chat
     deliveries = _jload(db.get("ubt_teacher_deliveries", "[]"), list, [])
@@ -4928,7 +4944,7 @@ body:not(.primary-owner) input,body:not(.primary-owner) textarea,body:not(.prima
   <div class="wrap">
     <div class="hdr"><h2>📘 Пән тесттерім</h2><p class="sub">Пәнді таңдаңыз да, база сұрақтарымен жаттығыңыз. Бұл — ресми емтихан емес; база жауаптары құрылғыға жүктеледі.</p></div>
     <div class="card" id="bank-subject-card">
-      <h3>1. Пәнді таңдаңыз</h3>
+      <h3>📚 Пәндер · жеке тапсыру</h3>
       <select id="bs-subject" aria-label="Таңдалған пән" style="display:none"></select>
       <div id="bs-subject-grid" class="subject-choices"></div>
       <h3 id="bs-heading" style="margin-bottom:6px">2. Сұрақтарды таңдаңыз</h3>
@@ -5458,6 +5474,9 @@ body.dark #s-login{background:radial-gradient(ellipse at 10% 8%,#273d7144,transp
 @media(max-height:650px) and (min-width:761px){#s-login>.wrap{justify-content:flex-start;padding-top:24px!important}#auth-sliding-panel,#auth-sliding-panel .auth-forms{min-height:470px}}
 </style>
 
+<style id="unt-mobile-performance">
+@media(max-width:700px){#s-real-ubt .grid2{grid-template-columns:minmax(0,1fr)}#s-real-ubt .wrap{width:100%;min-width:0}#s-real-ubt .card{min-width:0;overflow-wrap:anywhere}#s-real-ubt input,#s-real-ubt select,#s-real-ubt button{max-width:100%;min-height:44px}#s-real-ubt .subject-choice{animation:none!important;transition:none!important;box-shadow:none!important}#s-real-ubt .clean-hero{background:#263b78!important}}
+</style>
 <style id="real-ubt-red-entry">
 .clean-action[onclick="showRealUbtBank()"]{grid-column:1/-1;background:linear-gradient(125deg,#b91c1c,#ef4444)!important;border:2px solid #f87171!important;color:white!important;min-height:130px}
 .clean-action[onclick="showRealUbtBank()"] h3,.clean-action[onclick="showRealUbtBank()"] p,.clean-action[onclick="showRealUbtBank()"] span{color:white!important}
@@ -5475,40 +5494,57 @@ async function showRealUbtBank(){
  closeAppMenu();
  if(!document.getElementById('s-real-ubt')){
   const screen=document.createElement('section');screen.id='s-real-ubt';screen.className='screen';
-  screen.innerHTML='<div class="wrap wide"><button class="btn btn-s btn-sm" onclick="goHome()">← Басты бет</button><div class="clean-hero" style="margin-top:18px;background:linear-gradient(135deg,#17356c,#3767d8);color:#fff"><span style="letter-spacing:.12em;font-size:12px">ПӘН БОЙЫНША ДАЙЫНДЫҚ</span><h1 style="color:#fff;margin:12px 0">🎯 ҰБТ базасы</h1><p style="color:#e0eaff">Жалпы аралас тест тапсырыңыз немесе жеке пәнді таңдаңыз. Әр пәннің сұрақтары бөлек сақталады. Осы бөлімнің сұрақтары 140 форматқа және жеке пән тесттеріне қосылмайды.</p></div><div class="card"><h3>1. Пәнді таңдаңыз</h3><div id="real-ubt-subjects" class="grid2" style="margin-top:16px"></div></div><div class="card" style="margin-top:16px"><h3 id="real-ubt-title">2. Тестті баптаңыз</h3><div class="grid2" style="margin-top:16px"><div class="fg"><label>Сұрақ саны (1–500)</label><input id="real-ubt-count" type="number" min="1" max="500" value="20"></div><div class="fg"><label>Уақыт, минут</label><input id="real-ubt-minutes" type="number" min="1" max="300" value="30"></div></div><p id="real-ubt-status" class="sub" role="status"></p><button id="real-ubt-start" class="btn btn-p" style="margin-top:16px;background:#3977ee" onclick="startRealUbtBank()">▶ ҰБТ тестін бастау</button><p class="sub" style="margin-top:12px">Сұрақтар пәннің жеке базасынан кездейсоқ алынады. Көруге арналған 2 сұрақ [ҮЛГІ] деп белгіленген, олар нақты ҰБТ сұрақтары емес. Жалпы тест — базадағы пәндерден жиналатын аралас жаттығу. Бұл — админ енгізген дайындық жинағы; ҰТО-ның ресми сервисі емес.</p></div></div>';
+  screen.innerHTML='<div class="wrap wide"><button class="btn btn-s btn-sm" onclick="goHome()">← Басты бет</button><div class="clean-hero" style="margin-top:18px;background:linear-gradient(135deg,#17356c,#3767d8);color:#fff"><span style="letter-spacing:.12em;font-size:12px">ПӘН БОЙЫНША ДАЙЫНДЫҚ</span><h1 style="color:#fff;margin:12px 0">🎯 ҰБТ базасы</h1><p style="color:#e0eaff">Пәндік тест және жалпы тест — екі бөлек бөлім. Әр пәннің сұрақтары бөлек сақталады. Осы бөлімнің сұрақтары 140 форматқа және жеке пән тесттеріне қосылмайды.</p></div><div class="card"><h3>1. Пәнді таңдаңыз</h3><div id="real-ubt-subjects" class="grid2" style="margin-top:16px"></div></div><div class="card" style="margin-top:16px"><h3 id="real-ubt-title">2. Тестті баптаңыз</h3><div class="grid2" style="margin-top:16px"><div class="fg"><label>Сұрақ саны (1–500)</label><input id="real-ubt-count" type="number" min="1" max="500" value="20"></div><div class="fg"><label>Уақыт, минут</label><input id="real-ubt-minutes" type="number" min="1" max="300" value="30"></div></div><p id="real-ubt-status" class="sub" role="status"></p><button id="real-ubt-start" class="btn btn-p" style="margin-top:16px;background:#3977ee" onclick="startRealUbtBank()">▶ ҰБТ тестін бастау</button><p class="sub" style="margin-top:12px">Сұрақтар пәннің жеке базасынан кездейсоқ алынады. Көруге арналған 2 сұрақ [ҮЛГІ] деп белгіленген, олар нақты ҰБТ сұрақтары емес. Бұл — админ енгізген дайындық жинағы; ҰТО-ның ресми сервисі емес.</p></div></div>';
+  const full=document.createElement('section');full.className='card';full.style.marginTop='24px';
+  full.innerHTML='<h2>🎓 Жалпы тест · 140 формат</h2><p class="sub" style="margin:12px 0">Тек ҰБТ базасынан: Қазақстан тарихы — 20, оқу сауаттылығы — 10, математикалық сауаттылық — 10, екі бейіндік пәннен — 40 сұрақтан. Барлығы 120 сұрақ, ең көбі 140 балл, уақыт — 240 минут.</p><div class="grid2"><div class="fg"><label>1-бейіндік пән</label><select id="real-full-p1" onchange="renderRealUbtFull()"></select></div><div class="fg"><label>2-бейіндік пән</label><select id="real-full-p2" onchange="renderRealUbtFull()"></select></div></div><div id="real-full-status" class="sub" role="status"></div><p class="sub" style="margin:12px 0">Жаттығуда әр бейіндік пәннің алғашқы 30 сұрағы — 1 баллдан, соңғы 10 сұрағы — 2 баллдан бағаланады.</p><button id="real-full-start" class="btn btn-p" onclick="startRealUbtBank(true)">▶ Жалпы тестті бастау · 140 балл</button>';
+  screen.querySelector('.wrap').appendChild(full);
+  const opts=Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value&&!['history','reading','mathlit','other'].includes(o.value));
+  ['real-full-p1','real-full-p2'].forEach(id=>{full.querySelector('#'+id).innerHTML=opts.map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('')});
+  full.querySelector('#real-full-p1').value='math';full.querySelector('#real-full-p2').value='physics';
   document.body.appendChild(screen);
  }
  showScr('s-real-ubt');chooseRealUbtSubject(realUbtSubject);
- try{await window.__bridge.refresh();if(document.getElementById('s-real-ubt').classList.contains('active'))chooseRealUbtSubject(realUbtSubject)}catch(e){}
+
 }
-let realUbtSubject='all';
+let realUbtSubject='history';
 function realUbtCount(meta,key){return key==='all'?Object.values(meta).reduce((sum,n)=>sum+(Number(n)||0),0):Number(meta[key])||0}
 function renderRealUbtBank(){
- const meta=LS.get('ubt_real_bank_meta',{}),subjects=[{value:'all',textContent:'🎯 Жалпы тапсыру · барлық пәндер'},...Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value&&o.value!=='other')];
+ const meta=LS.get('ubt_real_bank_meta',{}),subjects=Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value&&o.value!=='other');
  const grid=document.getElementById('real-ubt-subjects');if(!grid)return;
- grid.innerHTML=subjects.map(o=>`<button type="button" class="subject-choice${realUbtSubject===o.value?' selected':''}" aria-pressed="${realUbtSubject===o.value}" onclick="chooseRealUbtSubject(${jsq(o.value)})"><span class="subject-mark">📚</span><span><strong>${esc(o.textContent)}</strong><small>${realUbtCount(meta,o.value)} сұрақ${o.value==='all'?' · аралас тест':' · жеке база'}</small></span></button>`).join('');
+ const gridSignature=JSON.stringify([realUbtSubject,meta]);
+ if(grid.dataset.signature!==gridSignature){grid.dataset.signature=gridSignature;grid.innerHTML=subjects.map(o=>`<button type="button" class="subject-choice${realUbtSubject===o.value?' selected':''}" aria-pressed="${realUbtSubject===o.value}" onclick="chooseRealUbtSubject(${jsq(o.value)})"><span class="subject-mark">📚</span><span><strong>${esc(o.textContent)}</strong><small>${realUbtCount(meta,o.value)} сұрақ${o.value==='all'?' · аралас тест':' · жеке база'}</small></span></button>`).join('');}
  const n=realUbtCount(meta,realUbtSubject);
  document.getElementById('real-ubt-title').textContent='2. '+(realUbtSubject==='all'?'Барлық пәндер · жалпы тапсыру':subjName(realUbtSubject)+' · ҰБТ тесті');
  document.getElementById('real-ubt-status').textContent=n?'Базада '+n+' сұрақ бар.':'Бұл пәнге әлі сұрақ жүктелмеген. Админ JSON арқылы қосқаннан кейін ашылады.';
- document.getElementById('real-ubt-start').disabled=!n||realUbtStarting;
+ document.getElementById('real-ubt-start').disabled=!n||realUbtStarting;renderRealUbtFull();
 }
 function chooseRealUbtSubject(key){
  realUbtSubject=key;const n=realUbtCount(LS.get('ubt_real_bank_meta',{}),key);
  document.getElementById('real-ubt-count').value=Math.min(20,n)||1;renderRealUbtBank();
 }
-async function startRealUbtBank(){
+function renderRealUbtFull(){
+ const a=document.getElementById('real-full-p1'),b=document.getElementById('real-full-p2');if(!a||!b)return;
+ const meta=LS.get('ubt_real_bank_meta',{}),sections=[['history',20],['reading',10],['mathlit',10],[a.value,40],[b.value,40]];
+ const missing=sections.filter(([k,n])=>(Number(meta[k])||0)<n);
+ const status=document.getElementById('real-full-status');
+ status.textContent=a.value===b.value?'Екі түрлі бейіндік пәнді таңдаңыз.':missing.length?'Толық тестке сұрақ жеткіліксіз: '+missing.map(([k,n])=>subjName(k)+' — '+(Number(meta[k])||0)+'/'+n).join('; '):'Барлық 5 пәннің сұрақтары жеткілікті. 120 сұрақ · 140 балл.';
+ document.getElementById('real-full-start').disabled=realUbtStarting||a.value===b.value||!!missing.length;
+}
+async function startRealUbtBank(full=false){
  if(!user||realUbtStarting)return;
  const count=Number(document.getElementById('real-ubt-count').value),minutes=Number(document.getElementById('real-ubt-minutes').value);
  if(!Number.isInteger(count)||count<1||count>500||!Number.isInteger(minutes)||minutes<1||minutes>300){alert('Сұрақ саны 1–500, уақыт 1–300 минут болсын');return}
  realUbtStarting=true;renderRealUbtBank();
+ const startBtn=document.getElementById(full?'real-full-start':'real-ubt-start');startBtn.textContent='Тест дайындалып жатыр…';
+ await new Promise(resolve=>requestAnimationFrame(()=>setTimeout(resolve,0)));
  try{
-  const actor=user.id,r=await authCall('start_exam',{testId:'real:'+realUbtSubject,count,minutes});
+  const actor=user.id,r=await authCall('start_exam',full?{testId:'real:all',p1:document.getElementById('real-full-p1').value,p2:document.getElementById('real-full-p2').value}:{testId:'real:'+realUbtSubject,count,minutes});
   if(!user||user.id!==actor)return;
   if(!r.ok)throw Error(r.msg||'Тест басталмады');
-  st=baseState();st.isRealUbt=true;st.secureExam=r.exam;st.allowInstantFeedback=r.allowInstantFeedback===true;st.questions=r.questions.map(q=>({...q,realBank:true,subjectName:q.subjectName||r.topic}));st.subjectName=r.topic;st.timerSeconds=r.timer;
+  st=baseState();st.isRealUbt=true;st.is140=full;st.secureExam=r.exam;st.allowInstantFeedback=r.allowInstantFeedback===true;st.questions=r.questions.map(q=>({...q,realBank:true,subjectName:q.subjectName||r.topic}));st.subjectName=r.topic;st.timerSeconds=r.timer;
   beginTest();
- }catch(e){document.getElementById('real-ubt-status').textContent=e.message||'Байланысты тексеріңіз'}
- finally{realUbtStarting=false;renderRealUbtBank()}
+ }catch(e){document.getElementById(full?'real-full-status':'real-ubt-status').textContent=e.message||'Байланысты тексеріңіз'}
+ finally{realUbtStarting=false;document.getElementById('real-ubt-start').textContent='▶ Пәндік тестті бастау';document.getElementById('real-full-start').textContent='▶ Жалпы тестті бастау · 140 балл';document.getElementById('real-ubt-start').disabled=!realUbtCount(LS.get('ubt_real_bank_meta',{}),realUbtSubject);renderRealUbtFull()}
 }
 
 const ubtAssetPromises=new Map();
@@ -5550,6 +5586,7 @@ function syncRefresh(){
     const bankChanged=!keys.length||keys.some(k=>k==='ubt_tests'||k==='ubt_profiles'||k.startsWith('ubt_question_catalog')||k.startsWith('ubt_qbank_')||k.startsWith('ubt_ubt140_selection_'));
     if(id==='s-ubt140'||id==='s-question-bank'){if(bankChanged)renderUbt140()}
     else if(id==='s-subj'){if(bankChanged)renderBankSubjectList()}
+    else if(id==='s-real-ubt'&&keys.includes('ubt_real_bank_meta'))renderRealUbtBank();
     else if(id==='s-formulas')renderFormulas();
     else if(id==='s-gloss')showGloss();
     else if(id==='s-home'&&(!keys.length||keys.some(k=>/ubt_(plan|streak|qotd|season|daily)/.test(k))))renderHomeExtras();
@@ -8083,7 +8120,14 @@ function confirmFinishDialog(){
 document.getElementById('finish-puzzle-answer').addEventListener('keydown',e=>{if(e.key==='Enter')confirmFinishDialog()});
 function pendingResultKey(){return 'ubt_pending_result_'+user.id}
 function rememberPendingResult(phase='submit'){
-  try{sessionStorage.setItem(pendingResultKey(),JSON.stringify({phase,exam:st.secureExam,answers:st.answers,questions:st.questions,subjectName:st.subjectName,viol:lock.viol,currentIndex:st.currentIndex}));return true}catch(e){return false}
+  try{
+    // Persist small answer updates without serializing all images on every tap.
+    sessionStorage.setItem(pendingResultKey(),JSON.stringify({phase,exam:st.secureExam,answers:st.answers,subjectName:st.subjectName,viol:lock.viol,currentIndex:st.currentIndex,is140:!!st.is140}));
+    if(st.pendingQuestionsRef!==st.questions){
+      try{sessionStorage.setItem(pendingResultKey()+'_questions',JSON.stringify(st.questions));st.pendingQuestionsRef=st.questions}catch(e){}
+    }
+    return true;
+  }catch(e){return false}
 }
 function showResultRetry(message){
   let box=document.getElementById('result-retry');if(box)box.remove();
@@ -8106,7 +8150,7 @@ async function submitSecureResult(){
     if(st!==attempt)return;
     if(!r.ok)throw Error(r.msg||'Сервер нәтижеңізді сақтай алмады');
     st.examSubmitting=false;st.secureExam=null;st.verifiedExam=r;
-    try{sessionStorage.removeItem(pendingResultKey())}catch(e){}
+    try{sessionStorage.removeItem(pendingResultKey());sessionStorage.removeItem(pendingResultKey()+'_questions')}catch(e){}
     st.questions=r.questions.map(q=>({...q,subjectName:q.subjectName||st.subjectName}));finishTest(true);
     try{await window.__bridge.refresh();refreshProfileBar()}catch(e){}
   }catch(e){if(st!==attempt)return;st.examSubmitting=false;showResultRetry(String(e.message||e)+(remembered?'':' Жергілікті сақтау орны қолжетімсіз — жауаптарды файлға сақтаңыз.'))}
@@ -8125,8 +8169,10 @@ async function resumeSavedExam(){
 function restorePendingResult(){
   if(!user||st.secureExam)return;
   let data;try{data=JSON.parse(sessionStorage.getItem(pendingResultKey())||'null')}catch(e){return}
-  if(!data||typeof data.exam!=='string'||!Array.isArray(data.questions)||!data.answers)return;
-  st=baseState();st.secureExam=data.exam;st.answers=data.answers;st.questions=data.questions;st.subjectName=data.subjectName;
+  if(!data||typeof data.exam!=='string'||!data.answers)return;
+  if(!Array.isArray(data.questions)){try{data.questions=JSON.parse(sessionStorage.getItem(pendingResultKey()+'_questions')||'[]')}catch(e){data.questions=[]}}
+  if(!Array.isArray(data.questions))data.questions=[];
+  st=baseState();st.is140=!!data.is140;st.secureExam=data.exam;st.answers=data.answers;st.questions=data.questions;st.subjectName=data.subjectName;
   lock.viol=data.viol||0;
   if(data.phase==='active'){
     st.currentIndex=Math.max(0,Math.min(Number(data.currentIndex)||0,st.questions.length-1));
