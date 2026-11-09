@@ -593,6 +593,21 @@ def _start_exam(state, sess, d):
     with state["lock"]:
         test = next((t for t in _jload(state["db"].get("ubt_tests", "[]"), list, [])
                      if isinstance(t, dict) and t.get("id") == tid), None)
+        if tid.startswith("real:"):
+            if sess.get("codeGuest"):
+                return {"ok":False,"msg":"Аккаунтыңызға кіріңіз"}
+            subject = tid[5:]
+            if subject not in _SUBJECT_NAMES:
+                return {"ok":False,"msg":"Пән табылмады"}
+            pool = _jload(state["db"].get("ubt_server_exam_real_bank", "{}"), dict, {}).get(subject, [])
+            count = d.get("count", 20)
+            minutes = d.get("minutes", 30)
+            if type(count) is not int or not 1 <= count <= 500 or type(minutes) is not int or not 1 <= minutes <= 300:
+                return {"ok":False,"msg":"Сұрақ саны 1–500, уақыт 1–300 минут болсын"}
+            if len(pool) < count:
+                return {"ok":False,"msg":"Бұл пәнде жеткілікті сұрақ жоқ. Қолжетімді: " + str(len(pool))}
+            test = {"id":tid,"authorId":"system","topic":"ҰБТ базасы","subjectName":_SUBJECT_NAMES[subject],
+                    "questions":secrets.SystemRandom().sample(pool,count),"timerMin":minutes}
         if not test:
             test=_recover_received_test(state,sess,tid)
         if not test:
@@ -658,7 +673,7 @@ def _start_exam(state, sess, d):
             timer = 0
         timer = min(max(timer if timer > 0 else max(len(qs) * 90, 600), 60), 18000)
         state["exams"][nonce] = {"uid": uid, "testId": tid, "assignmentId": aid, "classId": test.get("classId"),
-                                 "owner": owner, "reward": bool(aid or test.get("classId") or test.get("adminApproved")),
+                                 "owner": owner and not tid.startswith("real:"), "reward": bool(aid or test.get("classId") or test.get("adminApproved")),
                                  "limit": test.get("limit"), "publishedQuota": published, "publishedLimit": _approved_limit(test), "questions": [dict(q) for q in qs],
                                  "topic": (str(test.get("subjectName") or "") + " · " + str(test.get("topic") or "Тест")).strip(" ·"),
                                  "expires": time.time() + timer + 90}
@@ -1454,10 +1469,63 @@ def _content_key(row, kind):
     fields = ("c","t","d") if kind == "glossary" else ("subject","title","body")
     return _jdump([norm(row.get(k)) for k in fields])
 
+def _real_bank_import(state, sess, d):
+    """Owner-managed, isolated past-UNT question storage, partitioned by subject."""
+    if not sess or not sess.get("admin") or sess.get("uid") != "admin" or sess.get("codeGuest"):
+        return {"ok": False, "msg": "Тек басты админге қолжетімді"}
+    subject = d.get("subject")
+    if subject not in _SUBJECT_NAMES:
+        return {"ok": False, "msg": "Пәнді таңдаңыз"}
+    data = d.get("data")
+    if isinstance(data, dict):
+        data = data.get("tests", data.get("items", data))
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list) or not 1 <= len(data) <= 5000:
+        return {"ok": False, "msg": "JSON ішінде 1–5000 сұрақ не тест тізімі болсын"}
+    try:
+        if all(isinstance(q, dict) and "questions" not in q for q in data):
+            data = [{"questions": data}]
+        prepared = []
+        for item in data:
+            if not isinstance(item, dict) or not isinstance(item.get("questions"), list) or not item["questions"]:
+                raise ValueError("questions тізімі бос болмауы керек")
+            qs = [dict(q, text=q.get("text", q.get("question"))) if isinstance(q, dict) else q for q in item["questions"]]
+            for offset in range(0, len(qs), 500):
+                clean = _school_test_payload([{**item, "subject": subject, "questions": qs[offset:offset+500]}])[0]
+                for q in clean["questions"]:
+                    q.update(realBank=True, subject=subject, source=str(item.get("source") or d.get("title") or "Админ енгізген ҰБТ жинағы")[:300])
+                    prepared.append(q)
+                if len(prepared) > 5000:
+                    raise ValueError("Бір файлда ең көбі 5000 сұрақ болсын")
+        with state["lock"]:
+            banks = _jload(state["db"].get("ubt_server_exam_real_bank", "{}"), dict, {})
+            rows = list(banks.get(subject, []))
+            # Reversed answer order must not create another copy of the same question.
+            def identity(q):
+                return _jdump([" ".join(q["text"].split()).casefold(), sorted(" ".join(x.split()).casefold() for x in q["options"])])
+            seen = {identity(q) for q in rows}
+            added = duplicates = 0
+            for q in prepared:
+                key = identity(q)
+                if key in seen:
+                    duplicates += 1
+                    continue
+                seen.add(key); rows.append(q); added += 1
+            if len(rows) > 20000:
+                raise ValueError("Бір пәнде ең көбі 20000 сұрақ сақталады")
+            banks[subject] = rows
+            _put(state, "ubt_server_exam_real_bank", _jdump(banks)); _commit(state)
+        return {"ok": True, "added": added, "duplicates": duplicates}
+    except (ValueError, TypeError, KeyError) as error:
+        return {"ok": False, "msg": str(error)}
+
 def _owner_content_request(state, sess, d):
     if not sess or not sess.get("admin") or sess.get("uid") != "admin" or sess.get("codeGuest"):
         return {"ok":False,"msg":"Тек басты админге қолжетімді"}
     kind=d.get("kind")
+    if kind == "real_tests":
+        return _real_bank_import(state, sess, d)
     if kind not in ("tests","glossary","formulas","cleanup"):
         return {"ok":False,"msg":"Материал түрін таңдаңыз"}
     with state["lock"]:
@@ -3081,6 +3149,8 @@ def _authorize(state, sess, k, v, chat_token=""):
         return None
     if k == "ubt_chat":
         return _merge_chat(state, sess, v, chat_token)
+    if k == "ubt_real_bank_meta":
+        return None
     if k == "ubt_site_controls":
         return None
     if _jload(state["db"].get("ubt_site_controls", "{}"), dict, {}).get("maintenance") and not (sess and sess["admin"]):
@@ -3446,6 +3516,8 @@ def _snapshot(tok="", claim=""):
         for t in _jload(db.get("ubt_tests","[]"),list,[]) if isinstance(t,dict) and t.get("id") in saved_ids and _approved_test(t)])
     security=_jload(state["db"].get("ubt_server_access_content_security","{}"),dict,{})
     db["ubt_content_security_status"]=_jdump({"count":int(security.get(sess["uid"],{}).get("count",0)),"uid":sess["uid"]})
+    real_banks = _jload(state["db"].get("ubt_server_exam_real_bank", "{}"), dict, {})
+    db["ubt_real_bank_meta"] = _jdump({key:len(rows) for key, rows in real_banks.items() if key in _SUBJECT_NAMES and isinstance(rows,list)})
     db["ubt_daily_motivation"] = _jdump(_daily_motivation())
     db["ubt_chat"] = chat
     deliveries = _jload(db.get("ubt_teacher_deliveries", "[]"), list, [])
@@ -4355,6 +4427,7 @@ body:not(.primary-owner) input,body:not(.primary-owner) textarea,body:not(.prima
     <button type="button" class="app-menu-home" onclick="showSchoolPeople('students')">Оқушылар</button>
     <button type="button" class="app-menu-home" onclick="showSchoolClasses()">Сыныптар тізімі</button>
     <button type="button" class="app-menu-home" onclick="showApprovedTests()">Админ мақұлдаған тесттер</button><button type="button" class="app-menu-home" onclick="showNotifications()">Хабарламалар <span class="test-notification-count"></span></button>
+    <button class="mode" style="border-color:#3977ee;background:#3977ee15" onclick="showRealUbtBank()"><span class="ic">🎯</span><h3>ҰБТ базасы</h3><p>ҰБТ тесттері · әр пәннің сұрақтары бөлек</p></button>
     <button class="mode" onclick="showUbt140()"><span class="ic">🎓</span><h3>140 формат</h3><p>Сұрақтарды базадан таңдаңыз немесе кездейсоқ алыңыз</p></button>
     <button class="mode" onclick="startQuickSubject()"><span class="ic">📘</span><h3>Пән тесттерім</h3><p>Әр пән бөлек · базадан өзім таңдау немесе кездейсоқ бастау</p></button>
     <details class="app-menu-group" open><summary>Сабақ</summary><div class="app-menu-items">      <div class="mode" onclick="showLessons()"><div class="ic">🎬</div><h3>Анимация сабақтар</h3><p>Анимация + код</p></div></div></details>
@@ -5358,6 +5431,49 @@ body.dark #s-login{background:radial-gradient(ellipse at 10% 8%,#273d7144,transp
 .auth-welcome-caption{display:block;color:#cbd4fc;font-size:11px;font-weight:700;letter-spacing:.13em;margin-bottom:22px}.dashboard-enter .clean-hero,.dashboard-enter .clean-stats,.dashboard-enter .clean-actions,.dashboard-enter .clean-recent{animation:dashboard-arrive .65s both!important}.dashboard-enter .clean-stats{animation-delay:.12s!important}.dashboard-enter .clean-actions{animation-delay:.24s!important}.dashboard-enter .clean-recent{animation-delay:.36s!important}@keyframes dashboard-arrive{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}#quick-account-login:empty{display:none}#quick-account-login:not(:empty){margin-bottom:23px;padding-bottom:17px;border-bottom:1px solid #e0e6f1}.quick-forget{display:block;margin:9px auto 0;border:0;background:none;color:#7b879f;padding:6px;cursor:pointer;font-size:12px}.auth-welcome-caption{animation:dashboard-arrive .6s both}@media(max-width:760px){.auth-welcome-caption{margin-bottom:10px;font-size:10px}}@media(prefers-reduced-motion:reduce){.dashboard-enter .clean-hero,.dashboard-enter .clean-stats,.dashboard-enter .clean-actions,.dashboard-enter .clean-recent,.auth-welcome-caption{animation:none!important}}
 </style>
 <script type="text/plain" id="app-src">
+
+
+// Isolated UNT bank: only counts are synced; questions arrive through server exams.
+let realUbtStarting=false;
+async function showRealUbtBank(){
+ if(!user){alert('Алдымен аккаунтыңызға кіріңіз');return}
+ closeAppMenu();
+ if(!document.getElementById('s-real-ubt')){
+  const screen=document.createElement('section');screen.id='s-real-ubt';screen.className='screen';
+  screen.innerHTML='<div class="wrap wide"><button class="btn btn-s btn-sm" onclick="goHome()">← Басты бет</button><div class="clean-hero" style="margin-top:18px;background:linear-gradient(135deg,#17356c,#3767d8);color:#fff"><span style="letter-spacing:.12em;font-size:12px">ПӘН БОЙЫНША ДАЙЫНДЫҚ</span><h1 style="color:#fff;margin:12px 0">🎯 ҰБТ базасы</h1><p style="color:#e0eaff">Әр пәннің сұрақтары жеке сақталады. Осы бөлімнің сұрақтары 140 форматқа және жеке пән тесттеріне қосылмайды.</p></div><div class="card"><h3>1. Пәнді таңдаңыз</h3><div id="real-ubt-subjects" class="grid2" style="margin-top:16px"></div></div><div class="card" style="margin-top:16px"><h3 id="real-ubt-title">2. Тестті баптаңыз</h3><div class="grid2" style="margin-top:16px"><div class="fg"><label>Сұрақ саны (1–500)</label><input id="real-ubt-count" type="number" min="1" max="500" value="20"></div><div class="fg"><label>Уақыт, минут</label><input id="real-ubt-minutes" type="number" min="1" max="300" value="30"></div></div><p id="real-ubt-status" class="sub" role="status"></p><button id="real-ubt-start" class="btn btn-p" style="margin-top:16px;background:#3977ee" onclick="startRealUbtBank()">▶ ҰБТ тестін бастау</button><p class="sub" style="margin-top:12px">Сұрақтар пәннің жеке базасынан кездейсоқ алынады. Бұл — админ енгізген дайындық жинағы; ҰТО-ның ресми сервисі емес.</p></div></div>';
+  document.body.appendChild(screen);
+ }
+ showScr('s-real-ubt');renderRealUbtBank();
+ try{await window.__bridge.refresh();if(document.getElementById('s-real-ubt').classList.contains('active'))renderRealUbtBank()}catch(e){}
+}
+let realUbtSubject='history';
+function renderRealUbtBank(){
+ const meta=LS.get('ubt_real_bank_meta',{}),subjects=Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value&&o.value!=='other');
+ const grid=document.getElementById('real-ubt-subjects');if(!grid)return;
+ grid.innerHTML=subjects.map(o=>`<button type="button" class="subject-choice${realUbtSubject===o.value?' selected':''}" aria-pressed="${realUbtSubject===o.value}" onclick="chooseRealUbtSubject(${jsq(o.value)})"><span class="subject-mark">📚</span><span><strong>${esc(o.textContent)}</strong><small>${Number(meta[o.value])||0} сұрақ · жеке база</small></span></button>`).join('');
+ const n=Number(meta[realUbtSubject])||0;
+ document.getElementById('real-ubt-title').textContent='2. '+subjName(realUbtSubject)+' · ҰБТ тесті';
+ document.getElementById('real-ubt-status').textContent=n?'Базада '+n+' сұрақ бар.':'Бұл пәнге әлі сұрақ жүктелмеген. Админ JSON арқылы қосқаннан кейін ашылады.';
+ document.getElementById('real-ubt-start').disabled=!n||realUbtStarting;
+}
+function chooseRealUbtSubject(key){
+ realUbtSubject=key;const n=Number(LS.get('ubt_real_bank_meta',{})[key])||0;
+ document.getElementById('real-ubt-count').value=Math.min(20,n)||1;renderRealUbtBank();
+}
+async function startRealUbtBank(){
+ if(!user||realUbtStarting)return;
+ const count=Number(document.getElementById('real-ubt-count').value),minutes=Number(document.getElementById('real-ubt-minutes').value);
+ if(!Number.isInteger(count)||count<1||count>500||!Number.isInteger(minutes)||minutes<1||minutes>300){alert('Сұрақ саны 1–500, уақыт 1–300 минут болсын');return}
+ realUbtStarting=true;renderRealUbtBank();
+ try{
+  const actor=user.id,r=await authCall('start_exam',{testId:'real:'+realUbtSubject,count,minutes});
+  if(!user||user.id!==actor)return;
+  if(!r.ok)throw Error(r.msg||'Тест басталмады');
+  st=baseState();st.isRealUbt=true;st.secureExam=r.exam;st.allowInstantFeedback=r.allowInstantFeedback===true;st.questions=r.questions.map(q=>({...q,realBank:true,subjectName:r.topic}));st.subjectName=r.topic;st.timerSeconds=r.timer;
+  beginTest();
+ }catch(e){document.getElementById('real-ubt-status').textContent=e.message||'Байланысты тексеріңіз'}
+ finally{realUbtStarting=false;renderRealUbtBank()}
+}
 
 const ubtAssetPromises=new Map();
 function ubtLoadScript(url){
@@ -9492,6 +9608,7 @@ function showRanking(mode){
 function getBm(){return LS.get('ubt_bm_'+user.id,[])}
 function isBm(q){return getBm().some(x=>x.text===q.text)}
 function toggleBm(q){
+  if(q.realBank){alert("Бұл сұрақ тек ҰБТ базасында сақталады");return;} 
   const a=getBm(),i=a.findIndex(x=>x.text===q.text);
   if(i>=0)a.splice(i,1);else a.unshift({id:q.id,text:q.text,options:q.options.slice(),correct:q.correct,subjectName:q.subjectName||st.subjectName||'',points:1});
   LS.set('ubt_bm_'+user.id,a);
@@ -10398,7 +10515,7 @@ function rememberQuestionsInBank(subject,questions,origin,restore=false){
   let added=0,restored=false;
   for(const q of questions){
     if(bank.length>=10000)break;
-    if(!q||typeof q.text!=='string'||!q.text.trim()||!Array.isArray(q.options)||q.options.length<2)continue;
+    if(!q||q.realBank||typeof q.text!=='string'||!q.text.trim()||!Array.isArray(q.options)||q.options.length<2)continue;
     if(q.img&&!(typeof q.img==='string'&&q.img.length<120000&&/^data:image\/(jpeg|png|webp);base64,/.test(q.img)))continue;
     const correct=Number(q.correct);
     if(!Number.isInteger(correct)||correct<0||correct>=q.options.length)continue;
@@ -10430,7 +10547,7 @@ function ubtQuestionBank(copy=true){
   const out=[],seen=new Set(),catalog=LS.get('ubt_question_catalog',[]);
   const deleted=new Set(LS.get('ubt_question_catalog_deleted',[]));
   function add(q,subject,uid,name,source){
-    if(!q||typeof q.text!=='string'||!q.text.trim()||!Array.isArray(q.options)||q.options.length<2||!Number.isInteger(q.correct)||q.correct<0||q.correct>=q.options.length)return;
+    if(!q||q.realBank||typeof q.text!=='string'||!q.text.trim()||!Array.isArray(q.options)||q.options.length<2||!Number.isInteger(q.correct)||q.correct<0||q.correct>=q.options.length)return;
     if(!user.isAdmin&&!isTeacherUser()&&uid!==user.id)return;
     const row={...q,subject:subject||'other',authorId:uid,authorName:name||uid,source:source||'Базаға қосылған'};
     const identity=bankQuestionIdentity(row);
@@ -10887,6 +11004,7 @@ function ubdFilter(){ubdPage=0;ubdRender(false)}
 function ubtQuickItems(){
  const items=[
   {id:'exam',label:'140 формат',run:()=>showUbt140()},
+  {id:'real-ubt',label:'ҰБТ базасы',run:()=>showRealUbtBank()},
   {id:'subjects',label:'Пән тесті',run:()=>startQuickSubject()},
   {id:'students',label:'Оқушылар',run:()=>showSchoolPeople('students')},
   {id:'teachers',label:'Мұғалімдер',run:()=>showSchoolPeople('teachers')},
@@ -10931,7 +11049,7 @@ function renderCleanHome(){
  const rows=ubdRows(true),signature=[user.id,user.name,user.isAdmin,ubdHomeCache.histRaw,ubdHomeCache.progRaw];
  if(host.__cleanSignature&&signature.every((value,i)=>value===host.__cleanSignature[i]))return;host.__cleanSignature=signature;
  const total=rows.length,avg=total?Math.round(rows.reduce((n,r)=>n+ubdPct(r),0)/total):0,best=total?Math.round(Math.max(...rows.map(ubdPct))):0;
- const actions=[['140 формат','Толық тестке дайындық','01','showUbt140()'],['Пән бойынша','Қажетті пәнді өзіңіз таңдаңыз','02','startQuickSubject()'],['Қатемен жұмыс','Тест пен дұрыс жауаптарды қараңыз','03','showMistakes()'],['Жария тесттер','Ортақ тесттерді іздеу және тапсыру','04','showPublicTests()']];
+ const actions=[['ҰБТ базасы','ҰБТ тесттері · пән бойынша бөлек','🎯','showRealUbtBank()'],['140 формат','Толық тестке дайындық','01','showUbt140()'],['Пән бойынша','Қажетті пәнді өзіңіз таңдаңыз','02','startQuickSubject()'],['Қатемен жұмыс','Тест пен дұрыс жауаптарды қараңыз','03','showMistakes()'],['Жария тесттер','Ортақ тесттерді іздеу және тапсыру','04','showPublicTests()']];
  host.innerHTML=`<section class="clean-hero"><div><span class="clean-eyebrow">ҰБТ PLUS · ЖЕКЕ КАБИНЕТ</span><h1>Сәлем, ${esc(user.name)}!</h1><p>Бүгінгі дайындықты бір қадамнан бастаңыз.</p><div class="clean-hero-actions"><button type="button" class="btn btn-p" onclick="showUbt140()">Тест бастау ↗</button><button type="button" class="btn btn-s" onclick="showMyProfile()">Менің профилім</button></div></div><div class="clean-hero-mark" aria-hidden="true">ҰБТ<span>PLUS</span></div></section><section class="clean-stats" aria-label="Нәтижелер"><div><span>Тапсырылған тест</span><strong>${total}</strong></div><div><span>Орташа нәтиже</span><strong>${total?avg+'%':'—'}</strong></div><div><span>Үздік нәтиже</span><strong>${total?best+'%':'—'}</strong></div><button type="button" onclick="showAnalytics()"><span>Толық статистика</span><strong>Ашу ↗</strong></button></section><section class="clean-section"><div class="clean-section-head"><div><span class="clean-eyebrow">ДАЙЫНДЫҚ</span><h2>Неден бастаймыз?</h2></div><button type="button" class="btn btn-s btn-sm" onclick="openAppMenu()">Барлық бөлімдер</button></div><div class="clean-actions">${actions.map(([title,desc,num,action])=>`<button type="button" class="clean-action" onclick="${action}"><span class="clean-action-number">${num}</span><h3>${title}</h3><p>${desc}</p><span class="clean-action-arrow" aria-hidden="true">↗</span></button>`).join('')}</div></section><section class="clean-section clean-recent"><div class="clean-section-head"><div><span class="clean-eyebrow">ІЛГЕРІЛЕУ</span><h2>Соңғы нәтижелер</h2></div><button type="button" class="btn btn-s btn-sm" onclick="showHistory()">Барлық тарих ↗</button></div>${total?rows.slice(-5).reverse().map(r=>`<div class="clean-result"><span class="clean-result-icon" aria-hidden="true">✓</span><div><strong>${esc(r.topic)}</strong><p>${esc(r.date||'')}</p></div><b>${r.score}<small> / ${r.max}</small></b></div>`).join(''):'<div class="clean-empty"><strong>Алғашқы нәтижеңіз осында көрінеді</strong><p>Пәндік немесе 140 форматтағы тестті аяқтаңыз.</p></div>'}</section>`;
 }
 
@@ -11614,7 +11732,7 @@ function mountContentPanel(){
  if(!isOwner()){document.getElementById('owner-json-panel')?.remove();return}
  if(document.getElementById('owner-json-panel'))return;
  const host=document.createElement('section');host.id='owner-json-panel';host.className='card owner-json-only';
- host.innerHTML='<h3>JSON файлдан материал енгізу</h3><p class="sub">Тест, глоссарий немесе формула қосыңыз. Дәл қайталанған жазбалар қосылмайды. Тесттер алдымен жеке базаға сақталады.</p><div class="json-controls" style="margin-top:14px"><div class="fg"><label>Материал түрі</label><select id="owner-json-kind"><option value="tests">Тесттер</option><option value="glossary">Глоссарий</option><option value="formulas">Формулалар</option></select></div><div class="fg"><label>Пән *</label><select id="owner-json-subject"><option value="">Пәнді таңдаңыз</option></select></div></div><div class="fg"><label>JSON файл (5 МБ дейін)</label><input id="owner-json-file" type="file" accept=".json,application/json"></div><p id="owner-json-preview" class="sub" role="status" aria-live="polite"></p><div class="row" style="margin-top:12px"><button type="button" class="btn btn-p" id="owner-json-save">Базаға енгізу</button><button type="button" class="btn btn-s" id="owner-json-example">JSON үлгісі</button><button type="button" class="btn btn-s" id="owner-json-clean">Қайталанғандарын тазалау</button></div><details style="margin-top:12px"><summary>JSON форматы</summary><p class="sub">Тест: questions ішіндегі text, options, correct (дұрыс жауап индексі 0-ден басталады). Глоссарий: term, definition. Формула: title, formula. Бір объектіні немесе объектілер тізімін енгізуге болады.</p></details>';
+ host.innerHTML='<h3>JSON файлдан материал енгізу</h3><p class="sub">Тест, глоссарий немесе формула қосыңыз. Дәл қайталанған жазбалар қосылмайды. «Нақты ҰБТ базасына қосу» — тек ҰБТ бөліміне сақтайды. Басқа тесттерге араласпайды. Сұрақтардың дереккөзін өзіңіз тексеріңіз.</p><div class="json-controls" style="margin-top:14px"><div class="fg"><label>Материал түрі</label><select id="owner-json-kind" style="border:2px solid #3977ee;color:#3977ee;font-weight:700"><option value="real_tests">🔵 Нақты ҰБТ базасына қосу</option><option value="tests">Жеке тесттер базасына қосу</option><option value="glossary">Глоссарий</option><option value="formulas">Формулалар</option></select></div><div class="fg"><label>Пән *</label><select id="owner-json-subject"><option value="">Пәнді таңдаңыз</option></select></div></div><div class="fg"><label>JSON файл (5 МБ дейін)</label><input id="owner-json-file" type="file" accept=".json,application/json"></div><p id="owner-json-preview" class="sub" role="status" aria-live="polite"></p><div class="row" style="margin-top:12px"><button type="button" class="btn btn-p" id="owner-json-save">Базаға енгізу</button><button type="button" class="btn btn-s" id="owner-json-example">JSON үлгісі</button><button type="button" class="btn btn-s" id="owner-json-clean">Қайталанғандарын тазалау</button></div><details style="margin-top:12px"><summary>JSON форматы</summary><p class="sub">Тест: questions ішіндегі text, options, correct (дұрыс жауап индексі 0-ден басталады). Глоссарий: term, definition. Формула: title, formula. Бір объектіні немесе объектілер тізімін енгізуге болады.</p></details>';
  document.querySelector('#s-admin .wrap').prepend(host);
  const subjects=['history','reading','mathlit','math','physics','chemistry','biology','geography','informatics','english','kazakh','worldhistory','law'];
  const sel=host.querySelector('#owner-json-subject');subjects.forEach(key=>sel.add(new Option(subjName(key),key)));
@@ -11632,7 +11750,7 @@ function mountContentPanel(){
   }catch(e){status.textContent=e.message||'Қате пайда болды'}finally{pending=false;host.querySelectorAll('button').forEach(b=>b.disabled=false)}
  }
  host.querySelector('#owner-json-save').onclick=()=>submit(false);host.querySelector('#owner-json-clean').onclick=()=>submit(true);
- host.querySelector('#owner-json-example').onclick=()=>{const kind=host.querySelector('#owner-json-kind').value,examples={tests:[{topic:'Үлгі тест',questions:[{text:'2 + 2 = ?',options:['3','4','5','6'],correct:1}]}],glossary:[{term:'Алгоритм',definition:'Есепті шешуге арналған әрекеттер тізбегі.'}],formulas:[{title:'Жылдамдық',formula:'v = s / t'}]};const url=URL.createObjectURL(new Blob([JSON.stringify(examples[kind],null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=kind+'_example.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};
+ host.querySelector('#owner-json-example').onclick=()=>{const kind=host.querySelector('#owner-json-kind').value,examples={real_tests:[{source:'Дереккөзін және жылын жазыңыз',topic:'ҰБТ жинағы',questions:[{text:'Мұнда тексерілген сұрақ мәтінін жазыңыз',options:['А нұсқасы','Б нұсқасы','В нұсқасы','Г нұсқасы'],correct:0}]}],tests:[{topic:'Үлгі тест',questions:[{text:'2 + 2 = ?',options:['3','4','5','6'],correct:1}]}],glossary:[{term:'Алгоритм',definition:'Есепті шешуге арналған әрекеттер тізбегі.'}],formulas:[{title:'Жылдамдық',formula:'v = s / t'}]};const url=URL.createObjectURL(new Blob([JSON.stringify(examples[kind],null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=kind+'_example.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};
 }
 const admin=showAdmin;showAdmin=function(){const r=admin.apply(this,arguments);mountContentPanel();return r};
 const show=showScr;showScr=function(id){const r=show.apply(this,arguments);if(!isOwner())document.getElementById('owner-json-panel')?.remove();return r};
