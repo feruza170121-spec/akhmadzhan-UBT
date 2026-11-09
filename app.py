@@ -4,7 +4,6 @@ import binascii
 import hashlib
 import hmac
 import datetime
-import contextvars
 import json
 import math
 import os
@@ -32,7 +31,7 @@ _MAX_BOOK_BYTES = 5 * 1024 * 1024
 _PBKDF_ITER = 100_000
 _MIN_PASS = 10
 _SERVER_ONLY = ("ubt_admin_pass", "ubt_admin_ph", "ubt_owner_name")
-_SERVER_PREFIXES = ("ubt_server_exam_", "ubt_server_visits_", "ubt_server_animation_", "ubt_server_access_", "ubt_profile_")
+_SERVER_PREFIXES = ("ubt_server_exam_", "ubt_server_visits_", "ubt_server_animation_", "ubt_server_access_")
 _ADMIN_NAMES = ("админ", "admin")
 _USER_TTL = 14 * 86400
 _ADMIN_TTL = 12 * 3600
@@ -43,7 +42,6 @@ _PRIVATE_PREFIXES = _USER_PREFIXES + ("ubt_exam_done_",)
 _SINGLE_DEVICE = True
 _MAX_FAILS = 5
 _FAIL_WINDOW = 600
-_ADMIN_AUDIT_CONTEXT = contextvars.ContextVar("ubt_admin_audit_context", default=None)
 
 def _sb_conf():
     url = os.environ.get("SUPABASE_URL")
@@ -180,108 +178,32 @@ def _store():
     state = {"db": data, "sb": _sb_conf(), "ok": False, "err": "", "dirty": set(), "deleted": set(),
              "lock": threading.RLock(), "flush_lock": threading.Lock(), "retry_t": 0.0,
              "flushing": False, "flush_again": False, "syncing": False,
-             "local_timer": None, "local_dirty": False, "local_save_lock": threading.Lock(),
              "sessions": {}, "chat_claims": {}, "fails": {}, "reg": {}, "exams": {}, "rev": 1}
     _remote_sync(state)
-    _migrate_profile_storage(state)
     _restore_exams(state)
     _seed_real_bank_demo(state)
     _migrate_start(state)
     return state
 
 def _put(state, k, v):
-    if k == "ubt_profiles":
-        if k in state["db"] and state["db"][k] == v and k not in state["deleted"]:
-            existing_profiles = _jload(v, dict, {}) if isinstance(v, str) else {}
-            ready = all(isinstance(profile, dict) and profile.get("id") and
-                        state["db"].get("ubt_profile_" + (str(profile["id"]) if re.fullmatch(r"[A-Za-z0-9_-]{1,120}", str(profile["id"])) else hashlib.sha256(str(profile["id"]).encode()).hexdigest())) == _jdump(profile)
-                        for profile in existing_profiles.values())
-            if ready:
-                return
-        state["db"][k] = v  # compatibility/cache for existing application code and browser snapshot
-        audit = _ADMIN_AUDIT_CONTEXT.get()
-        if audit is not None:
-            audit["keys"].add("ubt_profiles")
-        state["rev"] = state.get("rev", 1) + 1
-        state["deleted"].add(k) if state.get("sb") else state["deleted"].discard(k)
-        state["dirty"].discard(k)  # Supabase stores profiles as individual ubt_profile_<uid> rows
-        profiles = _jload(v, dict, {}) if isinstance(v, str) else {}
-        live = set()
-        for map_key, profile in profiles.items():
-            if not isinstance(profile, dict):
-                continue
-            uid = str(profile.get("id") or "")
-            if not uid:
-                continue
-            suffix = uid if re.fullmatch(r"[A-Za-z0-9_-]{1,120}", uid) else hashlib.sha256(uid.encode()).hexdigest()
-            profile_key = "ubt_profile_" + suffix
-            live.add(profile_key)
-            encoded = _jdump(profile)
-            if state["db"].get(profile_key) != encoded:
-                state["db"][profile_key] = encoded
-                state["rev"] = state.get("rev", 1) + 1
-                state["dirty"].add(profile_key)
-                state["deleted"].discard(profile_key)
-        for profile_key in [x for x in list(state["db"]) if x.startswith("ubt_profile_") and x not in live]:
-            state["db"].pop(profile_key, None)
-            state["dirty"].discard(profile_key)
-            state["deleted"].add(profile_key)
-        return
     if k in state["db"] and state["db"][k] == v and k not in state["deleted"]:
         return
     state["db"][k] = v
     state["rev"] = state.get("rev", 1) + 1
     state["dirty"].add(k)
     state["deleted"].discard(k)
-    audit = _ADMIN_AUDIT_CONTEXT.get()
-    if audit is not None and k != "ubt_server_access_admin_audit":
-        audit["keys"].add(str(k)[:160])
 
 def _drop(state, k):
     state["db"].pop(k, None)
     state["rev"] = state.get("rev", 1) + 1
     state["dirty"].discard(k)
     state["deleted"].add(k)
-    audit = _ADMIN_AUDIT_CONTEXT.get()
-    if audit is not None and k != "ubt_server_access_admin_audit":
-        audit["keys"].add(str(k)[:160])
-
-def _local_save_later(state):
-    """Coalesce many mutations into one atomic local snapshot instead of rewriting
-    the complete JSON database on every request. Supabase remains the primary store
-    when configured; the local file then acts only as a periodic recovery snapshot.
-    """
-    with state["lock"]:
-        state["local_dirty"] = True
-        timer = state.get("local_timer")
-        if timer and timer.is_alive():
-            return
-        delay = 120 if state.get("sb") else 30
-        timer = threading.Timer(delay, _local_save_worker, args=(state,))
-        timer.daemon = True
-        state["local_timer"] = timer
-        timer.start()
-
-def _local_save_worker(state):
-    try:
-        with state["local_save_lock"]:
-            with state["lock"]:
-                snapshot = dict(state["db"])
-                state["local_dirty"] = False
-            _db_save(snapshot)
-    except Exception as exc:
-        state["local_save_error"] = repr(exc)[:160]
-    finally:
-        with state["lock"]:
-            state["local_timer"] = None
-            again = state.get("local_dirty") is True
-        if again:
-            _local_save_later(state)
 
 def _commit(state):
-    # Mutations are already in memory; persist only dirty Supabase keys and
-    # batch the local full-file snapshot to avoid O(database-size) writes per action.
-    _local_save_later(state)
+    try:
+        _db_save(state["db"])
+    except Exception:
+        pass
     _flush_async(state)
 
 def _remote_sync(state):
@@ -304,7 +226,7 @@ def _remote_sync(state):
                     db[k] = v
                     updated = True
         for k in list(db.keys()):
-            if k not in remote and k != "ubt_profiles":
+            if k not in remote:
                 state["dirty"].add(k)
         if updated:
             state["rev"] += 1
@@ -455,38 +377,7 @@ def _migrate_start(state):
     threading.Thread(target=run, daemon=True).start()
 
 def _profiles(state):
-    profiles = _jload(state["db"].get("ubt_profiles", "{}"), dict, {})
-    for key, raw in state["db"].items():
-        if not key.startswith("ubt_profile_"):
-            continue
-        profile = _jload(raw, dict, {})
-        if isinstance(profile, dict) and profile.get("id"):
-            map_key = str(profile.get("name") or profile["id"])
-            profiles[map_key] = profile
-    return profiles
-
-def _migrate_profile_storage(state):
-    """Split profile records into per-UID rows and remove the old registration wait.
-    Existing pending accounts are allowed to sign in; teacher privileges remain
-    separately owner-approved. Keep the aggregate for legacy/browser compatibility.
-    """
-    # Update per-user rows first because they take precedence when _profiles merges.
-    for key, raw in list(state["db"].items()):
-        if not key.startswith("ubt_profile_"):
-            continue
-        profile = _jload(raw, dict, {})
-        if isinstance(profile, dict) and profile.get("id") and profile.get("id") != "admin" and profile.get("accessApproved") is not True:
-            profile["accessApproved"] = True
-            _put(state, key, _jdump(profile))
-    profiles = _profiles(state)
-    changed = False
-    for profile in profiles.values():
-        if isinstance(profile, dict) and profile.get("id") and profile.get("id") != "admin" and profile.get("accessApproved") is not True:
-            profile["accessApproved"] = True
-            changed = True
-    if profiles:
-        _put(state, "ubt_profiles", _jdump(profiles))
-        _flush_async(state)
+    return _jload(state["db"].get("ubt_profiles", "{}"), dict, {})
 
 def _pub_user(p):
     return {k: v for k, v in p.items() if k not in ("ph", "password")}
@@ -505,8 +396,8 @@ def _profile_pair(state, uid):
     return cached[1].get(uid,[])
 
 def _person_profile(state,uid):
-    raw=(state['db'].get('ubt_profiles','{}'),state.get('rev',0));cached=state.get('person_profile_cache')
-    if not cached or cached[0] != raw:
+    raw=state['db'].get('ubt_profiles','{}');cached=state.get('person_profile_cache')
+    if not cached or cached[0] is not raw:
         cached=(raw,{p.get('id'):p for p in _profiles(state).values() if isinstance(p,dict)})
         state['person_profile_cache']=cached
     return cached[1].get(uid,{})
@@ -537,7 +428,7 @@ def _subject_guard(state,sess,subject,questions=None):
     return ''
 
 def _public_question(q,index):
-    # Whitelist, rather than removing only "correct": explanations can contain answers.
+                                                                                       
     out = {k:q[k] for k in ('text','options','points','img','tbl','subject','subjectName','difficulty') if k in q}
     out['id']='examq'+str(index)
     return out
@@ -558,7 +449,7 @@ def _review_record(state,sess,exam,answers):
     ident='review_'+secrets.token_hex(18)
     records=_jload(state['db'].get('ubt_server_exam_review_records_'+sess['uid'],'{}'),dict,{})
     records[ident]={'uid':uid,'family':family,'own':own,'eligible':eligible,'questions':exam['questions'],'answers':answers,'topic':exam['topic'],'created':time.time(),'expires':time.time()+30*86400}
-    # Bound retained payloads per learner. Usage limits survive record expiry/deletion.
+                                                                                       
     mine=sorted(((r['created'],k) for k,r in records.items() if r.get('uid')==uid))
     for _,key in mine[:-100]:records.pop(key,None)
     history=_jload(state['db'].get('ubt_hist_'+uid,'[]'),list,[])
@@ -585,7 +476,7 @@ def _review_request(state,sess,typ,d):
         u=usage.get(rec['family'],{'attempts':0,'opens':0});limit=5 if rec['own'] else 1
         if not rec['eligible'] or (not rec['own'] and u['attempts']!=1) or u['opens']>=limit:return {'ok':False,'msg':'Қатемен жұмысты қарау лимиті аяқталған. Қайта тапсырғанда ортақ тест жауаптары ашылмайды.'}
         if any(e.get('uid')==sess['uid'] and not e.get('completed') and e.get('expires',0)>time.time() for e in state.get('exams',{}).values()):return {'ok':False,'msg':'Алдымен белсенді тестті аяқтаңыз'}
-        # Spend quota before returning any answer; refresh/new tab cannot restore it.
+                                                                                     
         u['opens']+=1;usage[rec['family']]=u
         for old in records.values():
             if old.get('uid')==sess['uid']:old['active']=False
@@ -637,7 +528,7 @@ def _profile_request(state,sess,typ,d):
         return {'ok':True,'pair':d['pair']}
 
 def _secure_snapshot(state,sess,db):
-    # Never deliver server bank/catalogue answers to non-owner learners, including old results.
+                                                                                               
     if sess['uid']!='admin':
         allowed=_allowed_subjects(state,sess)
         tests=_jload(db.get('ubt_tests','[]'),list,[])
@@ -686,7 +577,7 @@ def _exam_question_request(state,sess,d):
         if issue:return {'ok':False,'msg':issue,'upgradeRequired':True}
         return {'ok':True,'question':_public_question(exam['questions'][index],index)}
 
-# Send capability is independent of account management. Junior admins may send only their own tests.
+                                                                                                    
 def _send_personal_test(state,sess,d):
     if not sess or not (sess.get('admin') or sess.get('juniorAdmin') or _is_teacher(state,sess['uid'])):return {'ok':False,'msg':'Тест жіберуге рұқсат жоқ'}
     with state['lock']:
@@ -731,33 +622,23 @@ def _start_creative_exam(state,sess):
 _FREE_SUBJECT_TESTS = 2
 _FREE_FULL_TESTS = 1
 _FREE_PREVIEW_QUESTIONS = 10
-_TRIAL_DAYS = 1  # 24 сағаттық бір реттік танысу мерзімі
+_TRIAL_DAYS = 3
 
 def _subscription_info(state,sess):
     uid=sess['uid'];key='ubt_server_access_subscription_'+uid
     record=_jload(state['db'].get(key,'{}'),dict,{})
-    now=time.time()
     if not record:
-        record={'plan':'free','expires':0,'trialUsed':True,'trialStarted':now,'trialUntil':now+86400,'welcomeFull':1,'created':now}
+        record={'plan':'free','expires':0,'trialUsed':False,'trialUntil':0,'welcomeFull':1,'created':time.time()}
         _put(state,key,_jdump(record))
-    elif not record.get('trialStarted') and not record.get('trialUntil') and record.get('plan','free')=='free' and not record.get('expires',0):
-        # One-time migration: existing accounts receive their one-day introduction
-        # starting with their first visit after this access policy is deployed.
-        record['trialStarted']=now;record['trialUntil']=now+86400;record['trialUsed']=True
-        _put(state,key,_jdump(record))
-    staff=bool(sess.get('admin') and uid=='admin')
-    raw_plan=record.get('plan','free')
-    if raw_plan=='class':
-        raw_plan='max';record['plan']='max';_put(state,key,_jdump(record))
-    paid=raw_plan in ('pro','premium','max') and record.get('expires',0)>now
-    trial=not paid and record.get('trialUntil',0)>now
-    plan='staff' if staff else raw_plan if paid else 'trial' if trial else 'free'
-    premium=staff or trial or (paid and plan in ('premium','max'))
-    access_active=staff or paid or trial
+    now=time.time();staff=bool(sess.get('admin') and uid=='admin')
+    paid=record.get('plan') in ('pro','premium','class') and record.get('expires',0)>now
+    trial=False                                                      
+    plan='staff' if staff else record.get('plan') if paid else 'free'
+    premium=staff or (paid and plan in ('premium','class'))
     subject_limit=5 if plan=='pro' else _FREE_SUBJECT_TESTS
     full_limit=3 if plan=='pro' else _FREE_FULL_TESTS
     usage=_subscription_usage(state,uid)
-    return {'uid':uid,'premium':premium,'staff':staff,'plan':plan,'paid':paid,'trialActive':trial,'trialUntil':int(record.get('trialUntil',0) or 0),'accessActive':access_active,'subjectLimit':subject_limit,'fullLimit':full_limit,'expires':record.get('expires',0) if paid else record.get('trialUntil',0) if trial else 0,'trialUsed':bool(record.get('trialUsed')),'trialDays':1 if trial else 0,'welcomeFull':record.get('welcomeFull',0),'subjectRemaining':max(0,subject_limit-usage['subjectCount']),'fullRemaining':max(0,full_limit-usage['fullCount']),'dailyRemaining':max(0,1-usage['dailyCount']),'previewCount':_FREE_PREVIEW_QUESTIONS,'autoRenew':False}
+    return {'uid':uid,'premium':premium,'staff':staff,'plan':plan,'paid':paid,'subjectLimit':subject_limit,'fullLimit':full_limit,'expires':record.get('expires',0) if paid else record.get('trialUntil',0) if trial else 0,'trialUsed':bool(record.get('trialUsed')),'trialDays':0,'welcomeFull':record.get('welcomeFull',0),'subjectRemaining':max(0,subject_limit-usage['subjectCount']),'fullRemaining':max(0,full_limit-usage['fullCount']),'dailyRemaining':max(0,1-usage['dailyCount']),'previewCount':_FREE_PREVIEW_QUESTIONS,'autoRenew':False}
 
 def _subscription_usage(state,uid):
     key='ubt_server_access_usage_'+uid
@@ -787,7 +668,7 @@ def _subscription_prepare(state,sess,exam):
     issue=_subscription_preflight(state,sess,exam)
     if issue:return issue
     info=_subscription_info(state,sess);exam['premiumAtStart']=info['premium']
-    # Limit shared subject collections only; never restrict the author's own content or full-format exams.
+                                                                                                          
     if info['plan']=='free' and _subscription_kind(exam)=='subject' and not exam.get('selfAuthored') and len(exam['questions'])>_FREE_PREVIEW_QUESTIONS:
         exam['questions']=exam['questions'][:_FREE_PREVIEW_QUESTIONS]
         exam['topic']+=' · Тегін танысу нұсқасы'
@@ -817,15 +698,6 @@ def _subscription_charge(state,sess,exam,token):
     _save_exam(state,token)
     return ''
 
-def _subscription_audit_add(state, actor, target, plan, days, expires):
-    key = "ubt_server_access_subscription_audit"
-    rows = _jload(state["db"].get(key, "[]"), list, [])
-    rows.append({"at": int(time.time()), "actor": str(actor.get("uid") or "admin"),
-                 "targetUid": str(target.get("id") or target.get("uid") or ""),
-                 "targetLogin": str(target.get("name") or "")[:80],
-                 "plan": str(plan), "days": int(days), "expires": int(expires or 0)})
-    _put(state, key, _jdump(rows[-5000:]))
-
 def _subscription_request(state,sess,typ,d):
     if not sess or sess.get('codeGuest'):return {'ok':False,'msg':'Аккаунтыңызға кіріңіз'}
     with state['lock']:
@@ -837,19 +709,13 @@ def _subscription_request(state,sess,typ,d):
             old=requests.get(sess['uid'],{})
             requests[sess['uid']]={'uid':sess['uid'],'name':sess.get('name') or 'Қолданушы','created':old.get('created',time.time()),'pending':True}
             _put(state,key,_jdump(requests));_commit(state);return {'ok':True}
-        if not sess.get('admin'):return {'ok':False,'msg':'Тек басты админ басқарады'}
+        if not sess.get('admin') or sess['uid']!='admin':return {'ok':False,'msg':'Тек басты админ басқарады'}
         if typ=='owner_subscription_list':
             requests=_jload(state['db'].get('ubt_server_access_premium_requests','{}'),dict,{})
             return {'ok':True,'requests':sorted([r for r in requests.values() if r.get('pending')],key=lambda r:r.get('created',0),reverse=True)[:50]}
-        if typ=='owner_subscription_audit':
-            rows=_jload(state['db'].get('ubt_server_access_subscription_audit','[]'),list,[])
-            return {'ok':True,'rows':rows[-1000:]}
-        if typ=='owner_admin_audit':
-            rows=_jload(state['db'].get('ubt_server_access_admin_audit','[]'),list,[])
-            return {'ok':True,'rows':rows[-1000:]}
         if typ=='owner_subscription_set' and d.get('logins') is not None:
             logins=d.get('logins');days=d.get('days',30)
-            if d.get('plan')!='max' or not isinstance(logins,list) or not 1<=len(logins)<=30 or type(days) is not int or not 1<=days<=3650:return {'ok':False,'msg':'Max: 1–30 логин және 1–3650 күн енгізіңіз'}
+            if d.get('plan')!='class' or not isinstance(logins,list) or not 1<=len(logins)<=30 or type(days) is not int or not 1<=days<=3650:return {'ok':False,'msg':'Класс: 1–30 логин және 1–3650 күн енгізіңіз'}
             names={str(p.get('name','')).casefold():p for p in _profiles(state).values()}
             targets=[]
             for login in logins:
@@ -857,7 +723,7 @@ def _subscription_request(state,sess,typ,d):
                 target=names[login.strip().casefold()]
                 if target['id']=='admin':return {'ok':False,'msg':'Басты админді топтық тарифке қоспаңыз'}
                 if target['id'] not in targets:targets.append(target['id'])
-            for target in targets:_subscription_request(state,sess,'owner_subscription_set',{'uid':target,'plan':'max','days':days})
+            for target in targets:_subscription_request(state,sess,'owner_subscription_set',{'uid':target,'plan':'class','days':days})
             return {'ok':True,'count':len(targets)}
         uid=str(d.get('uid') or '')
         profile=_person_profile(state,uid) if uid else next((p for p in _profiles(state).values() if str(p.get('name') or '').casefold()==str(d.get('login') or '').strip().casefold()),{})
@@ -866,17 +732,14 @@ def _subscription_request(state,sess,typ,d):
         target={'uid':uid,'admin':False,'juniorAdmin':uid in _admin_uids(state)}
         info=_subscription_info(state,target)
         if typ=='owner_subscription_view':return {'ok':True,'subscription':info,'name':profile.get('name'),'uid':uid}
-        if typ!='owner_subscription_set' or d.get('plan') not in ('free','pro','premium','max'):return {'ok':False,'msg':'Тарифті таңдаңыз'}
+        if typ!='owner_subscription_set' or d.get('plan') not in ('free','pro','premium','class'):return {'ok':False,'msg':'Тарифті таңдаңыз'}
         days=d.get('days',30)
         if type(days) is not int or not 1<=days<=3650:return {'ok':False,'msg':'Мерзім 1–3650 күн болсын'}
-        key='ubt_server_access_subscription_'+uid;r=_jload(state['db'].get(key,'{}'),dict,{})
+        key='ubt_server_access_subscription_'+uid;r=_jload(state['db'][key],dict,{})
         r['previousPlan']=r.get('plan','free');r['plan']=d['plan']
-        if d['plan']!='free':
-            r['expires']=(max(time.time(),r.get('expires',0)) if r.get('previousPlan',r.get('plan'))==d['plan'] else time.time())+days*86400
-            r['trialUntil']=0
-        else:r.update(expires=0,trialUntil=0,trialUsed=True)
+        if d['plan']!='free':r['expires']=(max(time.time(),r.get('expires',0)) if r.get('previousPlan',r.get('plan'))==d['plan'] else time.time())+days*86400
+        else:r.update(expires=0,trialUntil=0)
         _put(state,key,_jdump(r))
-        _subscription_audit_add(state, sess, profile, d['plan'], days, r.get('expires',0))
         requests=_jload(state['db'].get('ubt_server_access_premium_requests','{}'),dict,{})
         if uid in requests:requests[uid]['pending']=False;_put(state,'ubt_server_access_premium_requests',_jdump(requests))
         _commit(state);return {'ok':True,'subscription':_subscription_info(state,target)}
@@ -981,7 +844,7 @@ def _growth_request(state,sess,d):
         if action=='referral':
             ref=state['db'].get('ubt_server_access_invite_'+str(d.get('code','')).strip().upper())
             if not ref or ref==uid or r.get('referrer') or r.get('firstCompleted'):return {'ok':False,'msg':'Код жарамсыз немесе алғашқы тест тапсырылып қойған'}
-            # One referred account per device; maximum five rewards per inviter.
+                                                                                
             device=str(sess.get('device') or '')
             if not device:return {'ok':False,'msg':'Құрылғыны растау үшін аккаунтқа қайта кіріңіз'}
             dk='ubt_server_access_ref_device_'+hashlib.sha256(device.encode()).hexdigest()
@@ -1032,7 +895,7 @@ def _growth_request(state,sess,d):
         attempts[tag]=token;_growth_put(state,uid,r);state['exams'][token]=exam;_save_exam(state,token);_commit(state)
         return {'ok':True,'exam':token,'questions':[_exam_question_meta(q,i) for i,q in enumerate(qs)],'topic':topic,'timer':900,'code':code}
 
-# Admissions records are historical comparisons, never probability estimates.
+                                                                             
 _PATH_GRANTS = [
  {'university':'Astana IT University','city':'Астана','group':'B057','program':'Ақпараттық технологиялар','pair':['math','informatics'],'year':2025,'score':80,'kind':'historical','quota':'general','source':'https://univision.kz/univ/119-astana-it-university/ball','sourceType':'secondary','checked':'2026-11-09'},
  {'university':'Astana IT University','city':'Астана','group':'B058','program':'Ақпараттық қауіпсіздік','pair':['math','informatics'],'year':2025,'score':85,'kind':'historical','quota':'general','source':'https://univision.kz/univ/119-astana-it-university/ball','sourceType':'secondary','checked':'2026-11-09'},
@@ -1049,7 +912,7 @@ def _path_data(state,uid):
 def _path_events(state,uid):
     key='ubt_server_access_path_events_'+uid
     if key in state['db']:return _jload(state['db'][key],list,[])
-    # Migrate existing server-verified reviews without copying answer keys to the client.
+                                                                                         
     old=_jload(state['db'].get('ubt_server_exam_review_records_'+uid,'{}'),dict,{})
     rows=[]
     for rid,r in old.items():
@@ -2165,17 +2028,8 @@ def _catalog_sync(state):
     for t in _jload(state["db"].get("ubt_tests", "[]"), list, []) + _BUILTIN_BANK_TESTS:
         if not isinstance(t, dict) or t.get("assignmentId") or t.get("receivedFromAdmin"):
             continue
-        author = t.get("authorId") or "admin"
-        if author not in ("admin", "system"):
-            author_profile = next((p for p in _profiles(state).values() if isinstance(p,dict) and p.get("id")==author),None)
-            if author_profile:
-                try:
-                    if _subscription_info(state,{"uid":author,"admin":False}).get("plan")=="pro":
-                        continue
-                except Exception:
-                    continue
         for q in t.get("questions", []):
-            add(q, author, t.get("subject", "other"), t.get("topic") or "Тест", t.get("authorName"))
+            add(q, t.get("authorId") or "admin", t.get("subject", "other"), t.get("topic") or "Тест", t.get("authorName"))
     if changed:
         _put(state, "ubt_question_catalog", _jdump(catalog))
         _commit(state)
@@ -2599,7 +2453,7 @@ def _real_manage_request(state,sess,d):
             for key in banks:
                 banks[key]=[q for q in banks[key] if (q.get("sourceTestId") or "legacy_"+hashlib.sha256((key+"|"+str(q.get("source") or "ҰБТ жинағы")).encode()).hexdigest()[:24])!=target]
         if action == "delete":
-            # Remove the original and tombstone its catalogue rows so they cannot reappear.
+                                                                                           
             rows = _jload(state["db"].get("ubt_tests","[]"),list,[])
             _put(state,"ubt_tests",_jdump([t for t in rows if t.get("id")!=source["id"]]))
             hidden = _jload(state["db"].get("ubt_hidden_source_tests","[]"),list,[])
@@ -2628,7 +2482,7 @@ def _real_bank_cached(state):
     return rows
 
 def _seed_real_bank_demo(state):
-    # One-time samples for preview; deliberately not labelled as past exam questions.
+                                                                                     
     with state["lock"]:
         if state["db"].get("ubt_server_exam_real_demo_v1"):
             return
@@ -2676,7 +2530,7 @@ def _real_bank_import(state, sess, d):
         with state["lock"]:
             banks = _jload(state["db"].get("ubt_server_exam_real_bank", "{}"), dict, {})
             rows = list(banks.get(subject, []))
-            # Reversed answer order must not create another copy of the same question.
+                                                                                      
             def identity(q):
                 return _jdump([" ".join(q["text"].split()).casefold(), sorted(" ".join(x.split()).casefold() for x in q["options"])])
             seen = {identity(q) for q in rows}
@@ -3168,17 +3022,12 @@ def _remember_request(state,sess,typ,d):
         if not active:return {"ok":False,"msg":"Аккаунтқа кіру мүмкін емес. Админге хабарласыңыз."}
         return {"ok":True,"token":active,"user":user}
 
-def _handle_req_impl(state, sid, rq):
+def _handle_req(state, sid, rq):
     typ = rq.get("type")
     d = rq.get("data") if isinstance(rq.get("data"), dict) else {}
     sess = _session(state, rq.get("tok"))
     if not isinstance(typ, str) or len(_jdump(d)) > 8_000_000:
         return {"ok": False, "msg": "Сұраныс тым үлкен немесе жарамсыз"}
-    if sess and not (sess.get("admin") or sess.get("juniorAdmin") or sess.get("codeGuest")):
-        entitlement = _subscription_info(state, sess)
-        allowed_after_expiry = {"resume", "logout", "subscription_status", "subscription_request"}
-        if not entitlement.get("accessActive") and typ not in allowed_after_expiry:
-            return {"ok":False,"locked":True,"msg":"1 күндік тегін пайдалану мерзімі аяқталды. Қолжетімділікті ашу үшін WhatsApp арқылы тариф алыңыз: 8 705 636 0080"}
     if sess and sess.get("juniorAdmin") and typ not in ('login', 'resume', 'login_remembered', 'logout', 'remember_account', 'forget_account', 'start_exam', 'start_personal_practice', 'growth', 'path', 'economy', 'subscription_status', 'subscription_trial', 'subscription_request', 'premium_dashboard', 'daily_five', 'exam_question', 'send_personal_test', 'review_open', 'review_close', 'resume_exam', 'finish_exam', 'cancel_exam', 'start_assigned_test', 'start_public_mix', 'exam_check_answer', 'explain_review', 'approved_test_list', 'notifications_list', 'save_public_test', 'remove_saved_public_test', 'public_profile', 'content_security_event', 'visit_record', 'support_open', 'support_read', 'support_send', 'messenger_contacts', 'messenger_thread', 'messenger_send', 'profile_animation_get', 'chat_claim', 'book_open'):
         return {"ok":False,"msg":"Кіші админде басқару құқығы жоқ. Тест тапсыру және өз тестін жүктеу ғана қолжетімді."}
     with state["lock"]:
@@ -3272,7 +3121,7 @@ def _handle_req_impl(state, sid, rq):
     if typ=="real_bank_manage":
         return _real_manage_request(state,sess,d)
 
-    if typ in ('subscription_status','subscription_trial','subscription_request','owner_subscription_list','owner_subscription_view','owner_subscription_set','owner_subscription_audit','owner_admin_audit'):
+    if typ in ('subscription_status','subscription_trial','subscription_request','owner_subscription_list','owner_subscription_view','owner_subscription_set'):
         return _subscription_request(state,sess,typ,d)
     if typ=='premium_dashboard':
         return _premium_dashboard(state,sess)
@@ -3716,15 +3565,8 @@ def _handle_req_impl(state, sid, rq):
         if not device:
             return {"ok":False,"msg":"Браузер белгісі жоқ. Бетті жаңартып қайта көріңіз"}
         devices=_jload(state["db"].get("ubt_server_access_blocked_devices","{}"),dict,{})
-        device_hash=hashlib.sha256(device.encode()).hexdigest()
-        if device_hash in devices:
-            return {"ok":False,"msg":"Осы құрылғыдан тіркелу бұғатталған. Басты админге хабарласыңыз."}
-        trial_devices=_jload(state["db"].get("ubt_server_access_trial_devices","{}"),dict,{})
-        prior_uid=trial_devices.get(device_hash)
-        if prior_uid:
-            prior_profile=next((x for x in _profiles(state).values() if isinstance(x,dict) and x.get("id")==prior_uid),None)
-            prior_name=(prior_profile or {}).get("name") or "бұрынғы аккаунт"
-            return {"ok":False,"msg":"Бұл құрылғыда 1 күндік тегін мүмкіндік бұрын қолданылған. Қайта аккаунт ашып сынақты қайталау мүмкін емес. Бұрынғы аккаунтыңызға кіріңіз: "+str(prior_name)+". Құпиясөзді ұмытсаңыз, WhatsApp-қа жазыңыз."}
+        if hashlib.sha256(device.encode()).hexdigest() in devices:
+            return {"ok":False,"msg":"Осы браузерден тіркелу бұғатталған. Себебі: "+str(devices[hashlib.sha256(device.encode()).hexdigest()].get("reason") or "Қауіпсіздік ережесі")+". Басты админге хабарласыңыз"}
         name = _clean_name(d.get("name"))
         pw = str(d.get("pass") or "")[:200]
         if not name:
@@ -3746,7 +3588,7 @@ def _handle_req_impl(state, sid, rq):
             ph_new = _hash_pw(pw)
             uid = _new_uid(state, key)
             prof = {"name": name, "id": uid, "isAdmin": False, "ph": ph_new,
-                    "accessApproved": True, "registeredAt": int(now)}
+                    "accessApproved": False, "registeredAt": int(now)}
             if d.get("parent") is True and not d.get("teacher"):
                 prof["role"]="parent"
             if not d.get("teacher") and d.get("parent") is not True:
@@ -3757,17 +3599,11 @@ def _handle_req_impl(state, sid, rq):
                 if subject not in _SUBJECT_NAMES:
                     return {"ok": False, "msg": "Мұғалім пәнін таңдаңыз"}
                 prof["role"] = "teacher"
-                # Teacher privileges remain owner-approved; registration itself is instant.
                 prof["teacherApproved"] = False
                 prof["teacherInfo"] = str(d.get("info") or "")[:200]
                 prof["teacherSubject"] = subject
             profs[key] = prof
             _put(state, "ubt_profiles", _jdump(profs))
-            # Every new account gets exactly one 24-hour introductory access period.
-            _put(state, "ubt_server_access_subscription_" + uid, _jdump({"plan":"free","expires":0,"trialUsed":True,"trialStarted":now,"trialUntil":now+86400,"welcomeFull":1,"created":now}))
-            # One introductory day per persistent browser/device token.
-            trial_devices[device_hash]=uid
-            _put(state,"ubt_server_access_trial_devices",_jdump(trial_devices))
             stats = _jload(state["db"].get("ubt_user_stats", "{}"), dict, {})
             stats[uid] = {"points": 0, "title": "", "stars": 0, "verified": False}
             _put(state, "ubt_user_stats", _jdump(stats))
@@ -3983,28 +3819,6 @@ def _handle_req_impl(state, sid, rq):
         return {"ok": True}
 
     return {"ok": False, "msg": "Белгісіз сұраныс"}
-
-def _handle_req(state, sid, rq):
-    sess = _session(state, rq.get("tok")) if isinstance(rq, dict) else None
-    if not (sess and sess.get("uid") == "admin" and sess.get("admin")):
-        return _handle_req_impl(state, sid, rq)
-    ctx = {"uid": "admin", "name": str(sess.get("name") or "Басты админ"),
-           "action": str(rq.get("type") or "unknown")[:80], "keys": set()}
-    marker = _ADMIN_AUDIT_CONTEXT.set(ctx)
-    try:
-        result = _handle_req_impl(state, sid, rq)
-    finally:
-        _ADMIN_AUDIT_CONTEXT.reset(marker)
-        if ctx["keys"]:
-            with state["lock"]:
-                key = "ubt_server_access_admin_audit"
-                rows = _jload(state["db"].get(key, "[]"), list, [])
-                rows.append({"at": int(time.time()), "actorUid": ctx["uid"],
-                             "actorName": ctx["name"], "action": ctx["action"],
-                             "changedKeys": sorted(ctx["keys"])[:100]})
-                _put(state, key, _jdump(rows[-5000:]))
-                _commit(state)
-    return result
 
 def _process_reqs(state, sid, reqs):
     if not isinstance(reqs, list):
@@ -4499,13 +4313,6 @@ def _authorize(state, sess, k, v, chat_token=""):
         return None
     if k.startswith("ubt_qbank_"):
         if k != "ubt_qbank_" + sess["uid"]:
-            return None
-        # Pro is a practice-only plan: it cannot add questions to the bank.
-        try:
-            access = _subscription_info(state, sess)
-            if access.get("plan") == "pro":
-                return None
-        except Exception:
             return None
         incoming = _jload(v, list, None)
         if incoming is None or len(incoming) > 10000:
@@ -6671,7 +6478,7 @@ body:before{display:none!important}body.dark{--bg:#0d1425;--c:#161f34;--t:#e8edf
 #s-profile{background:var(--bg)!important;isolation:auto}#s-profile:before,.profile-scene,#ubt-intro{display:none!important}#s-profile .card{background:var(--c)!important;border-color:var(--b)!important;color:var(--t)!important;--t:inherit;--m:inherit;--c:inherit;--b:inherit}#s-profile .hdr h2,#s-profile .hdr p{color:var(--t)}.ubd-profile-card{animation:none!important;min-height:0!important;padding:24px!important;border:1px solid var(--b);background:var(--c);color:var(--t)}.ubd-profile-card:after{display:none}.ubd-profile-actions button{background:var(--c);color:var(--t);border:1px solid var(--b);border-radius:10px}.profile-main{display:flex;align-items:center;gap:16px}.profile-card-name{font-size:25px!important}.ubd-kpi,.ubd-card,.ubd-profile-card,.ubd-track i{animation:none!important}.ubd-chart polyline{animation:none!important;stroke-dashoffset:0!important}
 .gl-item{padding:20px;margin-bottom:12px}.list-more{width:100%;margin:12px 0}.review-option{border-radius:12px}.topback{background:transparent}.ubd-table-wrap{overflow-x:auto}.tscroll{overflow-x:auto}.qimg{max-width:100%;height:auto}#sync-ind{font-size:10px!important;max-width:220px}
 @media(max-width:1000px){.clean-actions{grid-template-columns:repeat(2,minmax(0,1fr))}.clean-action{min-height:165px}.clean-hero-mark{font-size:50px}}
-@media(max-width:700px){html,body{max-width:100%;overflow-x:hidden}button,.btn,input,select,textarea{touch-action:manipulation} .tscroll{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}.wrap,.wrap.wide{padding:20px 14px 110px!important}.card{padding:18px;border-radius:16px}.hdr{margin-bottom:18px}.btn,input,select,textarea{font-size:16px}.btn-sm{font-size:13px}.item{padding:14px;flex-wrap:wrap;gap:10px}.item>.acts{flex-wrap:wrap;gap:7px}.card,.item,.mode,.rev,.stat,.fcard{content-visibility:visible!important;contain:none!important;box-shadow:none!important;backdrop-filter:none!important;animation:none!important}.clean-hero{border-radius:19px;padding:25px 22px;margin-bottom:14px}.clean-hero h1{font-size:27px;overflow-wrap:anywhere}.clean-hero-mark{display:none}.clean-hero p{font-size:13px}.clean-hero-actions{margin-top:20px;gap:8px}.clean-hero-actions .btn{font-size:13px;flex:1;white-space:nowrap;min-height:44px;padding:11px 12px}.clean-stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-bottom:24px}.clean-stats>div,.clean-stats>button{padding:16px;border-radius:14px}.clean-stats strong{font-size:24px}.clean-stats span{font-size:11px}.clean-section{margin-top:22px}.clean-section-head h2{font-size:18px}.clean-section-head .btn{font-size:11px;padding:9px 11px;min-height:38px}.clean-actions{gap:10px}.clean-action{padding:17px;min-height:169px;border-radius:15px}.clean-action h3{font-size:15px;margin-top:17px}.clean-action p{font-size:11px}.clean-action-arrow{right:15px;top:17px}.clean-recent{padding:18px;border-radius:17px}.clean-result{gap:9px}.clean-result strong{font-size:12px}.clean-result-icon{width:30px;height:30px}.clean-eyebrow{font-size:9px}.profile-welcome-loop,.leaf,#confetti{display:none!important}#ubt-icon-rail .ubt-rail-links{display:flex;justify-content:space-between;gap:3px;width:100%;overflow:hidden}#ubt-icon-rail .ubt-rail-link{display:none!important;flex:1;min-width:0;padding:8px 2px;min-height:53px}#ubt-icon-rail [data-rail-group=home],#ubt-icon-rail [data-rail-group=exam],#ubt-icon-rail [data-rail-group=subjects],#ubt-icon-rail [data-rail-group=profile],#ubt-icon-rail [data-rail-group=more]{display:flex!important}body.ubt-has-rail #ubt-icon-rail{left:10px;right:10px;bottom:calc(8px + env(safe-area-inset-bottom,0px));width:calc(100% - 20px);height:auto;min-height:64px;padding:5px 8px;border-radius:20px!important;background:#131d35!important;border:1px solid #ffffff15;box-shadow:0 6px 22px #121d3517;backdrop-filter:none!important}.ubt-rail-caption{font-size:10px!important}.profile-scene *,#ubt-icon-rail *{animation:none!important}.profile-bar.app-header{box-shadow:none!important}.ubd-profile-actions button{min-height:44px}.wa-shell{height:calc(100dvh - 170px)}#s-login .wrap{padding-top:26px!important}}
+@media(max-width:700px){.wrap,.wrap.wide{padding:20px 14px 110px!important}.card{padding:18px;border-radius:16px}.hdr{margin-bottom:18px}.btn,input,select,textarea{font-size:16px}.btn-sm{font-size:13px}.item{padding:14px;flex-wrap:wrap;gap:10px}.item>.acts{flex-wrap:wrap;gap:7px}.card,.item,.mode,.rev,.stat,.fcard{content-visibility:visible!important;contain:none!important;box-shadow:none!important;backdrop-filter:none!important;animation:none!important}.clean-hero{border-radius:19px;padding:25px 22px;margin-bottom:14px}.clean-hero h1{font-size:27px;overflow-wrap:anywhere}.clean-hero-mark{display:none}.clean-hero p{font-size:13px}.clean-hero-actions{margin-top:20px;gap:8px}.clean-hero-actions .btn{font-size:13px;flex:1;white-space:nowrap;min-height:44px;padding:11px 12px}.clean-stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-bottom:24px}.clean-stats>div,.clean-stats>button{padding:16px;border-radius:14px}.clean-stats strong{font-size:24px}.clean-stats span{font-size:11px}.clean-section{margin-top:22px}.clean-section-head h2{font-size:18px}.clean-section-head .btn{font-size:11px;padding:9px 11px;min-height:38px}.clean-actions{gap:10px}.clean-action{padding:17px;min-height:169px;border-radius:15px}.clean-action h3{font-size:15px;margin-top:17px}.clean-action p{font-size:11px}.clean-action-arrow{right:15px;top:17px}.clean-recent{padding:18px;border-radius:17px}.clean-result{gap:9px}.clean-result strong{font-size:12px}.clean-result-icon{width:30px;height:30px}.clean-eyebrow{font-size:9px}.profile-welcome-loop,.leaf,#confetti{display:none!important}#ubt-icon-rail .ubt-rail-links{display:flex;justify-content:space-between;gap:3px;width:100%;overflow:hidden}#ubt-icon-rail .ubt-rail-link{display:none!important;flex:1;min-width:0;padding:8px 2px;min-height:53px}#ubt-icon-rail [data-rail-group=home],#ubt-icon-rail [data-rail-group=exam],#ubt-icon-rail [data-rail-group=subjects],#ubt-icon-rail [data-rail-group=profile],#ubt-icon-rail [data-rail-group=more]{display:flex!important}body.ubt-has-rail #ubt-icon-rail{left:10px;right:10px;bottom:calc(8px + env(safe-area-inset-bottom,0px));width:calc(100% - 20px);height:auto;min-height:64px;padding:5px 8px;border-radius:20px!important;background:#131d35!important;border:1px solid #ffffff15;box-shadow:0 6px 22px #121d3517;backdrop-filter:none!important}.ubt-rail-caption{font-size:10px!important}.profile-scene *,#ubt-icon-rail *{animation:none!important}.profile-bar.app-header{box-shadow:none!important}.ubd-profile-actions button{min-height:44px}.wa-shell{height:calc(100dvh - 170px)}#s-login .wrap{padding-top:26px!important}}
 @media(max-width:360px){.clean-hero{padding:22px 17px}.clean-hero-actions{flex-direction:column}.clean-action{padding:14px}.clean-action h3{font-size:14px}}
 </style>
 
@@ -6932,9 +6739,6 @@ async function startSession(r){
   window.__token=r.token;user=r.user;
   LS.set('ubt_current',Object.assign({},r.user,{token:r.token}));
   try{await window.__bridge.refresh()}catch(e){}
-  if(user&&!(user.isAdmin&&user.id==='admin')&&!user.isJuniorAdmin){
-    try{const access=await authCall('subscription_status',{});if(access&&access.ok){window.__ubtAccessState=access.subscription;window.__ubtAccessLocked=!access.subscription.accessActive}else{window.__ubtAccessState=null;window.__ubtAccessLocked=true}}catch(e){window.__ubtAccessState=null;window.__ubtAccessLocked=true}
-  }else{window.__ubtAccessState={accessActive:true,staff:true};window.__ubtAccessLocked=false}
   enterApp();
 }
 let user=null;
@@ -7024,7 +6828,7 @@ function doRegister(){return guarded(async()=>{
   const r=await authCall('register',{name:name,pass:pass,profilePair,parent});
   if(!r.ok){alert(r.msg||'Қате');return}
   ['reg-name','reg-pass','reg-pass2'].forEach(i=>{const e=document.getElementById(i);if(e)e.value=''});
-  alert('✅ Аккаунт дайын! 24 сағаттық тегін танысу мерзімі басталды.');
+  alert('✅ Тіркелу өтініші админге жіберілді. Админ рұқсат бергеннен кейін сайтқа кіре аласыз.');
   showLoginBox();
   document.getElementById('login-name').value=name;
 })}
@@ -7205,9 +7009,7 @@ function enterApp(){
   setTimeout(restorePendingResult,0);
   refreshProfileBar();syncMaintenance();
   updateAdminInboxBadge();
-  if(window.__ubtAccessLocked){showAccessLock();return}
   showScr('s-home');
-  if(window.__ubtAccessState?.trialActive)showTrialNotice(window.__ubtAccessState);
 }
 function ownAdminLetters(){return user&&!user.isAdmin?LS.get('ubt_admin_letters',[]).filter(m=>m&&m.toUid===user.id):[]}
 function updateAdminInboxBadge(){
@@ -7777,7 +7579,7 @@ document.addEventListener('keydown',e=>{
   if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}
   else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}
 });
-function showScr(id){if(window.__ubtAccessLocked&&user&&!user.isAdmin&&!user.isJuniorAdmin&&!['s-premium','s-login'].includes(id)){showAccessLock();return}if(id!=='s-test'&&realExamActive()){alert('ҰБТ тестін алдымен аяқтаңыз');return}const target=document.getElementById(id);if(!target||!target.classList.contains('screen'))return;closeAppMenu(false);if(id!=='s-test'&&!lock.on){shieldOff();hideOv();document.getElementById('exam-window-guard')?.classList.remove('show')}document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));target.classList.add('active');document.body.classList.toggle('test-active',id==='s-test');try{chromeSync()}catch(e){}}
+function showScr(id){if(id!=='s-test'&&realExamActive()){alert('ҰБТ тестін алдымен аяқтаңыз');return}const target=document.getElementById(id);if(!target||!target.classList.contains('screen'))return;closeAppMenu(false);if(id!=='s-test'&&!lock.on){shieldOff();hideOv();document.getElementById('exam-window-guard')?.classList.remove('show')}document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));target.classList.add('active');document.body.classList.toggle('test-active',id==='s-test');try{chromeSync()}catch(e){}}
 function goHome(){if(st.secureExam){showResultRetry('Тест нәтижесін жіберіңіз немесе жауаптарды файлға сақтаңыз.');return}if(lock.on)return;stopTimer();st=baseState();showScr('s-home')}
 
 const BANK={
@@ -11418,15 +11220,6 @@ function renderHomeExtras(){
   mathIn(el);
 }
 let _seenScore=null;
-function animateResultMoment(result, isRecord){
- const scoreEl=document.getElementById('sc');if(!scoreEl||!result)return;
- const target=Math.max(0,Number(result.score)||0),start=performance.now(),duration=1100;
- const reduce=window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
- if(!reduce){scoreEl.textContent='0';const tick=now=>{const t=Math.min(1,(now-start)/duration),ease=1-Math.pow(1-t,3);scoreEl.textContent=String(Math.round(target*ease));if(t<1)requestAnimationFrame(tick)};requestAnimationFrame(tick)}
- let controls=document.getElementById('result-celebration-controls');if(!controls){controls=document.createElement('div');controls.id='result-celebration-controls';controls.className='row';controls.style.cssText='justify-content:center;gap:10px;margin:12px 0';document.querySelector('#s-res .hdr')?.after(controls)}
- controls.innerHTML='<button type="button" class="btn btn-s btn-sm" id="result-sound-toggle" aria-pressed="false">🔇 Дыбыс өшірулі</button>'+(isRecord?'<span class="badge">🏆 Жаңа рекорд!</span>':'');
- const btn=document.getElementById('result-sound-toggle');if(btn)btn.onclick=()=>{const on=btn.getAttribute('aria-pressed')!=='true';btn.setAttribute('aria-pressed',String(on));btn.textContent=on?'🔊 Дыбыс қосулы':'🔇 Дыбыс өшірулі';if(on){try{const C=window.AudioContext||window.webkitAudioContext;if(C){const ctx=new C(),o=ctx.createOscillator(),g=ctx.createGain();o.type='sine';o.frequency.setValueAtTime(660,ctx.currentTime);o.frequency.exponentialRampToValueAtTime(990,ctx.currentTime+.18);g.gain.setValueAtTime(.0001,ctx.currentTime);g.gain.exponentialRampToValueAtTime(.08,ctx.currentTime+.025);g.gain.exponentialRampToValueAtTime(.0001,ctx.currentTime+.35);o.connect(g);g.connect(ctx.destination);o.start();o.stop(ctx.currentTime+.36);o.onended=()=>ctx.close()}}catch(e){}}};
-}
 function afterFinish(){
   if(!user)return;
   const ls=st.lastScore;if(!ls)return;
@@ -11444,7 +11237,6 @@ function afterFinish(){
   extra+=`<div class="quote">💬 ${esc(randQuote())}</div>`;
   rb.insertAdjacentHTML('beforeend',extra);
   if(pct>=0.8||isRec)confetti();
-  animateResultMoment(ls, isRec);
 }
 function profExtra(){
   const el=document.getElementById('prof-extra');if(!el||!user||user.isAdmin){if(el)el.innerHTML='';return}
@@ -11523,7 +11315,7 @@ function doRegisterTeacher(){return guarded(async()=>{
   const r=await authCall('register',{name:name,pass:pass,teacher:true,info:info,subject});
   if(!r.ok){alert(r.msg||'Қате');return}
   ['tr-name','tr-info','tr-pass','tr-pass2','tr-subject'].forEach(i=>document.getElementById(i).value='');
-  alert('✅ Аккаунт ашылды! 24 сағаттық танысу мерзімі басталды. Мұғалім кабинеті админ бекіткеннен кейін ашылады.');
+  alert('✅ Мұғалімнің тіркелу өтініші админге жіберілді. Рұқсат берілгеннен кейін ғана сайтқа кіре аласыз.');
   showLoginBox();document.getElementById('login-name').value=name;
 })}
 function mutateProfile(id,fn){
@@ -12548,10 +12340,10 @@ function schoolData(){
 }
 function schoolTabs(kind){return `<div class="school-tabs"><button class="btn ${kind==='teachers'?'btn-p':'btn-s'} btn-sm" onclick="showSchoolPeople('teachers')">Мұғалімдер</button><button class="btn ${kind==='students'?'btn-p':'btn-s'} btn-sm" onclick="showSchoolPeople('students')">Оқушылар</button><button class="btn ${kind==='classes'?'btn-p':'btn-s'} btn-sm" onclick="showSchoolClasses()">Сыныптар тізімі</button></div>`}
 function schoolAllowedStudents(data){
-  // Teachers can open every registered learner profile, not only their own class.
-  // The profile view contains public learning details and never exposes password hashes.
-  if(user.isAdmin||isTeacherUser())return null;
-  return new Set([user.id]);
+  if(user.isAdmin)return null;
+  const ids=new Set([user.id]);
+  if(isTeacherUser())data.classes.filter(c=>c.teacherId===user.id).forEach(c=>(c.students||[]).forEach(id=>ids.add(id)));
+  return ids;
 }
 function showSchoolPeople(kind='teachers'){
   if(!user)return;schoolState.kind=kind==='students'?'students':'teachers';schoolState.page=0;document.getElementById('s-school-people').dataset.kind=schoolState.kind;
@@ -12592,8 +12384,7 @@ async function schoolAction(button,type,data,onSuccess){
 }
 function schoolOpenPerson(id){
   const data=schoolData(),p=data.byId.get(id);if(!user||!p)return;
-  const allowed=schoolAllowedStudents(data);
-  if(p.role!=='teacher'&&!user.isAdmin&&allowed&&!allowed.has(id)){alert('Бұл профильге рұқсат жоқ');return}
+  if(p.role!=='teacher'&&!user.isAdmin&&!schoolAllowedStudents(data).has(id)){alert('Бұл профильге рұқсат жоқ');return}
   schoolState.person=id;schoolState.fileJob++;schoolState.fileReading=false;schoolState.kind=p.role==='teacher'?'teachers':'students';document.getElementById('s-school-person').dataset.kind=schoolState.kind;schoolState.imported=null;schoolState.fileName='';schoolRenderPerson();showScr('s-school-person');
 }
 function schoolRenderPerson(){
@@ -13109,7 +12900,7 @@ async function schoolDeleteClass(cid,button){
  const avatar=document.getElementById('pp-avatar');avatar.style.backgroundImage='';avatar.textContent=(p.name||'?')[0];if(p.avatar){avatar.style.backgroundImage='url('+p.avatar+')';avatar.style.backgroundSize='cover';avatar.style.backgroundPosition='center';avatar.textContent=''}
  document.getElementById('pp-name').textContent=p.name+(p.verified?' ✓':'');document.getElementById('pp-title').textContent=p.title||'Атақ жоқ';document.getElementById('pp-stars').textContent=starStr(p.stars||0);document.getElementById('pp-points').textContent=p.points||0;document.getElementById('pp-rank').textContent=p.role==='teacher'?'Мұғалім':'Қолданушы';
  ['pp-chart','pp-topics','pp-hist'].forEach(key=>{const node=document.getElementById(key);if(node){node.replaceChildren();const card=node.closest('.card');if(card)card.hidden=true}});showScr('s-pubprof')};
- const adminProfile=adminViewUser;adminViewUser=function(id){if(!user?.isAdmin)return openPubProfile(id);return adminProfile.apply(this,arguments)};
+ const adminProfile=adminViewUser;adminViewUser=function(id){if(!owner())return openPubProfile(id);return adminProfile.apply(this,arguments)};
 
  let leaving=false,entered=Date.now();
  function active(){return !!user&&!owner()&&document.getElementById('s-test')?.classList.contains('active')&&!st.examSubmitting}
@@ -13336,61 +13127,7 @@ syncRefresh=function(){const r=securitySync.apply(this,arguments);wipeLegacyAnsw
 const securitySchoolDialog=schoolCreatePersonDialog;
 schoolCreatePersonDialog=function(){securitySubjectUI();const r=securitySchoolDialog.apply(this,arguments);document.getElementById('school-new-profile-pair-wrap').hidden=schoolState.kind==='teachers';document.getElementById('school-new-profile-pair').innerHTML=pairOptions([]);return r};
 const securityAdminView=adminViewUser;
-// Robust owner profile manager: resolves the selected person from both the local
-// profile cache and the school directory, then opens the management screen.
-adminViewUser=function(id){
- if(!user||!user.isAdmin){return openPubProfile(id)}
- id=String(id||'');
- let profiles=LS.get('ubt_profiles',{});
- let target=Object.values(profiles||{}).find(p=>p&&String(p.id)===id);
- if(!target){
-   const schoolPerson=schoolData()?.byId?.get(id);
-   if(schoolPerson){target=schoolPerson;profiles=profiles||{};profiles[target.login||target.name||id]=target;LS.set('ubt_profiles',profiles);schoolCache.p=null;}
- }
- if(!target){alert('Профиль табылмады. Тізімді жаңартып, қайта ашыңыз.');return}
- // Keep the original profile editor's data source in sync before opening it.
- profiles=LS.get('ubt_profiles',{});profiles=profiles||{};
- const key=Object.keys(profiles).find(k=>profiles[k]&&String(profiles[k].id)===id)||target.login||target.name||id;
- profiles[key]=target;LS.set('ubt_profiles',profiles);schoolCache.p=null;
- viewingUserId=id;
- const stats=getUserStats(id);
- setAv(document.getElementById('uv-avatar'),id,target.name);
- document.getElementById('uv-name').textContent=(target.name||'Қолданушы')+(stats.verified?' ✓':'');
- document.getElementById('uv-info').textContent=`${target.role==='teacher'?'👨‍🏫 Мұғалім · '+subjName(target.teacherSubject||'other'):'👤 Оқушы'} · ⭐ ${stats.points||0} · ${stats.title||'атақ жоқ'} · ${starStr(stats.stars||0)}`;
- const teacherOn=target.role==='teacher'&&target.teacherApproved;
- const jsonEnabled=!!(siteControls().jsonUsers||{})[id];
- document.getElementById('uv-actions').innerHTML=`
-  <button class="btn ${teacherOn?'btn-s':'btn-ok'}" onclick="adminSetTeacher(${jsq(id)},${!teacherOn})">${teacherOn?'👨‍🏫 Мұғалім мәртебесін алу':'👨‍🏫 Мұғалім ету'}</button>
-  <button class="btn ${stats.verified?'btn-ok':'btn-s'}" onclick="adminToggleVerify(${jsq(id)})">${stats.verified?'✅ Расталған':'✓ Растау белгісі'}</button>
-  <button class="btn btn-w" onclick="adminSetTitle(${jsq(id)})">🏅 Атақ беру</button>
-  <button class="btn btn-s" onclick="adminSetStars(${jsq(id)})">⭐ Жұлдыз беру (${String(stats.stars||0).replace('.',',')})</button>
-  <button class="btn ${jsonEnabled?'btn-ok':'btn-s'}" onclick="adminSetJsonPermission(${jsq(id)},${!jsonEnabled})">${jsonEnabled?'✅ JSON жүктеуге рұқсат бар':'⬇ JSON жүктеуге рұқсат беру'}</button>
-  ${target.role==='teacher'?`<button class="btn btn-p" onclick="schoolOpenPerson(${jsq(id)})">📁 Мұғалімнің тесттері мен сыныптары</button>`:''}
-  <button class="btn btn-d uv-danger" onclick="adminDelUser(${jsq(id)})">🗑 Профильді өшіру</button>`;
- document.getElementById('uv-login').value=target.name||'';
- document.getElementById('uv-curpass').value='🔒 хэштелген (көрсетілмейді)';
- const hist=LS.get('ubt_hist_'+id,[]);
- document.getElementById('uv-hist').innerHTML=hist.length?hist.map(h=>`<div class="item"><div class="info"><h4>${esc(h.topic||'Тест')}</h4><p>${esc(h.date||'')}</p></div><div style="font-weight:700;color:var(--p)">${h.score}/${h.max}</div></div>`).join(''):'<p class="sub">Тест тапсырмаған</p>';
- const vl=LS.get('ubt_viol_'+id,[]);
- document.getElementById('uv-hist').innerHTML+=`<h4 style="margin:14px 0 6px">⚠ Бұзушылықтар (${vl.length})</h4>`+(vl.length?vl.slice(0,40).map(v=>`<div class="item"><div class="info"><h4 style="font-size:13px">${esc(v.k||'')}</h4><p>${esc(v.t||'')}${v.test?' · '+esc(v.test):''}</p></div></div>`).join(''):'<p class="sub">Бұзушылық жоқ</p>');
- const mistakes=LS.get('ubt_mistakes_'+id,[]);
- document.getElementById('uv-mist').innerHTML=mistakes.length?mistakes.map(q=>`<div class="item"><div class="info"><h4>${esc((q.text||'').substring(0,80))}</h4><p>${esc(q.subjectName||'')}</p></div></div>`).join(''):'<p class="sub">Қате жоқ</p>';
- document.getElementById('uv-newpass').value='';
- renderProgress('uv-chart',null,getProg(id));
- showScr('s-user-view');
- // Add profile-specific controls after the management screen is populated.
- document.getElementById('owner-pair-editor')?.remove();
- const host=document.querySelector('#s-user-view .wrap');
- if(host){
-  const pair=document.createElement('section');pair.id='owner-pair-editor';pair.className='card';
-  pair.innerHTML='<h3>Оқушының бейіндік пәндері</h3><select id="owner-profile-pair">'+pairOptions(target.profilePair||[])+'</select><button type="button" class="btn btn-p" style="margin-top:12px">Пән жұбын сақтау</button>';
-  pair.querySelector('button').onclick=async()=>{const selected=readPair('owner-profile-pair');const res=await authCall('owner_set_pair',{uid:id,pair:selected});if(!res.ok)return alert(res.msg||'Сақтау қатесі');await window.__bridge.refresh();alert('Пән жұбы өзгертілді')};
-  const sub=document.createElement('section');sub.className='card';sub.style.marginTop='14px';
-  sub.innerHTML='<h3>✦ Осы профильге тариф беру</h3><p class="sub">'+esc(target.name||'Қолданушы')+' · Pro / Premium / Max тарифін қосу немесе алып тастау.</p><label>Мерзімі (күн)<input id="profile-premium-days" type="number" min="1" max="3650" value="30"></label><div class="row" style="margin-top:12px;flex-wrap:wrap"><button type="button" class="btn btn-p" data-plan="pro">Pro беру</button><button type="button" class="btn btn-p" data-plan="premium">Premium беру</button><button type="button" class="btn btn-p" data-plan="max">Max беру</button><button type="button" class="btn btn-d" data-plan="free">Тарифті алып тастау</button></div><p class="sub" id="profile-premium-status" role="status"></p>';
-  sub.querySelectorAll('button[data-plan]').forEach(button=>button.onclick=async()=>{const days=Number(sub.querySelector('#profile-premium-days').value),status=sub.querySelector('#profile-premium-status');if(button.dataset.plan!=='free'&&(!Number.isInteger(days)||days<1||days>3650)){status.textContent='Мерзімі 1–3650 күн болсын';return}button.disabled=true;try{const result=await authCall('owner_subscription_set',{uid:id,plan:button.dataset.plan,days:button.dataset.plan==='free'?1:days});if(!result.ok){status.textContent=result.msg||'Қате';return}status.textContent=button.dataset.plan==='free'?'Тариф алынды':(target.name||'Қолданушы')+' · '+result.subscription.plan+' · '+premiumDate(result.subscription.expires);await window.__bridge.refresh()}finally{button.disabled=false}});
-  host.append(pair,sub);
- }
-};
+adminViewUser=function(id){const r=securityAdminView.apply(this,arguments);if(user?.id==='admin'){document.getElementById('owner-pair-editor')?.remove();const target=Object.values(LS.get('ubt_profiles',{})).find(p=>p.id===id);const host=document.getElementById('s-admin-user')||document.querySelector('.screen.active .wrap');if(host&&target){const box=document.createElement('div');box.id='owner-pair-editor';box.className='card';box.innerHTML='<h3>Оқушының бейіндік пәндері</h3><select id="owner-profile-pair">'+pairOptions(target.profilePair||[])+'</select><button class="btn btn-p" style="margin-top:12px">Сақтау</button>';box.querySelector('button').onclick=async()=>{const pair=readPair('owner-profile-pair');const res=await authCall('owner_set_pair',{uid:id,pair});if(!res.ok)return alert(res.msg);await window.__bridge.refresh();alert('Пән жұбы өзгертілді')};host.appendChild(box)}}return r};
 const securityMyTests=showMyTests;
 showMyTests=function(){const r=securityMyTests.apply(this,arguments);if(user&&(user.isAdmin||user.isJuniorAdmin||isTeacherUser()))document.querySelectorAll('#s-mytests .item').forEach(row=>{const start=row.querySelector('[onclick^="startUserTest("]');if(!start)return;const match=start.getAttribute('onclick').match(/startUserTest\((.*)\)/);if(!match)return;let id;try{id=JSON.parse(match[1].replace(/&quot;/g,'"'))}catch(e){return}const t=allTests().find(t=>t.id===id);if(!t||t.authorId!==user.id||row.querySelector('.personal-send-test'))return;if(isTeacherUser()&&!user.isAdmin&&t.subject!==(findUserByLogin(user.name)||{}).teacherSubject)return;const b=document.createElement('button');b.className='btn btn-s btn-sm personal-send-test';b.textContent='Оқушыға жіберу';b.onclick=async()=>{const login=prompt('Тіркелген оқушының логині:');if(!login)return;b.disabled=true;const res=await authCall('send_personal_test',{testId:id,login});b.disabled=false;alert(res.ok?'Тест оқушыға жіберілді':res.msg)};row.querySelector('.acts')?.appendChild(b)});return r};
 const securitySendDialog=schoolClassSendDialog;schoolClassSendDialog=function(){const r=securitySendDialog.apply(this,arguments);securitySubjectUI();return r};
@@ -13410,39 +13147,17 @@ function showPremiumPanel(message=''){
 }
 const UBT_WHATSAPP='https://wa.me/77056360080';
 const UBT_WHATSAPP_GROUP='https://chat.whatsapp.com/JVVi7OPce5R0DOO9AjoeKQ?s=cl&p=a&iam=2';
-function showAccessLock(){
- if(!user)return;
- let screen=document.getElementById('s-premium');
- if(!screen){screen=document.createElement('section');screen.id='s-premium';screen.className='screen';screen.innerHTML='<div class="wrap wide"><div id="premium-panel" style="margin-top:20px"></div></div>';document.body.appendChild(screen)}
- const host=document.getElementById('premium-panel');
- if(host)host.innerHTML=`<section class="card" style="max-width:720px;margin:8vh auto;padding:clamp(22px,5vw,42px);text-align:center"><div style="font-size:48px">🔒</div><h1 style="margin:12px 0">1 күндік тегін мүмкіндік аяқталды</h1><p style="line-height:1.8;margin:12px 0">Тегін 24 сағаттық танысу аяқталды. Дайындықты жалғастыру үшін Pro (1 490 ₸), Premium (2 490 ₸) немесе Max (3 990 ₸) тарифін таңдаңыз. Төлемді растағаннан кейін басты админ қолжетімділікті ашады.</p><p style="font-weight:800;font-size:20px;margin:18px 0">Логин: ${esc(user.name||'')}</p><a class="btn btn-p" style="display:inline-flex;justify-content:center;min-width:230px" href="${UBT_WHATSAPP+'?text='+encodeURIComponent('Сәлеметсіз бе! ҰБТ PLUS қолжетімділігін сатып алғым келеді. Логинім: '+(user.name||''))}" target="_blank" rel="noopener noreferrer">WhatsApp арқылы сатып алу ↗</a><p class="sub" style="margin-top:14px">8 705 636 0080</p><button class="btn btn-s btn-sm" style="margin-top:10px" onclick="checkGrantedAccess(this)">Тариф қосылды ма? Тексеру</button> <button class="btn btn-s btn-sm" style="margin-top:10px" onclick="doLogout()">Аккаунттан шығу</button></section>`;
- showScr('s-premium');
-}
-function showTrialNotice(access){
- const host=document.querySelector('#s-home .wrap');if(!host||document.getElementById('ubt-trial-notice'))return;
- const box=document.createElement('section');box.id='ubt-trial-notice';box.className='card';box.style.cssText='margin:0 0 16px;border:1px solid #d5a33b;background:linear-gradient(110deg,#fff7df,#fffdf5);color:#493710';
- const until=Number(access.trialUntil||0),remaining=Math.max(0,until*1000-Date.now()),hours=Math.max(1,Math.ceil(remaining/3600000));
- box.innerHTML='<b>⚠️ Ескерту: 1 күндік тегін қолжетімділік</b><p style="margin-top:8px;line-height:1.65">Тіркелгеннен кейін сайтты 24 сағат тегін қолдана аласыз. Мерзім аяқталған соң барлық бөлім жабылып, тек WhatsApp арқылы тариф сатып алу беті ашылады. Қолжетімділікті тек басты админ береді.</p><p style="margin-top:8px;font-weight:700">Қалған уақыт: шамамен '+hours+' сағат</p>';
- host.prepend(box);
-}
-async function checkGrantedAccess(button){
- if(!user||!window.__token)return; if(button)button.disabled=true;
- try{const r=await authCall('subscription_status',{});if(!r.ok){alert(r.msg||'Қолжетімділікті тексеру мүмкін болмады');return}
-  window.__ubtAccessState=r.subscription;window.__ubtAccessLocked=!r.subscription.accessActive;
-  if(window.__ubtAccessLocked){alert('Тариф әлі қосылмаған. WhatsApp арқылы басты админге жазыңыз.');return}
-  showScr('s-home');showTrialNotice(r.subscription);alert('Қолжетімділік ашылды. Сәтті дайындық!');
- }finally{if(button&&button.isConnected)button.disabled=false}
-}
-function tariffName(plan){return {free:'Тегін',trial:'1 күндік сынақ',pro:'Pro',premium:'Premium',max:'Max',class:'Max',staff:'Басты админ'}[plan]||'Тегін'}
-function tariffWhatsApp(plan){return UBT_WHATSAPP+'?text='+encodeURIComponent('Сәлеметсіз бе! ҰБТ PLUS сайтындағы '+tariffName(plan)+' тарифін алғым келеді. Логинім: '+(user?.name||'')+((plan==='max'||plan==='class')?'. Max тарифін және мерзімін алғым келеді.':'. Бағасы мен мерзімін білгім келеді.'))}
+function tariffName(plan){return {free:'Тегін',pro:'Pro',premium:'Premium',class:'Max',staff:'Басты админ'}[plan]||'Тегін'}
+function tariffWhatsApp(plan){return UBT_WHATSAPP+'?text='+encodeURIComponent('Сәлеметсіз бе! ҰБТ PLUS сайтындағы '+tariffName(plan)+' тарифін алғым келеді. Логинім: '+(user?.name||'')+(plan==='class'?'. Қатысушылар санын және мерзімін келіскім келеді.':'. Бағасы мен мерзімін білгім келеді.'))}
 function renderPremiumPanel(message=''){
  const host=document.getElementById('premium-panel');if(!host||!user)return;const e=subscriptionInfo();
  const plans=[
- {id:'pro',name:'Pro',price:'1 490 ₸ / 30 күн',tag:'Күнделікті дайындыққа',items:['Күніне 5 пәндік тестке дейін','Аптасына 3 толық сынақ тестке дейін','Пәндік тесттердегі 10 сұрақтық танысу шектеуі алынады','Тест нәтижелері мен жауаптар тарихы','Флешкарталар және жеке қателер дәптері'],why:'Тұрақты түрде өз бетімен дайындалатын оқушыға. Pro — тест орындау мен нәтижелерді бақылауға арналған. Pro қолданушысы сұрақтарды өзінің ортақ сұрақтар базасына жариялай алмайды.'},
- {id:'premium',name:'Premium',price:'2 490 ₸ / 30 күн',tag:'ЕҢ ТИІМДІ · ЖЕКЕ ДАЙЫНДЫҚ',items:['Pro тарифіндегі барлық мүмкіндік','Өз пәндеріңізден шектеусіз дайындық','Пәндер бойынша толық аналитика және графиктер','Әлсіз тақырыптарды автоматты анықтау','Жеке дайындық жоспары және балл болжамы','Білім картасы және толық флешкарталар'],why:'ҰБТ балын жүйелі көтергісі келетін оқушыға. Нәтижелерді талдап, қай тақырыпты қайталау керегін көрсетеді. Сұрақтарды ортақ базаға енгізу тек админ мақұлдаған рұқсатпен орындалады.'},
- {id:'max',name:'Max',price:'3 990 ₸ / 30 күн',tag:'ТОЛЫҚ МҮМКІНДІК · ЖОҒАРЫ ДЕҢГЕЙ',items:['Premium тарифіндегі барлық мүмкіндік','Жеке оқу жоспарын кеңейтілген бақылау','Барлық қолжетімді пәндік және толық сынақ режимдері','Premium-дегі барлық мүмкіндік','Жеке аккаунтқа арналған басым қолдау','Сұрақтар мен техникалық мәселелер бойынша WhatsApp-та админге тікелей жазу'],why:'Premium мүмкіндіктерінің бәрін алып, қосымша басым қолдауды қалайтын оқушыға. Max тарифі де сұрақтарды автоматты түрде ортақ базаға жарияламайды; ортақ базаны тек админ басқарады.'}
+ {id:'free',name:'Тегін',tag:'Танысып көруге',items:['Күніне 2 пәндік тест','Аптасына 1 толық тест','Пәндік базадан 10 сұрақтық танысу жинағы','Соңғы нәтиже, күннің 5 сұрағы'],why:'Сайтпен танысып, күнделікті дайындық әдетін қалыптастыруға арналған. Сыйлық толық тест пен күннің тапсырмалары қосымша қолжетімді.'},
+ {id:'pro',name:'Pro',tag:'Тұрақты дайындыққа',price:'Бағасын WhatsApp-та нақтылау',items:['Күніне 5 пәндік тест','Аптасына 3 толық тест','Пәндік жинақтар 10 сұрақпен қысқармайды','Толық нәтижелер тарихы және флешкарталар'],why:'Күн сайын бірнеше пәннен дайындалып, алдыңғы нәтижелерге қайта оралғысы келетін оқушыға. Жеке әлсіз тақырыптар талдауы Premium және Класс тарифтерінде.'},
+ {id:'premium',name:'Premium',tag:'Жеке терең дайындыққа',price:'Бағасын WhatsApp-та нақтылау',items:['Өз пәндеріңізден шектеусіз тест','Толық тарих және графиктер','Пәндік талдау, білім картасы, балл болжамы','Әлсіз тақырыптарға жеке жоспар, толық флешкарталар'],why:'Қай пәннен және тақырыптан қиналатынын анықтап, нәтижесіне қарай дайындық жоспарын құрғысы келетін оқушыға. Шектеусіз тест пән жұбы мен жария тесттің жеке ережелерін өзгертпейді.'},
+ {id:'class',name:'Max',tag:'3 айлық кеңейтілген дайындық',price:'1 590 ₸ / 3 ай',items:['Premium мүмкіндіктерінің барлығы','Өз пәндеріңізден шектеусіз тест','Толық тарих, графиктер және пәндік талдау','Білім картасы, балл болжамы және жеке оқу жоспары','WhatsApp арқылы қолдау'],why:'Үш ай бойы жүйелі әрі терең дайындалуға арналған. Тарифті төлем расталғаннан кейін басты админ қосады; мұғалім немесе админ рөлі автоматты түрде берілмейді.'}
  ];
- host.innerHTML=`<div class="clean-hero"><div><span class="clean-eyebrow">ҰБТ PLUS · ДАЙЫНДЫҚ ЖҮЙЕСІ</span><h1>ҰБТ-ға сенімді дайындал. Нәтижеңді күн сайын өсір.</h1><p>Қазіргі тариф: <b>${esc(tariffName(e.plan))}</b>${e.expires?' · '+premiumDate(e.expires)+' дейін':''}</p><p>24 сағат тегін танысып көріңіз. Одан кейін өзіңізге сай тарифті таңдаңыз.</p></div></div>${message?`<div class="card" role="status">${esc(message)}</div>`:''}<div class="grid2" style="margin-top:18px">${plans.map(p=>`<article class="card" style="display:flex;flex-direction:column;gap:12px;${p.id==='premium'?'border:2px solid #6366f1;box-shadow:0 8px 30px #6366f122;':''}"><div><span class="sub">${p.tag}</span><h2>${p.name}</h2><div style="font-size:25px;font-weight:850;margin:8px 0">${p.price}</div><p class="sub">${p.id==='premium'?'Күніне шамамен 83 ₸':p.id==='pro'?'Күніне шамамен 50 ₸':'Күніне шамамен 133 ₸'}</p></div><ul style="padding-left:20px;line-height:1.85">${p.items.map(i=>'<li>'+i+'</li>').join('')}</ul><div style="margin-top:auto"><a class="btn ${p.id==='premium'?'btn-p':'btn-s'}" style="display:flex;justify-content:center;width:100%" href="${tariffWhatsApp(p.id)}" target="_blank" rel="noopener noreferrer">${p.id==='premium'?'Premium таңдау':'WhatsApp арқылы алу'} ↗</a></div><details style="border-top:1px solid #71809655;padding-top:12px"><summary style="cursor:pointer;font-weight:600">Бұл тариф кімге арналған?</summary><p style="margin-top:12px;line-height:1.7">${p.why}</p></details></article>`).join('')}</div><div class="card" style="margin-top:18px"><h3>Қалай сатып алуға болады?</h3><ol style="line-height:1.9;padding-left:22px"><li>Өзіңізге керек тарифті таңдаңыз.</li><li>WhatsApp-қа басып, логиніңізді жіберіңіз.</li><li>Төлемді Kaspi арқылы келісіп жасаңыз.</li><li>Төлемді тексерген соң басты админ тарифті қосады.</li></ol><p style="margin:12px 0"><a href="${UBT_WHATSAPP}" target="_blank" rel="noopener noreferrer" style="font-size:21px;font-weight:800">8 705 636 0080 ↗</a></p><p class="sub">Автоматты төлем әзірге қосылмаған. Тарифті тек басты админ белсендіреді. Жазылым автоматты түрде жаңартылмайды.</p><button class="btn btn-s" style="margin-top:12px" onclick="checkGrantedAccess(this)">Тариф қосылды ма? Тексеру</button></div><div class="card" style="margin-top:18px"><h3>Барлығына ортақ мүмкіндіктер</h3><p style="margin-top:10px;line-height:1.8">Мобильді және компьютерлік нұсқа · тест нәтижелері · күнделікті тапсырма · рейтинг пен челлендж · жеке профиль · мұғалім кабинеті · ата-ана бақылауы · қауіпсіздік сутаңбасы.</p><p class="sub" style="margin-top:10px">Сұрақтарды ортақ базаға бірден жариялау мүмкін емес. Әр ұсынылған сұрақ тексеріліп, админ мақұлдағаннан кейін ғана ортақ базаға енгізіледі.</p></div>`;
+ host.innerHTML=`<div class="clean-hero"><div><span class="clean-eyebrow">ҰБТ PLUS · ТАРИФТЕР</span><h1>Өзіңізге ыңғайлы дайындықты таңдаңыз</h1><p>Қазіргі тариф: <b>${esc(tariffName(e.plan))}</b>${e.expires?' · '+premiumDate(e.expires)+' дейін':''}</p><p>Max тарифі — 1 590 ₸ / 3 ай. Ақылы тарифті төлем расталғаннан кейін басты админ қосады.</p></div></div>${message?`<div class="card" role="status">${esc(message)}</div>`:''}<div class="grid2" style="margin-top:18px">${plans.map(p=>`<article class="card" style="display:flex;flex-direction:column;gap:12px;${p.id==='premium'?'border:2px solid #6366f1;':''}"><div><span class="sub">${p.tag}</span><h2>${p.name}${e.plan===p.id?' · Сіздің тарифіңіз':''}</h2><div style="font-size:20px;font-weight:800;margin-top:8px">${p.price||''}</div></div><ul style="padding-left:20px;line-height:1.9">${p.items.map(i=>'<li>'+i+'</li>').join('')}</ul><div style="margin-top:auto">${p.id==='free'?'<p class="sub">Тіркеліп, тегін қолданыңыз</p>':`<a class="btn btn-p" style="display:inline-flex" href="${tariffWhatsApp(p.id)}" target="_blank" rel="noopener noreferrer">WhatsApp арқылы алу ↗</a>`}</div><details style="border-top:1px solid #71809655;padding-top:12px"><summary style="cursor:pointer;font-weight:600">Не үшін керек? Толығырақ</summary><p style="margin-top:12px;line-height:1.7">${p.why}</p></details></article>`).join('')}</div><div class="card" style="margin-top:18px"><h3>Сатып алу үшін WhatsApp-қа жазыңыз</h3><p style="margin:12px 0"><a href="${UBT_WHATSAPP}" target="_blank" rel="noopener noreferrer" style="font-size:21px;font-weight:700">8 705 636 0080 ↗</a></p><p>Max тарифі: 1 590 ₸ / 3 ай. Тарифті таңдаңыз → логиніңізді жіберіңіз → төлемді келісіңіз → басты админ қосады.</p><p class="sub" style="margin-top:10px">Сайт автоматты төлем алмайды. Пакетті қолданушы, мұғалім немесе кіші админ өздігінен қоса алмайды.</p><a class="btn btn-s" style="margin-top:14px" href="${UBT_WHATSAPP_GROUP}" target="_blank" rel="noopener noreferrer">WhatsApp тобына кіру ↗</a></div><div class="card" style="margin-top:18px"><h3>Барлығына ортақ</h3><p style="margin-top:10px">Калькулятор, Менделеев кестесі, тест нәтижесі және рұқсат етілген қате талдауы сақталады. Достармен жарыс, челлендж, диагностика және марафон өз ережелерімен жұмыс істейді.</p><p class="sub" style="margin-top:10px">Ортақ тест талдауы алғашқы тапсыруда 1 рет, өз тестіңіздікі барлығы 5 рет ашылады. Ақылы тариф осы қорғаныс пен пәндік шектеулерді өзгертпейді. Күндік лимит Қазақстан уақытымен 00:00-де, апталық лимит дүйсенбіде жаңарады.</p></div>`;
 }
 async function activatePremiumTrial(){showPremiumPanel('Тарифті қосу үшін басты админге WhatsApp арқылы жазыңыз.')}
 function requestPremium(){window.open(tariffWhatsApp('premium'),'_blank','noopener,noreferrer')}
@@ -13450,10 +13165,9 @@ function requestPremium(){window.open(tariffWhatsApp('premium'),'_blank','noopen
 async function startDailyFive(button){if(button)button.disabled=true;try{const r=await authCall('daily_five',{});if(!r.ok){alert(r.msg);return}st=baseState();st.secureExam=r.exam;st.questions=r.questions;st.subjectName=r.topic;st.timerSeconds=r.timer;st.isRealUbt=true;beginTest()}finally{if(button)button.disabled=false}}
 function subscriptionUI(){
  if(!user)return;
- const nav=document.querySelector('#app-menu nav');if(nav){const seen=new Set();nav.querySelectorAll('button').forEach(b=>{const label=(b.textContent||'').replace(/\s+/g,' ').trim().toLocaleLowerCase();if(!label)return;if(seen.has(label))b.remove();else seen.add(label)})}
  let entry=document.getElementById('premium-menu-entry');if(!entry){entry=document.createElement('button');entry.id='premium-menu-entry';entry.className='app-menu-home';entry.textContent='✦ Тарифтер / WhatsApp';entry.onclick=()=>showPremiumPanel();document.querySelector('#app-menu nav')?.prepend(entry)}
  let daily=document.getElementById('daily-five-entry');if(!daily){daily=document.createElement('button');daily.id='daily-five-entry';daily.className='app-menu-home';daily.textContent='☀ Күннің 5 сұрағы';daily.onclick=()=>startDailyFive(daily);document.querySelector('#app-menu nav')?.prepend(daily)}
- const home=document.getElementById('ubd-home');if(home&&!document.getElementById('subscription-home-strip')){const strip=document.createElement('div');strip.id='subscription-home-strip';strip.className='card';strip.style.marginBottom='18px';const e=subscriptionInfo();strip.innerHTML=`<div class="row" style="justify-content:space-between"><div><b>${esc(tariffName(subscriptionInfo().plan))}</b><p class="sub">${hasPremium()?'Өз пәндеріңізден шектеусіз дайындық':'Бүгін '+(e.subjectRemaining??2)+' пәндік тест · сыйлық '+(e.welcomeFull??1)+' толық тест'}</p></div><button class="btn btn-p btn-sm" onclick="showPremiumPanel()">Тарифтер мен мүмкіндіктер</button></div>`;home.prepend(strip)}
+ const home=document.getElementById('ubd-home');if(home&&!document.getElementById('subscription-home-strip')){const strip=document.createElement('div');strip.id='subscription-home-strip';strip.className='card';strip.style.marginBottom='18px';const e=subscriptionInfo();strip.innerHTML=`<div class="row" style="justify-content:space-between"><div><b>${esc(tariffName(subscriptionInfo().plan))}</b><p class="sub">${hasPremium()?'Өз пәндеріңізден шектеусіз дайындық':'Бүгін '+(e.subjectRemaining??2)+' пәндік тест · сыйлық '+(e.welcomeFull??1)+' толық тест'}</p></div><button class="btn btn-p btn-sm" onclick="startDailyFive(this)">Күннің 5 сұрағы</button><button class="btn btn-s btn-sm" onclick="showPremiumPanel()">Тарифтерді көру</button></div>`;home.prepend(strip)}
 }
 const subscriptionAuthCall=authCall;
 authCall=async function(type,data){
@@ -13501,28 +13215,8 @@ let subscriptionAdminLoading=false;
 async function mountSubscriptionAdmin(){
  if(!user?.isAdmin||user.id!=='admin'||subscriptionAdminLoading)return;
  let host=document.getElementById('owner-subscriptions');if(!host){host=document.createElement('section');host.id='owner-subscriptions';host.className='card';document.querySelector('#s-admin .wrap')?.prepend(host)}
- host.innerHTML='<h3>Тарифтерді басқару · тек басты админ</h3><div class="grid2" style="margin-top:12px"><div class="fg"><label>Қолданушы логині</label><input id="subscription-target-login" maxlength="40" autocomplete="off"></div><div class="fg"><label>Мерзімі, күн</label><input id="subscription-target-days" type="number" min="1" max="3650" value="30"></div></div><div class="row"><button class="btn btn-s" onclick="ownerSubscriptionAction(\'view\',this)">Қарау</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'pro\',this)">Pro</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'premium\',this)">Premium</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'max\',this)">Max</button><button class="btn btn-d" onclick="ownerSubscriptionAction(\'free\',this)">Тегінге қайтару</button></div><p id="owner-subscription-status" class="sub" role="status" style="margin-top:12px"></p><h4 style="margin-top:16px">Max · топқа беру</h4><p class="sub">30 адамға дейін, логиндерді әр жолға бөлек енгізіңіз. Мерзімі жоғарыдағы күн санымен беріледі.</p><textarea id="subscription-class-logins" rows="4" placeholder="Оқушы логиндері"></textarea><button class="btn btn-p" onclick="ownerClassGrant(this)">Топқа Max беру</button><h4 style="margin-top:16px">Тариф өтініштері</h4><div id="subscription-pending-requests"></div><h4 style="margin-top:16px">Әрекеттер журналы</h4><p class="sub">Premium / Pro / Max беру және тарифті алып тастау тарихы.</p><button class="btn btn-s btn-sm" onclick="ownerSubscriptionAuditExport(this)">Тариф журналын CSV жүктеу</button> <button class="btn btn-s btn-sm" onclick="ownerAdminAuditExport(this)">Барлық админ әрекетін Excel үшін жүктеу</button><div id="owner-subscription-audit-status" class="sub" role="status"></div>';
+ host.innerHTML='<h3>Тарифтерді басқару · тек басты админ</h3><div class="grid2" style="margin-top:12px"><div class="fg"><label>Қолданушы логині</label><input id="subscription-target-login" maxlength="40" autocomplete="off"></div><div class="fg"><label>Мерзімі, күн</label><input id="subscription-target-days" type="number" min="1" max="3650" value="30"></div></div><div class="row"><button class="btn btn-s" onclick="ownerSubscriptionAction(\'view\',this)">Қарау</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'pro\',this)">Pro</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'premium\',this)">Premium</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'class\',this)">Класс</button><button class="btn btn-d" onclick="ownerSubscriptionAction(\'free\',this)">Тегінге қайтару</button></div><p id="owner-subscription-status" class="sub" role="status" style="margin-top:12px"></p><h4 style="margin-top:16px">Max · топқа беру</h4><p class="sub">30 адамға дейін, логиндерді әр жолға бөлек енгізіңіз. Мерзімі жоғарыдағы күн санымен беріледі.</p><textarea id="subscription-class-logins" rows="4" placeholder="Оқушы логиндері"></textarea><button class="btn btn-p" onclick="document.getElementById('subscription-target-days').value=90;ownerClassGrant(this)">Топқа Max беру · 90 күн</button><h4 style="margin-top:16px">Тариф өтініштері</h4><div id="subscription-pending-requests"></div>';
  subscriptionAdminLoading=true;try{const r=await authCall('owner_subscription_list',{});const list=document.getElementById('subscription-pending-requests');if(!list)return;list.textContent='';if(!r.ok){list.textContent=r.msg;return}if(!r.requests.length)list.textContent='Жаңа өтініш жоқ.';for(const item of r.requests){const row=document.createElement('div');row.className='item';const label=document.createElement('strong');label.textContent=item.name;const b=document.createElement('button');b.className='btn btn-s btn-sm';b.textContent='Таңдау';b.onclick=()=>{document.getElementById('subscription-target-login').value=item.name};row.append(label,b);list.appendChild(row)}}finally{subscriptionAdminLoading=false}
-}
-async function ownerSubscriptionAuditExport(button){
- if(!user?.isAdmin||user.id!=='admin')return;
- button.disabled=true;const status=document.getElementById('owner-subscription-audit-status');
- try{const r=await authCall('owner_subscription_audit',{});if(!r.ok){status.textContent=r.msg||'Журнал ашылмады';return}
- const rows=[['Уақыты','Әрекет жасаған админ UID','Қолданушы UID','Логин','Тариф','Күн','Аяқталу уақыты'],...(r.rows||[]).map(x=>[new Date((x.at||0)*1000).toLocaleString('kk-KZ'),x.actor,x.targetUid,x.targetLogin,x.plan,x.days,x.expires?new Date(x.expires*1000).toLocaleString('kk-KZ'):'Мерзімсіз'])];
- const csv='\ufeff'+rows.map(row=>row.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(';')).join('\r\n');
- const blob=new Blob([csv],{type:'text/csv;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='ubt-admin-audit-'+new Date().toISOString().slice(0,10)+'.csv';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);status.textContent=(r.rows||[]).length+' әрекет экспортталды. Excel-де ашуға болады.';
- }finally{button.disabled=false}
-}
-async function ownerAdminAuditExport(button){
- if(!user?.isAdmin||user.id!=='admin')return;button.disabled=true;
- const status=document.getElementById('owner-subscription-audit-status');
- try{const r=await authCall('owner_admin_audit',{});if(!r.ok){status.textContent=r.msg||'Журнал ашылмады';return}
- const rows=[['Уақыты','Админ','Әрекет','Өзгерген дерек кілттері'],...(r.rows||[]).map(x=>[new Date((x.at||0)*1000).toLocaleString('kk-KZ'),x.actorName,x.action,(x.changedKeys||[]).join(', ')])];
- const xml=v=>String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g,'');
- const sheet='<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'+rows.map((row,i)=>'<row r="'+(i+1)+'">'+row.map((v,j)=>{const ref=String.fromCharCode(65+j)+(i+1);return typeof v==='number'?'<c r="'+ref+'"><v>'+v+'</v></c>':'<c r="'+ref+'" t="inlineStr"><is><t xml:space="preserve">'+xml(v)+'</t></is></c>'}).join('')+'</row>').join('')+'</sheetData></worksheet>';
- const files={'[Content_Types].xml':'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>','_rels/.rels':'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>','xl/workbook.xml':'<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Админ журналы" sheetId="1" r:id="rId1"/></sheets></workbook>','xl/_rels/workbook.xml.rels':'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>','xl/worksheets/sheet1.xml':sheet};
- pathDownload(new Blob([pathZip(files)],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),'ubt-admin-actions-'+new Date().toISOString().slice(0,10)+'.xlsx');status.textContent=(r.rows||[]).length+' админ әрекеті Excel файлына экспортталды.';
- }finally{button.disabled=false}
 }
 async function ownerSubscriptionAction(action,button){
  if(!user?.isAdmin||user.id!=='admin')return;const login=document.getElementById('subscription-target-login').value.trim(),days=Number(document.getElementById('subscription-target-days').value),status=document.getElementById('owner-subscription-status');if(!login){status.textContent='Логинді енгізіңіз';return}button.disabled=true;
@@ -13553,7 +13247,7 @@ async function growthDuelResult(button){button.disabled=true;try{const code=docu
 async function growthShareResult(){const r=window.growthSummary.lastResult;if(!r)return;const c=document.createElement('canvas');c.width=1080;c.height=650;const x=c.getContext('2d');const g=x.createLinearGradient(0,0,1080,650);g.addColorStop(0,'#142348');g.addColorStop(1,'#285dda');x.fillStyle=g;x.fillRect(0,0,1080,650);x.fillStyle='#fff';x.font='bold 48px sans-serif';x.fillText('ҰБТ PLUS',70,100);x.font='30px sans-serif';x.fillText(String(r.topic).slice(0,45),70,190);x.font='bold 110px sans-serif';x.fillText(r.score+' / '+r.max,70,355);x.font='30px sans-serif';x.fillText('Күн сайын мақсатқа бір қадам!',70,470);x.font='24px sans-serif';x.fillText('Достар және челлендж',70,560);c.toBlob(async blob=>{if(!blob)return;const f=new File([blob],'ubt-result.png',{type:'image/png'});try{if(navigator.canShare?.({files:[f]})){await navigator.share({files:[f]});return}}catch(e){if(e.name==='AbortError')return}const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=f.name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),30000)},'image/png')}
 const growthSubscriptionUI=subscriptionUI;subscriptionUI=function(){growthSubscriptionUI();if(!user)return;const nav=document.querySelector('#app-menu nav');if(nav&&!document.getElementById('growth-menu-entry')){const b=document.createElement('button');b.id='growth-menu-entry';b.className='app-menu-home';b.textContent='🏆 Достар және челлендж';b.onclick=showGrowth;nav.prepend(b)}const home=document.getElementById('ubd-home');if(home&&!document.getElementById('growth-home-entry')){const b=document.createElement('button');b.id='growth-home-entry';b.className='btn btn-s';b.style.marginBottom='16px';b.textContent='🏆 Жарыс · Челлендж · 7 күндік марафон';b.onclick=showGrowth;home.prepend(b)}};subscriptionUI();
 
-async function ownerClassGrant(button){if(user?.id!=='admin')return;const logins=document.getElementById('subscription-class-logins').value.split(/\n|,/).map(x=>x.trim()).filter(Boolean),days=Number(document.getElementById('subscription-target-days').value),status=document.getElementById('owner-subscription-status');if(!logins.length||logins.length>30){status.textContent='1–30 логин енгізіңіз';return}button.disabled=true;try{const r=await authCall('owner_subscription_set',{plan:'max',logins,days});status.textContent=r.ok?r.count+' аккаунтқа Max тарифі берілді.':r.msg;window.__bridge.refresh().catch(()=>{})}finally{button.disabled=false}}
+async function ownerClassGrant(button){if(user?.id!=='admin')return;const logins=document.getElementById('subscription-class-logins').value.split(/\n|,/).map(x=>x.trim()).filter(Boolean),days=Number(document.getElementById('subscription-target-days').value),status=document.getElementById('owner-subscription-status');if(!logins.length||logins.length>30){status.textContent='1–30 логин енгізіңіз';return}button.disabled=true;try{const r=await authCall('owner_subscription_set',{plan:'class',logins,days});status.textContent=r.ok?r.count+' аккаунтқа Класс тарифі берілді.':r.msg;window.__bridge.refresh().catch(()=>{})}finally{button.disabled=false}}
 function whatsappLinksUI(){
  let style=document.getElementById('wa-contact-style');if(!style){style=document.createElement('style');style.id='wa-contact-style';style.textContent='#wa-contact-edge{position:fixed;right:12px;bottom:16px;z-index:950;display:flex;flex-direction:column;gap:7px;align-items:flex-end}#wa-contact-edge a{background:#128c52;color:white;padding:10px 14px;border-radius:14px;box-shadow:0 4px 18px #0003;text-decoration:none;font-size:13px;font-weight:600}#wa-contact-edge a:last-child{background:#1b304c}#wa-welcome-group{margin:14px 0;padding:14px;border:1px solid #25d36666;border-radius:16px;background:#25d3660d}#wa-welcome-group a{display:inline-flex;margin-top:8px}@media(max-width:600px){#wa-contact-edge{right:8px;bottom:10px}#wa-contact-edge a{padding:8px 10px;font-size:11px}}';document.head.appendChild(style)}
  let edge=document.getElementById('wa-contact-edge');if(!edge){edge=document.createElement('aside');edge.id='wa-contact-edge';edge.setAttribute('aria-label','WhatsApp байланыс');edge.innerHTML=`<a href="${UBT_WHATSAPP}" target="_blank" rel="noopener noreferrer" aria-label="WhatsApp: 8 705 636 0080">WhatsApp · 8 705 636 0080 ↗</a><a href="${UBT_WHATSAPP_GROUP}" target="_blank" rel="noopener noreferrer">WhatsApp тобы ↗</a>`;document.body.appendChild(edge)}
@@ -13561,7 +13255,7 @@ function whatsappLinksUI(){
  const host=user?document.getElementById('ubd-home'):document.getElementById('login-box')||document.getElementById('s-login')?.querySelector('.wrap')||document.getElementById('s-login');
  const old=document.getElementById('wa-welcome-group');if(host&&old?.parentElement!==host)old?.remove();
  if(host&&!document.getElementById('wa-welcome-group')){const box=document.createElement('div');box.id='wa-welcome-group';box.innerHTML=`<b>ҰБТ PLUS WhatsApp тобы</b><p class="sub" style="margin-top:5px">Топқа қосылу үшін төмендегі батырманы басыңыз.</p><a class="btn btn-s btn-sm" href="${UBT_WHATSAPP_GROUP}" target="_blank" rel="noopener noreferrer">Топқа кіру ↗</a>`;host.prepend(box)}
- const menu=document.getElementById('premium-menu-entry');if(menu)menu.textContent='✦ Тегін · Pro · Premium · Max';
+ const menu=document.getElementById('premium-menu-entry');if(menu)menu.textContent='✦ Тегін · Pro · Premium · Класс';
 }
 const whatsappSubscriptionUI=subscriptionUI;subscriptionUI=function(){whatsappSubscriptionUI();whatsappLinksUI()};
 subscriptionUI();
@@ -13669,7 +13363,7 @@ const UI_RU={
 };
 function uiLang(){return localStorage.getItem('ubt_ui_lang')==='ru'?'ru':'kk'}
 function uiLocale(){return uiLang()==='ru'?'ru-RU':'kk-KZ'}
-function uiTranslate(s){if(uiLang()!=='ru')return s;const raw=String(s),trim=raw.trim();if(UI_RU[trim])return raw.replace(trim,UI_RU[trim]);let text=raw.replace(/^([\s←→🏆🪙📚📜🎓🎯👨‍👩‍👧⚙✦☀]+)(.*?)(\s*)$/u,(m,a,b,c)=>UI_RU[b]?a+UI_RU[b]+c:m);const patterns=[[/ҰБТ/g,'ЕНТ'],[/Басты бет/g,'Главная'],[/Апталық лига/g,'Недельная лига'],[/Монета дүкені/g,'Магазин монет'],[/Диплом \/ сертификатты ашу/g,'Открыть диплом / сертификат'],[/Қола → Күміс → Алтын → Гауһар/g,'Бронза → Серебро → Золото → Бриллиант'],[/Тегін · Pro · Premium · Max/g,'Бесплатно · Pro · Premium · Класс'],[/Бүгінгі рейтинг/g,'Рейтинг дня'],[/монетаға алу/g,'монет — купить'],[/Қола лигасы/g,'Бронзовая лига'],[/Күміс лигасы/g,'Серебряная лига'],[/Алтын лигасы/g,'Золотая лига'],[/Гауһар лигасы/g,'Бриллиантовая лига'],[/Серия:/g,'Серия:'],[/Қорғаныс:/g,'Защита:'],[/топта /g,'в группе '],[/ оқушы/g,' учеников'],[/ сұрақ/g,' вопросов'],[/ минут/g,' минут'],[/ тапсыру/g,' попыток'],[/ пайдаланылды/g,' использовано'],[/Алдыңғы апта:/g,'Предыдущая неделя:'],[/Деңгей сақталды/g,'Уровень сохранён'],[/Жоғарыладыңыз/g,'Повышение'],[/Төмендедіңіз/g,'Понижение'],[/ күн/g,' дней'],[/монета/g,'монет'],[/Апталық XP/g,'XP за неделю'],[/Соңғы толық/g,'Последний полный'],[/күн қалды/g,'дней осталось'],[/Күніне /g,'В день '],[/Аптасына /g,'В неделю '],[/пәндік тест/g,'предметных теста'],[/толық тест/g,'полных теста'],[/Сұрақ саны/g,'Количество вопросов'],[/Сұрақ /g,'Вопрос '],[/Жауап /g,'Ответ ']];for(const [a,b]of patterns)text=text.replace(a,b);return text}
+function uiTranslate(s){if(uiLang()!=='ru')return s;const raw=String(s),trim=raw.trim();if(UI_RU[trim])return raw.replace(trim,UI_RU[trim]);let text=raw.replace(/^([\s←→🏆🪙📚📜🎓🎯👨‍👩‍👧⚙✦☀]+)(.*?)(\s*)$/u,(m,a,b,c)=>UI_RU[b]?a+UI_RU[b]+c:m);const patterns=[[/ҰБТ/g,'ЕНТ'],[/Басты бет/g,'Главная'],[/Апталық лига/g,'Недельная лига'],[/Монета дүкені/g,'Магазин монет'],[/Диплом \/ сертификатты ашу/g,'Открыть диплом / сертификат'],[/Қола → Күміс → Алтын → Гауһар/g,'Бронза → Серебро → Золото → Бриллиант'],[/Тегін · Pro · Premium · Класс/g,'Бесплатно · Pro · Premium · Класс'],[/Бүгінгі рейтинг/g,'Рейтинг дня'],[/монетаға алу/g,'монет — купить'],[/Қола лигасы/g,'Бронзовая лига'],[/Күміс лигасы/g,'Серебряная лига'],[/Алтын лигасы/g,'Золотая лига'],[/Гауһар лигасы/g,'Бриллиантовая лига'],[/Серия:/g,'Серия:'],[/Қорғаныс:/g,'Защита:'],[/топта /g,'в группе '],[/ оқушы/g,' учеников'],[/ сұрақ/g,' вопросов'],[/ минут/g,' минут'],[/ тапсыру/g,' попыток'],[/ пайдаланылды/g,' использовано'],[/Алдыңғы апта:/g,'Предыдущая неделя:'],[/Деңгей сақталды/g,'Уровень сохранён'],[/Жоғарыладыңыз/g,'Повышение'],[/Төмендедіңіз/g,'Понижение'],[/ күн/g,' дней'],[/монета/g,'монет'],[/Апталық XP/g,'XP за неделю'],[/Соңғы толық/g,'Последний полный'],[/күн қалды/g,'дней осталось'],[/Күніне /g,'В день '],[/Аптасына /g,'В неделю '],[/пәндік тест/g,'предметных теста'],[/толық тест/g,'полных теста'],[/Сұрақ саны/g,'Количество вопросов'],[/Сұрақ /g,'Вопрос '],[/Жауап /g,'Ответ ']];for(const [a,b]of patterns)text=text.replace(a,b);return text}
 Object.assign(UI_RU,{
 'Дүйсенбіде жаңа апта басталады. Кемінде 10 белсенді қатысушы болғанда үздік 5 жоғарылайды, соңғы 5 төмендейді. Қола лигасынан төмен түспейді, Гауһардан жоғары көтерілмейді.':'Новая неделя начинается в понедельник. При 10 активных участниках и более первые 5 повышаются, последние 5 понижаются. Ниже Бронзы и выше Бриллианта переходов нет.',
 'Күніне ең көбі 100 XP. Өз тестіңіз және бір жинақты сол күні қайталау жаңа XP бермейді. Тең ұпайда топқа ертерек қосылған қатысушы алда болады.':'Не более 100 XP в день. Свои тесты и повтор одного набора в тот же день не дают новых XP. При равных очках выше участник, вступивший в группу раньше.',
@@ -13694,81 +13388,6 @@ const uiOriginalAlert=window.alert.bind(window),uiOriginalConfirm=window.confirm
 new MutationObserver(uiQueueTranslate).observe(document.body,{childList:true,subtree:true,characterData:true});
 const uiSubscriptionUI=subscriptionUI;subscriptionUI=function(){uiSubscriptionUI();uiLanguageControl()};uiLanguageControl();
 
-/* UBT PLUS: site-wide context-menu deterrent + per-user visible watermark.
-   A normal website cannot disable the iOS hardware screenshot function. */
-(function(){
-  'use strict';
-  var wm=null, timer=null, lastLabel='';
-  function isPrimaryOwner(){try{return !!(user&&user.isAdmin&&user.id==='admin')}catch(e){return false}}
-  function loggedIn(){try{return !!(user&&user.id)}catch(e){return false}}
-  function label(){
-    try{
-      var name=String(user.name||user.login||'Қолданушы').slice(0,48);
-      var id=String(user.id||'').slice(0,32);
-      var stamp=new Date().toLocaleString('kk-KZ',{dateStyle:'short',timeStyle:'short'});
-      return 'ҰБТ PLUS  •  '+name+'  •  UID: '+id+'  •  '+stamp;
-    }catch(e){return 'ҰБТ PLUS · ҚОРҒАЛҒАН МАТЕРИАЛ'}
-  }
-  function installCss(){
-    if(document.getElementById('ubt-security-style'))return;
-    var st=document.createElement('style');st.id='ubt-security-style';
-    st.textContent=''
-      +'html,body,.screen,.screen *{-webkit-touch-callout:none}'
-      +'body:not(.primary-owner),body:not(.primary-owner) .screen,body:not(.primary-owner) .screen *{-webkit-user-select:none!important;user-select:none!important;-webkit-user-drag:none!important}'
-      +'body:not(.primary-owner) input,body:not(.primary-owner) textarea,body:not(.primary-owner) [contenteditable="true"],body:not(.primary-owner) [contenteditable="true"] *{-webkit-user-select:text!important;user-select:text!important;-webkit-touch-callout:default!important}'
-      +'#ubt-security-watermark{position:fixed;inset:0;z-index:99990;display:none;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:repeat(5,minmax(0,1fr));align-items:center;justify-items:center;overflow:hidden;pointer-events:none!important;contain:strict;opacity:.16}'
-      +'#ubt-security-watermark .ubt-wm-label{display:block;max-width:95vw;white-space:nowrap;transform:rotate(-27deg);font:700 10px/1.4 Arial,sans-serif;letter-spacing:.5px;color:#64748b;text-shadow:0 1px 1px #fff;padding:8px 3px}'
-      +'@media(max-width:700px){#ubt-security-watermark{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(6,minmax(0,1fr));opacity:.20}#ubt-security-watermark .ubt-wm-label{font-size:9px;white-space:normal;text-align:center;overflow-wrap:anywhere}}'
-      +'@media print{#ubt-security-watermark{display:none!important}}';
-    document.head.appendChild(st);
-  }
-  function paint(){
-    if(!document.body)return;
-    installCss();
-    if(!loggedIn()||isPrimaryOwner()||document.getElementById('s-login')?.classList.contains('active')){
-      if(wm)wm.style.display='none';return;
-    }
-    if(!wm||!wm.isConnected){wm=document.createElement('div');wm.id='ubt-security-watermark';wm.setAttribute('aria-hidden','true');for(var i=0;i<12;i++){var span=document.createElement('span');span.className='ubt-wm-label';wm.appendChild(span)}document.body.appendChild(wm)}
-    var text=label();
-    if(text!==lastLabel){lastLabel=text;wm.querySelectorAll('.ubt-wm-label').forEach(function(el){el.textContent=text})}
-    wm.style.display='grid';
-  }
-  function blockContext(e){
-    if(!loggedIn()||isPrimaryOwner())return;
-    if(e.type==='mousedown'&&e.button!==2)return;
-    e.preventDefault();e.stopPropagation();if(e.stopImmediatePropagation)e.stopImmediatePropagation();return false;
-  }
-  function protectDoc(d){
-    if(!d||d.__ubtContextShield)return;
-    try{Object.defineProperty(d,'__ubtContextShield',{value:true,configurable:true})}catch(e){d.__ubtContextShield=true}
-    d.addEventListener('contextmenu',blockContext,true);
-    d.addEventListener('mousedown',blockContext,true);
-    d.addEventListener('dragstart',function(e){if(loggedIn()&&!isPrimaryOwner()){e.preventDefault();e.stopImmediatePropagation()}},true);
-    d.addEventListener('selectstart',function(e){if(loggedIn()&&!isPrimaryOwner()&&!e.target.closest?.('input,textarea,[contenteditable="true"]'))e.preventDefault()},true);
-  }
-  protectDoc(document);
-  try{protectDoc(window.parent.document)}catch(e){}
-  try{protectDoc(window.top.document)}catch(e){}
-  document.addEventListener('keydown',function(e){
-    if(!loggedIn()||isPrimaryOwner())return;
-    var k=String(e.key||'').toLowerCase(),mod=e.ctrlKey||e.metaKey;
-    if(k==='contextmenu'||(mod&&['c','x','s','p','u'].indexOf(k)>=0)||(mod&&e.shiftKey&&['i','j','c','s'].indexOf(k)>=0)){
-      e.preventDefault();e.stopImmediatePropagation();
-    }
-    if(e.key==='PrintScreen'||e.code==='PrintScreen'){
-      // This can deter keyboard-triggered capture, but cannot stop iOS/OS screenshots.
-      e.preventDefault();
-      var note=document.getElementById('ubt-capture-note');
-      if(!note){note=document.createElement('div');note.id='ubt-capture-note';note.textContent='Материал авторлық сутаңбамен қорғалған';note.style.cssText='position:fixed;z-index:100002;left:50%;bottom:22px;transform:translateX(-50%);background:#172554;color:#fff;padding:10px 16px;border-radius:12px;font:600 13px Arial;pointer-events:none';document.body.appendChild(note)}
-      note.style.display='block';setTimeout(function(){note.style.display='none'},2200);
-    }
-  },true);
-  paint();
-  timer=setInterval(paint,1200);
-  document.addEventListener('visibilitychange',function(){if(!document.hidden)paint()});
-  try{var priorShow=showScr;showScr=function(){var result=priorShow.apply(this,arguments);setTimeout(paint,50);return result}}catch(e){}
-  try{new MutationObserver(function(){if(!wm||!wm.isConnected)paint()}).observe(document.documentElement,{childList:true,subtree:true})}catch(e){}
-})();
 </script>
 <script>
 (function(){
@@ -13945,10 +13564,10 @@ const uiSubscriptionUI=subscriptionUI;subscriptionUI=function(){uiSubscriptionUI
   window.__bridge={push:push,call:call,refresh:refresh,clearLocal:clearLocal,connected:function(){return connected}};
   post({type:'streamlit:componentReady',apiVersion:1});height();
   var lastFocusSync=0;
-  function syncOnReturn(){if(!connected||document.visibilityState==='hidden'||!window.__token)return;var now=Date.now();if(now-lastFocusSync<60000)return;lastFocusSync=now;send()}
+  function syncOnReturn(){if(!connected||document.visibilityState==='hidden'||!window.__token)return;var now=Date.now();if(now-lastFocusSync<30000)return;lastFocusSync=now;send()}
   document.addEventListener('visibilitychange',syncOnReturn);
   window.addEventListener('focus',syncOnReturn);
-  setInterval(function(){if(connected&&document.visibilityState!=='hidden')send()},60000);
+  setInterval(function(){if(connected&&document.visibilityState!=='hidden')send()},30000);
   setTimeout(boot,100);
 })();
 </script>
