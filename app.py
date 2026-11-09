@@ -181,6 +181,7 @@ def _store():
              "sessions": {}, "chat_claims": {}, "fails": {}, "reg": {}, "exams": {}, "rev": 1}
     _remote_sync(state)
     _restore_exams(state)
+    _seed_real_bank_demo(state)
     _migrate_start(state)
     return state
 
@@ -597,17 +598,30 @@ def _start_exam(state, sess, d):
             if sess.get("codeGuest"):
                 return {"ok":False,"msg":"Аккаунтыңызға кіріңіз"}
             subject = tid[5:]
-            if subject not in _SUBJECT_NAMES:
+            if subject not in _SUBJECT_NAMES and subject != "all":
                 return {"ok":False,"msg":"Пән табылмады"}
-            pool = _jload(state["db"].get("ubt_server_exam_real_bank", "{}"), dict, {}).get(subject, [])
+            banks = _jload(state["db"].get("ubt_server_exam_real_bank", "{}"), dict, {})
+            pool = [dict(q,subject=key,subjectName=_SUBJECT_NAMES[key]) for key,rows in banks.items() if key in _SUBJECT_NAMES for q in rows] if subject == "all" else banks.get(subject, [])
             count = d.get("count", 20)
             minutes = d.get("minutes", 30)
             if type(count) is not int or not 1 <= count <= 500 or type(minutes) is not int or not 1 <= minutes <= 300:
                 return {"ok":False,"msg":"Сұрақ саны 1–500, уақыт 1–300 минут болсын"}
             if len(pool) < count:
                 return {"ok":False,"msg":"Бұл пәнде жеткілікті сұрақ жоқ. Қолжетімді: " + str(len(pool))}
-            test = {"id":tid,"authorId":"system","topic":"ҰБТ базасы","subjectName":_SUBJECT_NAMES[subject],
-                    "questions":secrets.SystemRandom().sample(pool,count),"timerMin":minutes}
+            rng = secrets.SystemRandom()
+            selected = rng.sample(pool,count)
+            if subject == "all":
+                groups = {}
+                for q in pool: groups.setdefault(q["subject"], []).append(q)
+                if count >= len(groups):
+                    selected = [rng.choice(rows) for rows in groups.values()]
+                    used = {q["id"] for q in selected}
+                    selected += rng.sample([q for q in pool if q["id"] not in used], count-len(selected))
+                # Keep each subject together for the existing test navigation.
+                selected.sort(key=lambda q:list(_SUBJECT_NAMES).index(q["subject"]))
+            test = {"id":tid,"authorId":"system","topic":"ҰБТ базасы · аралас тест" if subject=="all" else "ҰБТ базасы",
+                    "subjectName":"Барлық пәндер" if subject=="all" else _SUBJECT_NAMES[subject],
+                    "questions":selected,"timerMin":minutes}
         if not test:
             test=_recover_received_test(state,sess,tid)
         if not test:
@@ -1468,6 +1482,23 @@ def _content_key(row, kind):
         return _jdump([row.get("subject"), sorted({_content_key(q,"question") for q in row.get("questions",[]) if isinstance(q,dict)})])
     fields = ("c","t","d") if kind == "glossary" else ("subject","title","body")
     return _jdump([norm(row.get(k)) for k in fields])
+
+def _seed_real_bank_demo(state):
+    # One-time samples for preview; deliberately not labelled as past exam questions.
+    with state["lock"]:
+        if state["db"].get("ubt_server_exam_real_demo_v1"):
+            return
+        banks = _jload(state["db"].get("ubt_server_exam_real_bank", "{}"), dict, {})
+        samples = [
+            ("history", {"id":"real_demo_history_v1","text":"[ҮЛГІ] Қазақстан тәуелсіздігін қай жылы жариялады?","options":["1986","1991","1995","1997"],"correct":1}),
+            ("math", {"id":"real_demo_math_v1","text":"[ҮЛГІ] 2x + 6 = 14 теңдеуіндегі x мәнін табыңыз.","options":["2","3","4","5"],"correct":2})]
+        for subject, q in samples:
+            rows = banks.setdefault(subject, [])
+            if not any(row.get("id") == q["id"] for row in rows):
+                rows.append({**q,"realBank":True,"isDemo":True,"subject":subject,"subjectName":_SUBJECT_NAMES[subject],"points":1,"source":"Көрсетуге арналған үлгі — нақты ҰБТ сұрағы емес"})
+        _put(state,"ubt_server_exam_real_bank",_jdump(banks))
+        _put(state,"ubt_server_exam_real_demo_v1","true")
+        _commit(state)
 
 def _real_bank_import(state, sess, d):
     """Owner-managed, isolated past-UNT question storage, partitioned by subject."""
@@ -4427,7 +4458,7 @@ body:not(.primary-owner) input,body:not(.primary-owner) textarea,body:not(.prima
     <button type="button" class="app-menu-home" onclick="showSchoolPeople('students')">Оқушылар</button>
     <button type="button" class="app-menu-home" onclick="showSchoolClasses()">Сыныптар тізімі</button>
     <button type="button" class="app-menu-home" onclick="showApprovedTests()">Админ мақұлдаған тесттер</button><button type="button" class="app-menu-home" onclick="showNotifications()">Хабарламалар <span class="test-notification-count"></span></button>
-    <button class="mode" style="border-color:#3977ee;background:#3977ee15" onclick="showRealUbtBank()"><span class="ic">🎯</span><h3>ҰБТ базасы</h3><p>ҰБТ тесттері · әр пәннің сұрақтары бөлек</p></button>
+    <button class="mode" style="border:2px solid #dc2626;background:#fee2e2;color:#991b1b" onclick="showRealUbtBank()"><span class="ic">🎯</span><h3>ҰБТ базасы</h3><p>ҰБТ тесттері · әр пәннің сұрақтары бөлек</p></button>
     <button class="mode" onclick="showUbt140()"><span class="ic">🎓</span><h3>140 формат</h3><p>Сұрақтарды базадан таңдаңыз немесе кездейсоқ алыңыз</p></button>
     <button class="mode" onclick="startQuickSubject()"><span class="ic">📘</span><h3>Пән тесттерім</h3><p>Әр пән бөлек · базадан өзім таңдау немесе кездейсоқ бастау</p></button>
     <details class="app-menu-group" open><summary>Сабақ</summary><div class="app-menu-items">      <div class="mode" onclick="showLessons()"><div class="ic">🎬</div><h3>Анимация сабақтар</h3><p>Анимация + код</p></div></div></details>
@@ -5427,6 +5458,10 @@ body.dark #s-login{background:radial-gradient(ellipse at 10% 8%,#273d7144,transp
 @media(max-height:650px) and (min-width:761px){#s-login>.wrap{justify-content:flex-start;padding-top:24px!important}#auth-sliding-panel,#auth-sliding-panel .auth-forms{min-height:470px}}
 </style>
 
+<style id="real-ubt-red-entry">
+.clean-action[onclick="showRealUbtBank()"]{grid-column:1/-1;background:linear-gradient(125deg,#b91c1c,#ef4444)!important;border:2px solid #f87171!important;color:white!important;min-height:130px}
+.clean-action[onclick="showRealUbtBank()"] h3,.clean-action[onclick="showRealUbtBank()"] p,.clean-action[onclick="showRealUbtBank()"] span{color:white!important}
+</style>
 <style id="welcome-and-entry">
 .auth-welcome-caption{display:block;color:#cbd4fc;font-size:11px;font-weight:700;letter-spacing:.13em;margin-bottom:22px}.dashboard-enter .clean-hero,.dashboard-enter .clean-stats,.dashboard-enter .clean-actions,.dashboard-enter .clean-recent{animation:dashboard-arrive .65s both!important}.dashboard-enter .clean-stats{animation-delay:.12s!important}.dashboard-enter .clean-actions{animation-delay:.24s!important}.dashboard-enter .clean-recent{animation-delay:.36s!important}@keyframes dashboard-arrive{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}#quick-account-login:empty{display:none}#quick-account-login:not(:empty){margin-bottom:23px;padding-bottom:17px;border-bottom:1px solid #e0e6f1}.quick-forget{display:block;margin:9px auto 0;border:0;background:none;color:#7b879f;padding:6px;cursor:pointer;font-size:12px}.auth-welcome-caption{animation:dashboard-arrive .6s both}@media(max-width:760px){.auth-welcome-caption{margin-bottom:10px;font-size:10px}}@media(prefers-reduced-motion:reduce){.dashboard-enter .clean-hero,.dashboard-enter .clean-stats,.dashboard-enter .clean-actions,.dashboard-enter .clean-recent,.auth-welcome-caption{animation:none!important}}
 </style>
@@ -5440,24 +5475,25 @@ async function showRealUbtBank(){
  closeAppMenu();
  if(!document.getElementById('s-real-ubt')){
   const screen=document.createElement('section');screen.id='s-real-ubt';screen.className='screen';
-  screen.innerHTML='<div class="wrap wide"><button class="btn btn-s btn-sm" onclick="goHome()">← Басты бет</button><div class="clean-hero" style="margin-top:18px;background:linear-gradient(135deg,#17356c,#3767d8);color:#fff"><span style="letter-spacing:.12em;font-size:12px">ПӘН БОЙЫНША ДАЙЫНДЫҚ</span><h1 style="color:#fff;margin:12px 0">🎯 ҰБТ базасы</h1><p style="color:#e0eaff">Әр пәннің сұрақтары жеке сақталады. Осы бөлімнің сұрақтары 140 форматқа және жеке пән тесттеріне қосылмайды.</p></div><div class="card"><h3>1. Пәнді таңдаңыз</h3><div id="real-ubt-subjects" class="grid2" style="margin-top:16px"></div></div><div class="card" style="margin-top:16px"><h3 id="real-ubt-title">2. Тестті баптаңыз</h3><div class="grid2" style="margin-top:16px"><div class="fg"><label>Сұрақ саны (1–500)</label><input id="real-ubt-count" type="number" min="1" max="500" value="20"></div><div class="fg"><label>Уақыт, минут</label><input id="real-ubt-minutes" type="number" min="1" max="300" value="30"></div></div><p id="real-ubt-status" class="sub" role="status"></p><button id="real-ubt-start" class="btn btn-p" style="margin-top:16px;background:#3977ee" onclick="startRealUbtBank()">▶ ҰБТ тестін бастау</button><p class="sub" style="margin-top:12px">Сұрақтар пәннің жеке базасынан кездейсоқ алынады. Бұл — админ енгізген дайындық жинағы; ҰТО-ның ресми сервисі емес.</p></div></div>';
+  screen.innerHTML='<div class="wrap wide"><button class="btn btn-s btn-sm" onclick="goHome()">← Басты бет</button><div class="clean-hero" style="margin-top:18px;background:linear-gradient(135deg,#17356c,#3767d8);color:#fff"><span style="letter-spacing:.12em;font-size:12px">ПӘН БОЙЫНША ДАЙЫНДЫҚ</span><h1 style="color:#fff;margin:12px 0">🎯 ҰБТ базасы</h1><p style="color:#e0eaff">Жалпы аралас тест тапсырыңыз немесе жеке пәнді таңдаңыз. Әр пәннің сұрақтары бөлек сақталады. Осы бөлімнің сұрақтары 140 форматқа және жеке пән тесттеріне қосылмайды.</p></div><div class="card"><h3>1. Пәнді таңдаңыз</h3><div id="real-ubt-subjects" class="grid2" style="margin-top:16px"></div></div><div class="card" style="margin-top:16px"><h3 id="real-ubt-title">2. Тестті баптаңыз</h3><div class="grid2" style="margin-top:16px"><div class="fg"><label>Сұрақ саны (1–500)</label><input id="real-ubt-count" type="number" min="1" max="500" value="20"></div><div class="fg"><label>Уақыт, минут</label><input id="real-ubt-minutes" type="number" min="1" max="300" value="30"></div></div><p id="real-ubt-status" class="sub" role="status"></p><button id="real-ubt-start" class="btn btn-p" style="margin-top:16px;background:#3977ee" onclick="startRealUbtBank()">▶ ҰБТ тестін бастау</button><p class="sub" style="margin-top:12px">Сұрақтар пәннің жеке базасынан кездейсоқ алынады. Көруге арналған 2 сұрақ [ҮЛГІ] деп белгіленген, олар нақты ҰБТ сұрақтары емес. Жалпы тест — базадағы пәндерден жиналатын аралас жаттығу. Бұл — админ енгізген дайындық жинағы; ҰТО-ның ресми сервисі емес.</p></div></div>';
   document.body.appendChild(screen);
  }
- showScr('s-real-ubt');renderRealUbtBank();
- try{await window.__bridge.refresh();if(document.getElementById('s-real-ubt').classList.contains('active'))renderRealUbtBank()}catch(e){}
+ showScr('s-real-ubt');chooseRealUbtSubject(realUbtSubject);
+ try{await window.__bridge.refresh();if(document.getElementById('s-real-ubt').classList.contains('active'))chooseRealUbtSubject(realUbtSubject)}catch(e){}
 }
-let realUbtSubject='history';
+let realUbtSubject='all';
+function realUbtCount(meta,key){return key==='all'?Object.values(meta).reduce((sum,n)=>sum+(Number(n)||0),0):Number(meta[key])||0}
 function renderRealUbtBank(){
- const meta=LS.get('ubt_real_bank_meta',{}),subjects=Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value&&o.value!=='other');
+ const meta=LS.get('ubt_real_bank_meta',{}),subjects=[{value:'all',textContent:'🎯 Жалпы тапсыру · барлық пәндер'},...Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value&&o.value!=='other')];
  const grid=document.getElementById('real-ubt-subjects');if(!grid)return;
- grid.innerHTML=subjects.map(o=>`<button type="button" class="subject-choice${realUbtSubject===o.value?' selected':''}" aria-pressed="${realUbtSubject===o.value}" onclick="chooseRealUbtSubject(${jsq(o.value)})"><span class="subject-mark">📚</span><span><strong>${esc(o.textContent)}</strong><small>${Number(meta[o.value])||0} сұрақ · жеке база</small></span></button>`).join('');
- const n=Number(meta[realUbtSubject])||0;
- document.getElementById('real-ubt-title').textContent='2. '+subjName(realUbtSubject)+' · ҰБТ тесті';
+ grid.innerHTML=subjects.map(o=>`<button type="button" class="subject-choice${realUbtSubject===o.value?' selected':''}" aria-pressed="${realUbtSubject===o.value}" onclick="chooseRealUbtSubject(${jsq(o.value)})"><span class="subject-mark">📚</span><span><strong>${esc(o.textContent)}</strong><small>${realUbtCount(meta,o.value)} сұрақ${o.value==='all'?' · аралас тест':' · жеке база'}</small></span></button>`).join('');
+ const n=realUbtCount(meta,realUbtSubject);
+ document.getElementById('real-ubt-title').textContent='2. '+(realUbtSubject==='all'?'Барлық пәндер · жалпы тапсыру':subjName(realUbtSubject)+' · ҰБТ тесті');
  document.getElementById('real-ubt-status').textContent=n?'Базада '+n+' сұрақ бар.':'Бұл пәнге әлі сұрақ жүктелмеген. Админ JSON арқылы қосқаннан кейін ашылады.';
  document.getElementById('real-ubt-start').disabled=!n||realUbtStarting;
 }
 function chooseRealUbtSubject(key){
- realUbtSubject=key;const n=Number(LS.get('ubt_real_bank_meta',{})[key])||0;
+ realUbtSubject=key;const n=realUbtCount(LS.get('ubt_real_bank_meta',{}),key);
  document.getElementById('real-ubt-count').value=Math.min(20,n)||1;renderRealUbtBank();
 }
 async function startRealUbtBank(){
@@ -5469,7 +5505,7 @@ async function startRealUbtBank(){
   const actor=user.id,r=await authCall('start_exam',{testId:'real:'+realUbtSubject,count,minutes});
   if(!user||user.id!==actor)return;
   if(!r.ok)throw Error(r.msg||'Тест басталмады');
-  st=baseState();st.isRealUbt=true;st.secureExam=r.exam;st.allowInstantFeedback=r.allowInstantFeedback===true;st.questions=r.questions.map(q=>({...q,realBank:true,subjectName:r.topic}));st.subjectName=r.topic;st.timerSeconds=r.timer;
+  st=baseState();st.isRealUbt=true;st.secureExam=r.exam;st.allowInstantFeedback=r.allowInstantFeedback===true;st.questions=r.questions.map(q=>({...q,realBank:true,subjectName:q.subjectName||r.topic}));st.subjectName=r.topic;st.timerSeconds=r.timer;
   beginTest();
  }catch(e){document.getElementById('real-ubt-status').textContent=e.message||'Байланысты тексеріңіз'}
  finally{realUbtStarting=false;renderRealUbtBank()}
@@ -6602,7 +6638,7 @@ async function startUserTest(id,accessCode){
   const permit=assignedStartPermit&&assignedStartPermit.testId===id?assignedStartPermit:null;
   const r=await authCall('start_exam',{testId:id,accessCode:accessCode||'',assignmentId:permit&&permit.id,attemptToken:permit&&permit.attemptToken});
   if(!r.ok){alert(r.msg||'Тест басталмады');return}
-  st=baseState();st.questions=r.questions.map(q=>({...q,subjectName:r.topic}));st.subjectName=r.topic;st.testId=id;
+  st=baseState();st.questions=r.questions.map(q=>({...q,subjectName:q.subjectName||r.topic}));st.subjectName=r.topic;st.testId=id;
   st.secureExam=r.exam;st.allowInstantFeedback=r.allowInstantFeedback===true;st.timerSeconds=r.timer;beginTest();
 }
 const bankSearchTimers=new Map();
@@ -8071,7 +8107,7 @@ async function submitSecureResult(){
     if(!r.ok)throw Error(r.msg||'Сервер нәтижеңізді сақтай алмады');
     st.examSubmitting=false;st.secureExam=null;st.verifiedExam=r;
     try{sessionStorage.removeItem(pendingResultKey())}catch(e){}
-    st.questions=r.questions.map(q=>({...q,subjectName:st.subjectName}));finishTest(true);
+    st.questions=r.questions.map(q=>({...q,subjectName:q.subjectName||st.subjectName}));finishTest(true);
     try{await window.__bridge.refresh();refreshProfileBar()}catch(e){}
   }catch(e){if(st!==attempt)return;st.examSubmitting=false;showResultRetry(String(e.message||e)+(remembered?'':' Жергілікті сақтау орны қолжетімсіз — жауаптарды файлға сақтаңыз.'))}
 }
@@ -8081,7 +8117,7 @@ async function resumeSavedExam(){
     const r=await authCall('resume_exam',{exam:st.secureExam});
     if(!r.ok){showResultRetry(r.msg||'Тест ашылмады');return}
     if(r.completed||r.timer<=0){await submitSecureResult();return}
-    st.questions=r.questions.map(q=>({...q,subjectName:r.topic}));st.subjectName=r.topic;
+    st.questions=r.questions.map(q=>({...q,subjectName:q.subjectName||r.topic}));st.subjectName=r.topic;
     st.timerSeconds=r.timer;st.instantFeedback=false;
     document.getElementById('result-retry')?.remove();showScr('s-test');renderNav();renderQ();startTimer();updateProg();lockStart();rememberPendingResult('active');
   }catch(e){showResultRetry('Байланыс жоқ. Кейін қайта байқап көріңіз.')}
@@ -11467,7 +11503,7 @@ async function schoolDeleteClass(cid,button){
  function codeLanding(){roles();document.getElementById('code-access-title').textContent=user?.codeTitle||'Тест';showScr('s-code-access')}
  document.getElementById('test-access-enter').onclick=()=>guarded(async()=>{const status=document.getElementById('test-access-error');status.textContent='Тексерілуде…';const r=await authCall('code_login',{code:document.getElementById('test-access-code').value});if(!r.ok){status.textContent=r.msg||'Код жарамсыз';return}status.textContent='';document.getElementById('test-access-code').value='';await startSession(r)});
  document.getElementById('test-access-code').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();document.getElementById('test-access-enter').click()}});
- document.getElementById('code-only-start').onclick=()=>guarded(async()=>{const status=document.getElementById('code-start-status');status.textContent='Тест ашылуда…';const r=await authCall('code_start',{});if(!r.ok){status.textContent=r.msg||'Код жарамсыз';return}status.textContent='';st=baseState();st.subjectName=r.topic;st.questions=r.questions.map(q=>({...q,subjectName:r.topic}));st.secureExam=r.exam;st.timerSeconds=r.timer;st.allowInstantFeedback=false;beginTest();document.getElementById('ubt-start-confirm')?.click()});
+ document.getElementById('code-only-start').onclick=()=>guarded(async()=>{const status=document.getElementById('code-start-status');status.textContent='Тест ашылуда…';const r=await authCall('code_start',{});if(!r.ok){status.textContent=r.msg||'Код жарамсыз';return}status.textContent='';st=baseState();st.subjectName=r.topic;st.questions=r.questions.map(q=>({...q,subjectName:q.subjectName||r.topic}));st.secureExam=r.exam;st.timerSeconds=r.timer;st.allowInstantFeedback=false;beginTest();document.getElementById('ubt-start-confirm')?.click()});
  const enter=enterApp;enterApp=function(){roles();if(user?.isCodeGuest){codeLanding();setTimeout(restorePendingResult,0);return}return enter.apply(this,arguments)};
  const show=showScr;showScr=function(id){roles();if(user?.isCodeGuest&&!['s-code-access','s-test','s-res','s-login'].includes(id))id='s-code-access';const r=show.call(this,id);if(id==='s-admin'&&user?.isAdmin)loadAccessPanel();if(id==='s-res'&&user?.isCodeGuest){let exit=document.getElementById('code-result-exit');if(!exit){exit=document.createElement('button');exit.id='code-result-exit';exit.className='btn btn-p';exit.textContent='Тесттен шығу';exit.onclick=()=>doLogout();document.querySelector('#s-res .wrap').appendChild(exit)}}return r};
  const sync=syncRefresh;syncRefresh=function(){roles();if(user?.isCodeGuest)return;return sync.apply(this,arguments)};
@@ -11598,7 +11634,7 @@ async function schoolDeleteClass(cid,button){
   if(kind==='assignment'){permit=await authCall('start_assigned_test',{id});if(!permit.ok){if(notice)notice.textContent=permit.msg||'Тест ашылмады';alert(permit.msg||'Тест ашылмады');return}}
   const r=await authCall('start_exam',{testId:permit?permit.testId:id,assignmentId:permit?id:undefined,attemptToken:permit?.attemptToken});
   if(!r.ok){if(notice)notice.textContent=r.msg||'Тест ашылмады';alert(r.msg||'Тест ашылмады');return}
-  if(notice)notice.textContent='';st=baseState();st.questions=r.questions.map(q=>({...q,subjectName:r.topic}));st.subjectName=r.topic;st.secureExam=r.exam;st.timerSeconds=r.timer;st.allowInstantFeedback=true;beginTest();document.getElementById('ubt-start-confirm')?.click();
+  if(notice)notice.textContent='';st=baseState();st.questions=r.questions.map(q=>({...q,subjectName:q.subjectName||r.topic}));st.subjectName=r.topic;st.secureExam=r.exam;st.timerSeconds=r.timer;st.allowInstantFeedback=true;beginTest();document.getElementById('ubt-start-confirm')?.click();
  };
  const originalSelect=selOpt;
  selOpt=async function(index){
