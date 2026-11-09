@@ -547,7 +547,7 @@ def _secure_snapshot(state,sess,db):
                 db[key]='[]'
     info=_subscription_info(state,sess)
     db['ubt_entitlement']=_jdump(info)
-    if not info['premium']:
+    if info['plan']=='free':
         for prefix in ('ubt_hist_','ubt_prog_'):
             key=prefix+sess['uid']
             if key in db:
@@ -628,12 +628,15 @@ def _subscription_info(state,sess):
     if not record:
         record={'plan':'free','expires':0,'trialUsed':False,'trialUntil':0,'welcomeFull':1,'created':time.time()}
         _put(state,key,_jdump(record))
-    now=time.time();staff=bool(sess.get('admin') or sess.get('juniorAdmin') or _is_teacher(state,uid))
-    paid=record.get('plan')=='premium' and record.get('expires',0)>now
-    trial=record.get('trialUntil',0)>now
-    premium=staff or paid or trial
+    now=time.time();staff=bool(sess.get('admin') and uid=='admin')
+    paid=record.get('plan') in ('pro','premium','class') and record.get('expires',0)>now
+    trial=False # Paid entitlements can only be granted by the owner.
+    plan='staff' if staff else record.get('plan') if paid else 'free'
+    premium=staff or (paid and plan in ('premium','class'))
+    subject_limit=5 if plan=='pro' else _FREE_SUBJECT_TESTS
+    full_limit=3 if plan=='pro' else _FREE_FULL_TESTS
     usage=_subscription_usage(state,uid)
-    return {'uid':uid,'premium':premium,'staff':staff,'plan':'staff' if staff else 'premium' if paid else 'trial' if trial else 'free','expires':record.get('expires',0) if paid else record.get('trialUntil',0) if trial else 0,'trialUsed':bool(record.get('trialUsed')),'trialDays':_TRIAL_DAYS,'welcomeFull':record.get('welcomeFull',0),'subjectRemaining':max(0,_FREE_SUBJECT_TESTS-usage['subjectCount']),'fullRemaining':max(0,_FREE_FULL_TESTS-usage['fullCount']),'dailyRemaining':max(0,1-usage['dailyCount']),'previewCount':_FREE_PREVIEW_QUESTIONS,'autoRenew':False}
+    return {'uid':uid,'premium':premium,'staff':staff,'plan':plan,'paid':paid,'subjectLimit':subject_limit,'fullLimit':full_limit,'expires':record.get('expires',0) if paid else record.get('trialUntil',0) if trial else 0,'trialUsed':bool(record.get('trialUsed')),'trialDays':0,'welcomeFull':record.get('welcomeFull',0),'subjectRemaining':max(0,subject_limit-usage['subjectCount']),'fullRemaining':max(0,full_limit-usage['fullCount']),'dailyRemaining':max(0,1-usage['dailyCount']),'previewCount':_FREE_PREVIEW_QUESTIONS,'autoRenew':False}
 
 def _subscription_usage(state,uid):
     key='ubt_server_access_usage_'+uid
@@ -655,8 +658,8 @@ def _subscription_preflight(state,sess,exam):
     if info['premium']:return ''
     kind=_subscription_kind(exam)
     if kind=='daily' and not info['dailyRemaining']:return 'Бүгінгі 5 сұрақ ашылған. Жаңа сұрақтар ертең қолжетімді.'
-    if kind=='full' and not (info['welcomeFull'] or info['fullRemaining']):return 'Осы аптаның тегін толық тесті аяқталды. Premium-да толық тесттер шектеусіз.'
-    if kind=='subject' and not info['subjectRemaining']:return 'Бүгінгі 2 тегін пәндік тест пайдаланылды. Ертең жаңарады немесе Premium қосуға болады.'
+    if kind=='full' and not (info['welcomeFull'] or info['fullRemaining']):return 'Осы тарифтің апталық толық тест лимиті аяқталды. Тарифті өзгерту үшін басты админге жазыңыз.'
+    if kind=='subject' and not info['subjectRemaining']:return 'Бүгінгі пәндік тест лимиті аяқталды. Ертең жаңарады немесе тарифті өзгертуге болады.'
     return ''
 
 def _subscription_prepare(state,sess,exam):
@@ -664,7 +667,7 @@ def _subscription_prepare(state,sess,exam):
     if issue:return issue
     info=_subscription_info(state,sess);exam['premiumAtStart']=info['premium']
     # Limit shared subject collections only; never restrict the author's own content or full-format exams.
-    if not info['premium'] and _subscription_kind(exam)=='subject' and not exam.get('selfAuthored') and len(exam['questions'])>_FREE_PREVIEW_QUESTIONS:
+    if info['plan']=='free' and _subscription_kind(exam)=='subject' and not exam.get('selfAuthored') and len(exam['questions'])>_FREE_PREVIEW_QUESTIONS:
         exam['questions']=exam['questions'][:_FREE_PREVIEW_QUESTIONS]
         exam['topic']+=' · Тегін танысу нұсқасы'
         exam['freePreview']=True
@@ -696,12 +699,7 @@ def _subscription_request(state,sess,typ,d):
     with state['lock']:
         if typ=='subscription_status':return {'ok':True,'subscription':_subscription_info(state,sess)}
         if typ=='subscription_trial':
-            info=_subscription_info(state,sess)
-            if info['premium']:return {'ok':False,'msg':'Сізде Premium қазірдің өзінде белсенді'}
-            if info['trialUsed']:return {'ok':False,'msg':'Бұл аккаунт сынақ мерзімін бұрын пайдаланған'}
-            key='ubt_server_access_subscription_'+sess['uid'];r=_jload(state['db'][key],dict,{})
-            r.update(trialUsed=True,trialUntil=time.time()+_TRIAL_DAYS*86400);_put(state,key,_jdump(r));_commit(state)
-            return {'ok':True,'subscription':_subscription_info(state,sess)}
+            return {'ok':False,'msg':'Тарифті тек басты админ қосады. WhatsApp: 8 705 636 0080'}
         if typ=='subscription_request':
             key='ubt_server_access_premium_requests';requests=_jload(state['db'].get(key,'{}'),dict,{})
             old=requests.get(sess['uid'],{})
@@ -711,6 +709,18 @@ def _subscription_request(state,sess,typ,d):
         if typ=='owner_subscription_list':
             requests=_jload(state['db'].get('ubt_server_access_premium_requests','{}'),dict,{})
             return {'ok':True,'requests':sorted([r for r in requests.values() if r.get('pending')],key=lambda r:r.get('created',0),reverse=True)[:50]}
+        if typ=='owner_subscription_set' and d.get('logins') is not None:
+            logins=d.get('logins');days=d.get('days',30)
+            if d.get('plan')!='class' or not isinstance(logins,list) or not 1<=len(logins)<=30 or type(days) is not int or not 1<=days<=3650:return {'ok':False,'msg':'Класс: 1–30 логин және 1–3650 күн енгізіңіз'}
+            names={str(p.get('name','')).casefold():p for p in _profiles(state).values()}
+            targets=[]
+            for login in logins:
+                if not isinstance(login,str) or login.strip().casefold() not in names:return {'ok':False,'msg':'Логин табылмады: '+str(login)[:40]}
+                target=names[login.strip().casefold()]
+                if target['id']=='admin':return {'ok':False,'msg':'Басты админді топтық тарифке қоспаңыз'}
+                if target['id'] not in targets:targets.append(target['id'])
+            for target in targets:_subscription_request(state,sess,'owner_subscription_set',{'uid':target,'plan':'class','days':days})
+            return {'ok':True,'count':len(targets)}
         uid=str(d.get('uid') or '')
         profile=_person_profile(state,uid) if uid else next((p for p in _profiles(state).values() if str(p.get('name') or '').casefold()==str(d.get('login') or '').strip().casefold()),{})
         if not profile:return {'ok':False,'msg':'Тіркелген қолданушыны таңдаңыз'}
@@ -718,12 +728,12 @@ def _subscription_request(state,sess,typ,d):
         target={'uid':uid,'admin':False,'juniorAdmin':uid in _admin_uids(state)}
         info=_subscription_info(state,target)
         if typ=='owner_subscription_view':return {'ok':True,'subscription':info,'name':profile.get('name'),'uid':uid}
-        if typ!='owner_subscription_set' or d.get('plan') not in ('free','premium'):return {'ok':False,'msg':'Тарифті таңдаңыз'}
+        if typ!='owner_subscription_set' or d.get('plan') not in ('free','pro','premium','class'):return {'ok':False,'msg':'Тарифті таңдаңыз'}
         days=d.get('days',30)
         if type(days) is not int or not 1<=days<=3650:return {'ok':False,'msg':'Мерзім 1–3650 күн болсын'}
         key='ubt_server_access_subscription_'+uid;r=_jload(state['db'][key],dict,{})
-        r['plan']=d['plan']
-        if d['plan']=='premium':r['expires']=max(time.time(),r.get('expires',0))+days*86400
+        r['previousPlan']=r.get('plan','free');r['plan']=d['plan']
+        if d['plan']!='free':r['expires']=(max(time.time(),r.get('expires',0)) if r.get('previousPlan',r.get('plan'))==d['plan'] else time.time())+days*86400
         else:r.update(expires=0,trialUntil=0)
         _put(state,key,_jdump(r))
         requests=_jload(state['db'].get('ubt_server_access_premium_requests','{}'),dict,{})
@@ -732,7 +742,7 @@ def _subscription_request(state,sess,typ,d):
 
 def _premium_dashboard(state,sess):
     if not sess:return {'ok':False,'msg':'Аккаунтыңызға кіріңіз'}
-    if not _subscription_info(state,sess)['premium']:return {'ok':False,'upgradeRequired':True,'msg':'Толық статистика мен жеке жоспар Premium-да қолжетімді'}
+    if _subscription_info(state,sess)['plan']=='free':return {'ok':False,'upgradeRequired':True,'msg':'Толық статистика мен жеке жоспар Premium-да қолжетімді'}
     raw=state['db'].get('ubt_server_exam_review_records_'+sess['uid'],'{}')
     stats={};topics={}
     for result in _jload(raw,dict,{}).values():
@@ -880,6 +890,184 @@ def _growth_request(state,sess,d):
         exam={'uid':uid,'testId':'growth:'+tag,'assignmentId':None,'classId':None,'owner':False,'reward':False,'publishedQuota':False,'questions':[dict(q,points=1) for q in qs],'topic':topic,'selfAuthored':False,'reviewFamily':_review_fingerprint(qs),'expires':time.time()+15*60+90,'premiumAtStart':True,'growthMode':mode,'growthCode':code}
         attempts[tag]=token;_growth_put(state,uid,r);state['exams'][token]=exam;_save_exam(state,token);_commit(state)
         return {'ok':True,'exam':token,'questions':[_exam_question_meta(q,i) for i,q in enumerate(qs)],'topic':topic,'timer':900,'code':code}
+
+# Admissions records are historical comparisons, never probability estimates.
+_PATH_GRANTS = [
+ {'university':'Astana IT University','city':'Астана','group':'B057','program':'Ақпараттық технологиялар','pair':['math','informatics'],'year':2025,'score':80,'kind':'historical','quota':'general','source':'https://univision.kz/univ/119-astana-it-university/ball','sourceType':'secondary','checked':'2026-11-09'},
+ {'university':'Astana IT University','city':'Астана','group':'B058','program':'Ақпараттық қауіпсіздік','pair':['math','informatics'],'year':2025,'score':85,'kind':'historical','quota':'general','source':'https://univision.kz/univ/119-astana-it-university/ball','sourceType':'secondary','checked':'2026-11-09'},
+ {'university':'Л.Н. Гумилев атындағы ЕҰУ','city':'Астана','group':'B057','program':'Ақпараттық технологиялар','pair':['math','informatics'],'year':2025,'score':110,'kind':'historical','quota':'general','source':'https://www.univision.kz/univ/23-evraziyskiy-natsionalnyy-universitet-im-l-n-gumileva/ball','sourceType':'secondary','checked':'2026-11-09'},
+ {'university':'Әл-Фараби атындағы ҚазҰУ','city':'Алматы','group':'B057','program':'Ақпараттық технологиялар','pair':['math','informatics'],'year':2025,'score':90,'kind':'historical','quota':'general','source':'https://result.univision.kz/univ/50-kazahskiy-natsionalnyy-universitet-imeni-al-farabi/ball','sourceType':'secondary','checked':'2026-11-09'},
+ {'university':'Astana IT University','city':'Астана','group':'B057','program':'Ақпараттық технологиялар','pair':['math','informatics'],'year':2026,'score':100,'kind':'admission','quota':'general','source':'https://astanait.edu.kz/ru/how-to-apply','sourceType':'official','checked':'2026-11-09'},
+ {'university':'Astana IT University','city':'Астана','group':'B058','program':'Ақпараттық қауіпсіздік','pair':['math','informatics'],'year':2026,'score':93,'kind':'admission','quota':'general','source':'https://astanait.edu.kz/ru/how-to-apply','sourceType':'official','checked':'2026-11-09'},
+ {'university':'Astana IT University','city':'Астана','group':'B059','program':'Коммуникациялық технологиялар','pair':['math','physics'],'year':2026,'score':85,'kind':'admission','quota':'general','source':'https://astanait.edu.kz/ru/how-to-apply','sourceType':'official','checked':'2026-11-09'}
+]
+
+def _path_data(state,uid):
+    return _jload(state['db'].get('ubt_server_access_path_'+uid,'{}'),dict,{})
+
+def _path_events(state,uid):
+    key='ubt_server_access_path_events_'+uid
+    if key in state['db']:return _jload(state['db'][key],list,[])
+    # Migrate existing server-verified reviews without copying answer keys to the client.
+    old=_jload(state['db'].get('ubt_server_exam_review_records_'+uid,'{}'),dict,{})
+    rows=[]
+    for rid,r in old.items():
+        qs=r.get('questions',[]);answers=r.get('answers',{});maximum=sum(q.get('points',1) for q in qs)
+        if not maximum:continue
+        score=sum(q.get('points',1) for i,q in enumerate(qs) if answers.get('examq'+str(i))==q.get('correct'))
+        rows.append({'id':rid,'at':r.get('created',0),'score':score,'max':maximum,'questions':len(qs),'answered':len(answers),'topic':r.get('topic','Тест'),'full140':False,'subjects':list({q.get('subject') for q in qs if q.get('subject')}),'classId':None,'teacherId':None})
+    rows.sort(key=lambda r:r['at']);_put(state,key,_jdump(rows[-500:]));return rows[-500:]
+
+def _path_finish(state,sess,exam,result,token,answers):
+    rows=[r for r in _path_events(state,sess['uid']) if r['id']!=result.get('reviewId')]
+    if any(r['id']==token for r in rows):return
+    test=next((t for t in _jload(state['db'].get('ubt_tests','[]'),list,[]) if t.get('id')==exam.get('testId')),{})
+    assignment=next((a for a in _jload(state['db'].get('ubt_assigned_tests','[]'),list,[]) if a.get('id')==exam.get('assignmentId')),{})
+    rows.append({'id':token,'at':time.time(),'score':result['score'],'max':result['max'],'questions':len(exam['questions']),'answered':len(answers),'topic':exam.get('topic','Тест'),'full140':exam.get('testId')=='real:all' and result['max']==140,'subjects':sorted({q.get('subject') for q in exam['questions'] if q.get('subject')}),'classId':exam.get('classId') or assignment.get('classId'),'teacherId':assignment.get('fromUid') or test.get('authorId')})
+    _put(state,'ubt_server_access_path_events_'+sess['uid'],_jdump(rows[-500:]))
+
+def _path_summary(state,uid,days=7):
+    rows=_path_events(state,uid);now=time.time();recent=[r for r in rows if now-days*86400<=r['at']<=now];full=[r for r in recent if r.get('full140')]
+    past=[r for r in rows if now-2*days*86400<=r['at']<now-days*86400 and r.get('full140')]
+    person=_person_profile(state,uid)
+    return {'uid':uid,'login':person.get('name',uid),'tests':len(recent),'questions':sum(r['answered'] for r in recent),'shownQuestions':sum(r['questions'] for r in recent),'firstFull':full[0]['score'] if full else None,'lastFull':full[-1]['score'] if full else None,'previousFull':past[-1]['score'] if past else None,'avgPercent':round(sum(r['score']/r['max']*100 for r in recent)/len(recent),1) if recent else None,'activeDays':len({datetime.datetime.fromtimestamp(r['at'],datetime.timezone(datetime.timedelta(hours=5))).date().isoformat() for r in recent}),'recent':recent[-20:],'goal':_path_data(state,uid)}
+
+def _path_grants(state):
+    return _jload(state['db'].get('ubt_server_access_grants',_jdump(_PATH_GRANTS)),list,_PATH_GRANTS)
+
+def _path_compare(state,uid,score=None,university='',year=None,quota='general'):
+    pair=set(_profile_pair(state,uid))
+    if score is None:
+        full=[r for r in _path_events(state,uid) if r.get('full140')]
+        score=full[-1]['score'] if full else None
+    if score is not None and (type(score) not in (int,float) or not math.isfinite(score) or not 0<=score<=140):return {'ok':False,'msg':'Балл 0–140 аралығында болсын'}
+    rows=[]
+    for r in _path_grants(state):
+        if set(r['pair'])!=pair or r['quota']!=quota or (university and r['university']!=university) or (year and r['year']!=year):continue
+        item=dict(r);item['difference']=None if score is None else round(score-r['score'],1);rows.append(item)
+    return {'ok':True,'score':score,'rows':sorted(rows,key=lambda r:(-r['year'],r['kind'],r['score'])),'notice':'Өткен конкурс пен қабылдау шегі бөлек көрсетілген. Бұл грантқа түсу кепілдігі немесе ықтималдық пайызы емес. Квота, пәндік минимумдар және университеттің қосымша талаптары бөлек тексеріледі.'}
+
+def _path_board(state,owner=False):
+    classes=_jload(state['db'].get('ubt_classes','[]'),list,[]);now=time.time();out=[];people={p['id']:p for p in _profiles(state).values()};schools={};cache={}
+    for c in classes:
+        roster=list(dict.fromkeys(c.get('students',[])));members=[]
+        for uid in roster:
+            if uid not in cache:cache[uid]=_path_events(state,uid)
+            full=[r for r in cache[uid] if r.get('full140') and now-7*86400<=r['at']<=now]
+            last=full[-1] if full else None
+            members.append({'uid':uid,'login':people.get(uid,{}).get('name',uid),'score':last['score'] if last else None,'tests':len(full)})
+        active=[m for m in members if m['score'] is not None];total=sum(m['score'] for m in active)
+        row={'id':c['id'],'name':c.get('name','Сынып'),'school':c.get('schoolName') or 'Мектеп бекітілмеген','teacher':c.get('teacherName',''),'students':len(roster),'active':len(active),'participation':round(100*len(active)/len(roster)) if roster else 0,'score':round(total/len(roster),1) if roster else 0,'activeAverage':round(total/len(active),1) if active else None}
+        if owner:row['members']=members;row['teacherId']=c.get('teacherId');row['code']=c.get('code');row['location']=c.get('location','')
+        out.append(row)
+        if c.get('schoolName'):
+            school=schools.setdefault(c['schoolName'],{'name':c['schoolName'],'uids':set()});school['uids'].update(roster)
+    schoolrows=[]
+    for name,school in schools.items():
+        scores=[]
+        for uid in school['uids']:
+            full=[r for r in cache.get(uid,[]) if r.get('full140') and now-7*86400<=r['at']<=now]
+            if full:scores.append(full[-1]['score'])
+        schoolrows.append({'name':name,'students':len(school['uids']),'active':len(scores),'score':round(sum(scores)/len(school['uids']),1) if school['uids'] else 0})
+    return {'classes':sorted(out,key=lambda r:(-r['score'],-r['participation'],r['name'])),'schools':sorted(schoolrows,key=lambda r:(-r['score'],r['name'])),'method':'Соңғы 7 күндегі әр оқушының соңғы 140 балдық толық ҰБТ нәтижесінің қосындысы / сыныптағы барлық оқушы саны. Тапсырмаған оқушы 0 болып есептеледі. Пәндік тесттер мен жеке құрастырылған тесттер рейтингке кірмейді.'}
+
+def _path_request(state,sess,d):
+    if not sess or sess.get('codeGuest'):return {'ok':False,'msg':'Аккаунтыңызға кіріңіз'}
+    with state['lock']:
+        uid=sess['uid'];owner=uid=='admin' and sess.get('admin');action=d.get('action','status');profile=_person_profile(state,uid)
+        if action=='status':
+            grants=_path_grants(state);mine=_path_data(state,uid);rows=_path_events(state,uid);full=[r for r in rows if r.get('full140')]
+            return {'ok':True,'profile':mine,'pair':_profile_pair(state,uid),'role':profile.get('role','student'),'universities':sorted({g['university'] for g in grants}),'years':sorted({g['year'] for g in grants},reverse=True),'quotas':sorted({g['quota'] for g in grants}),'latestFull':full[-1]['score'] if full else None,'summary':_path_summary(state,uid),'managedClasses':[{'id':c['id'],'name':c.get('name'),'code':c.get('code')} for c in _jload(state['db'].get('ubt_classes','[]'),list,[]) if owner or (_is_teacher(state,uid) and c.get('teacherId')==uid)]}
+        if action=='save':
+            university=str(d.get('university','')).strip();date=str(d.get('date',''));target=d.get('target',100);daily=d.get('daily',20)
+            if len(university)>180 or type(target) is not int or not 1<=target<=140 or type(daily) is not int or not 5<=daily<=100:return {'ok':False,'msg':'Мақсат 1–140 балл, күндік тапсырма 5–100 сұрақ болсын'}
+            try:when=datetime.date.fromisoformat(date)
+            except ValueError:return {'ok':False,'msg':'ҰБТ күнін таңдаңыз'}
+            today=datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5))).date()
+            if not today<=when<=today+datetime.timedelta(days=1095):return {'ok':False,'msg':'ҰБТ күнін алдағы 3 жыл ішінен таңдаңыз'}
+            mine={'university':university,'date':date,'target':target,'daily':daily,'onboarded':True,'updated':time.time()};_put(state,'ubt_server_access_path_'+uid,_jdump(mine));_commit(state);return {'ok':True,'profile':mine}
+        if action=='compare':return _path_compare(state,uid,d.get('score'),str(d.get('university','')),d.get('year'),str(d.get('quota','general')))
+        if action=='rankings':return dict(ok=True,**_path_board(state,owner))
+        if action=='class_invite':
+            code=str(d.get('code','')).strip().upper()
+            c=next((c for c in _jload(state['db'].get('ubt_classes','[]'),list,[]) if c.get('code')==code),None)
+            if not c:return {'ok':False,'msg':'Сынып сілтемесі жарамсыз немесе коды өзгерген'}
+            return {'ok':True,'name':c.get('name'),'teacher':c.get('teacherName',''),'code':code,'member':uid in c.get('students',[])}
+        if action=='teacher_report':
+            cid=str(d.get('classId',''));c=next((c for c in _jload(state['db'].get('ubt_classes','[]'),list,[]) if c.get('id')==cid),None)
+            if not c or not (owner or (_is_teacher(state,uid) and c.get('teacherId')==uid)):return {'ok':False,'msg':'Тек өз сыныбыңыздың есебін көре аласыз'}
+            rows=[]
+            for student in c.get('students',[]):
+                events=[r for r in _path_events(state,student) if r.get('classId')==cid and (owner or r.get('teacherId')==uid)]
+                seen={(int(r['at']),r['score'],r['max']) for r in events}
+                assignments=_jload(state['db'].get('ubt_assigned_tests','[]'),list,[])
+                for assignment in assignments:
+                    if assignment.get('uid')!=student or assignment.get('classId')!=cid or (not owner and assignment.get('fromUid')!=uid):continue
+                    for old in assignment.get('results',[]):
+                        if not old.get('max') or (int(old.get('at',0)),old.get('score'),old.get('max')) in seen:continue
+                        events.append({'at':old.get('at',0),'score':old['score'],'max':old['max'],'answered':0,'topic':assignment.get('title','Тест')})
+                events.sort(key=lambda r:r['at'])
+                rows.append({'uid':student,'login':_person_profile(state,student).get('name',student),'tests':len(events),'answered':sum(r['answered'] for r in events),'latest':events[-1] if events else None,'average':round(sum(r['score']/r['max']*100 for r in events)/len(events),1) if events else None})
+            return {'ok':True,'class':{k:c.get(k) for k in ('id','name','code','teacherName','schoolName')},'rows':rows,'scope':'Мұғалім тек өзі осы сыныпқа жіберген тесттердің нәтижесін көреді. Бұрынғы тесттердің жауап саны сақталмаған болса, 0 көрсетіледі.'}
+        if action=='parent_request':
+            login=str(d.get('login','')).strip();note=str(d.get('note','')).strip()
+            if not 2<=len(login)<=40 or len(note)>300:return {'ok':False,'msg':'Баланың логинін енгізіңіз'}
+            key='ubt_server_access_parent_requests';requests=_jload(state['db'].get(key,'{}'),dict,{})
+            existing=next((k for k,r in requests.items() if r['parent']==uid and r['login'].casefold()==login.casefold()),None)
+            ident=existing or secrets.token_hex(12)
+            if sum(r['parent']==uid and r.get('status')=='pending' for r in requests.values())>=5 and not existing:return {'ok':False,'msg':'Бес өтінішіңіз тексерілуде'}
+            if existing and requests[existing].get('status')=='approved':return {'ok':True,'msg':'Байланыс бекітілген'}
+            requests[ident]={'id':ident,'parent':uid,'parentLogin':profile.get('name',sess.get('name')),'login':login,'note':note,'status':'pending','created':time.time()};_put(state,key,_jdump(requests));_commit(state)
+            return {'ok':True,'msg':'Өтініш қабылданды. WhatsApp-та басты админге өз логиніңізді және балаңыздың логинін жазыңыз.'}
+        if action=='parent_dashboard':
+            links=_jload(state['db'].get('ubt_server_access_parent_links','{}'),dict,{}).get(uid,[])
+            requests=_jload(state['db'].get('ubt_server_access_parent_requests','{}'),dict,{})
+            return {'ok':True,'children':[_path_summary(state,child) for child in links if _person_profile(state,child)],'requests':[{'login':r['login'],'status':r['status']} for r in requests.values() if r['parent']==uid]}
+        if not owner:return {'ok':False,'msg':'Тек басты админ басқарады'}
+        if action=='owner_overview':
+            requests=_jload(state['db'].get('ubt_server_access_parent_requests','{}'),dict,{})
+            return dict(ok=True,requests=sorted(requests.values(),key=lambda r:-r['created'])[:200],**_path_board(state,True))
+        if action=='owner_parent':
+            key='ubt_server_access_parent_requests';requests=_jload(state['db'].get(key,'{}'),dict,{});r=requests.get(str(d.get('id','')))
+            if not r:return {'ok':False,'msg':'Өтініш табылмады'}
+            links=_jload(state['db'].get('ubt_server_access_parent_links','{}'),dict,{})
+            target=next((p for p in _profiles(state).values() if p.get('name','').casefold()==r['login'].casefold()),None)
+            if d.get('approve'):
+                if d.get('verified') is not True:return {'ok':False,'msg':'Ата-ана мен бала байланысын тексергеніңізді растаңыз'}
+                if not target or target['id']==r['parent'] or target.get('role') in ('parent','teacher'):return {'ok':False,'msg':'Оқушының логинін тексеріңіз'}
+                ids=links.setdefault(r['parent'],[])
+                if target['id'] not in ids:ids.append(target['id'])
+                r['child']=target['id'];r['status']='approved'
+            else:
+                links[r['parent']]=[x for x in links.get(r['parent'],[]) if x!=r.get('child')];r['status']='revoked'
+            r['reviewedAt']=time.time();_put(state,key,_jdump(requests));_put(state,'ubt_server_access_parent_links',_jdump(links));_commit(state);return {'ok':True}
+        if action=='owner_school':
+            classes=_jload(state['db'].get('ubt_classes','[]'),list,[]);c=next((c for c in classes if c['id']==d.get('classId')),None)
+            school=str(d.get('school','')).strip();location=str(d.get('location','')).strip()
+            if not c or not 1<=len(school)<=150 or len(location)>150:return {'ok':False,'msg':'Сынып пен мектеп атауын тексеріңіз'}
+            c.update(schoolName=school,location=location);_put(state,'ubt_classes',_jdump(classes));_commit(state);return {'ok':True}
+        if action=='owner_student':
+            target=str(d.get('uid',''))
+            if not _person_profile(state,target):return {'ok':False,'msg':'Оқушы табылмады'}
+            return {'ok':True,'summary':_path_summary(state,target),'pair':_profile_pair(state,target),'subscription':_subscription_info(state,{'uid':target})}
+        if action=='grants_export':return {'ok':True,'records':_path_grants(state)}
+        if action=='grants_import':
+            rows=d.get('records')
+            if not isinstance(rows,list) or not 1<=len(rows)<=5000:return {'ok':False,'msg':'JSON ішінде 1–5000 жазба болсын'}
+            clean=[];seen=set()
+            for row in rows:
+                if not isinstance(row,dict):return {'ok':False,'msg':'Жазба объект болуы керек'}
+                if any(not isinstance(row.get(k),str) or not 1<=len(row[k])<=250 for k in ('university','program','group','city','quota','checked')):return {'ok':False,'msg':'Атау, қала, топ, квота және тексеру күні міндетті'}
+                if row.get('kind') not in ('historical','admission') or row.get('sourceType') not in ('official','secondary') or not isinstance(row.get('source'),str) or not re.fullmatch(r'https://[^\s<>"\x27]+',row['source']):return {'ok':False,'msg':'HTTPS дереккөз, түрі мен ресмилігін көрсетіңіз'}
+                if type(row.get('score')) is not int or not 0<=row['score']<=140 or type(row.get('year')) is not int or not 2020<=row['year']<=datetime.date.today().year+1:return {'ok':False,'msg':'Балл немесе жыл жарамсыз'}
+                if (not isinstance(row.get('pair'),list) or tuple(row['pair']) not in _PROFILE_COMBINATIONS):return {'ok':False,'msg':'Пән жұбы жарамсыз'}
+                try:datetime.date.fromisoformat(row['checked'])
+                except ValueError:return {'ok':False,'msg':'Тексеру күні YYYY-MM-DD болсын'}
+                identity=(row['university'],row['group'],row['year'],row['quota'],row['kind'])
+                if identity in seen:return {'ok':False,'msg':'Қайталанған жазба бар'}
+                seen.add(identity);clean.append({k:row[k] for k in ('university','program','group','city','quota','checked','kind','source','sourceType','score','year','pair')})
+            _put(state,'ubt_server_access_grants',_jdump(clean));_commit(state);return {'ok':True,'count':len(clean)}
+        return {'ok':False,'msg':'Әрекет табылмады'}
 
 def _new_session(state, uid, name, admin, device=""):
     admin = uid == "admin"
@@ -1326,6 +1514,7 @@ def _finish_exam(state, sess, d):
             _put(state,"ubt_server_access_public_attempts",_jdump(usage))
         exam["growthAnswers"] = answers
         _growth_finish(state,sess,exam,result)
+        _path_finish(state,sess,exam,result,token,answers)
         exam.pop("growthAnswers",None)
         exam["completed"] = result
         exam["expires"] = time.time() + 86400
@@ -1760,7 +1949,7 @@ def _school_request(state, sess, typ, d):
             person = next((p for p in _profiles(state).values() if p.get("id") == uid), None)
             classes = _jload(state["db"].get("ubt_classes", "[]"), list, [])
             target = next((c for c in classes if c.get("id") == cid), None) if cid else None
-            if not person or person.get("role") == "teacher" or person.get("accessApproved") is not True:
+            if not person or person.get("role") in ("teacher","parent") or person.get("accessApproved") is not True:
                 return {"ok": False, "msg": "Бекітілген оқушыны таңдаңыз"}
             if cid and not target:
                 return {"ok": False, "msg": "Сынып табылмады"}
@@ -2660,7 +2849,7 @@ def _handle_req(state, sid, rq):
     sess = _session(state, rq.get("tok"))
     if not isinstance(typ, str) or len(_jdump(d)) > 8_000_000:
         return {"ok": False, "msg": "Сұраныс тым үлкен немесе жарамсыз"}
-    if sess and sess.get("juniorAdmin") and typ not in ('login', 'resume', 'login_remembered', 'logout', 'remember_account', 'forget_account', 'start_exam', 'start_personal_practice', 'growth', 'subscription_status', 'subscription_trial', 'subscription_request', 'premium_dashboard', 'daily_five', 'exam_question', 'send_personal_test', 'review_open', 'review_close', 'resume_exam', 'finish_exam', 'cancel_exam', 'start_assigned_test', 'start_public_mix', 'exam_check_answer', 'explain_review', 'approved_test_list', 'notifications_list', 'save_public_test', 'remove_saved_public_test', 'public_profile', 'content_security_event', 'visit_record', 'support_open', 'support_read', 'support_send', 'messenger_contacts', 'messenger_thread', 'messenger_send', 'profile_animation_get', 'chat_claim', 'book_open'):
+    if sess and sess.get("juniorAdmin") and typ not in ('login', 'resume', 'login_remembered', 'logout', 'remember_account', 'forget_account', 'start_exam', 'start_personal_practice', 'growth', 'path', 'subscription_status', 'subscription_trial', 'subscription_request', 'premium_dashboard', 'daily_five', 'exam_question', 'send_personal_test', 'review_open', 'review_close', 'resume_exam', 'finish_exam', 'cancel_exam', 'start_assigned_test', 'start_public_mix', 'exam_check_answer', 'explain_review', 'approved_test_list', 'notifications_list', 'save_public_test', 'remove_saved_public_test', 'public_profile', 'content_security_event', 'visit_record', 'support_open', 'support_read', 'support_send', 'messenger_contacts', 'messenger_thread', 'messenger_send', 'profile_animation_get', 'chat_claim', 'book_open'):
         return {"ok":False,"msg":"Кіші админде басқару құқығы жоқ. Тест тапсыру және өз тестін жүктеу ғана қолжетімді."}
     with state["lock"]:
         now = time.time()
@@ -2757,6 +2946,8 @@ def _handle_req(state, sid, rq):
         return _subscription_request(state,sess,typ,d)
     if typ=='premium_dashboard':
         return _premium_dashboard(state,sess)
+    if typ=='path':
+        return _path_request(state,sess,d)
     if typ=='growth':
         return _growth_request(state,sess,d)
     if typ=='daily_five':
@@ -3217,7 +3408,9 @@ def _handle_req(state, sid, rq):
             uid = _new_uid(state, key)
             prof = {"name": name, "id": uid, "isAdmin": False, "ph": ph_new,
                     "accessApproved": False, "registeredAt": int(now)}
-            if not d.get("teacher"):
+            if d.get("parent") is True and not d.get("teacher"):
+                prof["role"]="parent"
+            if not d.get("teacher") and d.get("parent") is not True:
                 if not _set_profile_pair(state,uid,d.get("profilePair")):
                     return {"ok":False,"msg":"Бейіндік пән жұбын таңдаңыз"}
             if d.get("teacher"):
@@ -6450,8 +6643,8 @@ function doRegister(){return guarded(async()=>{
   if(!pass||pass.length<10){alert('Пароль кемінде 10 таңба');return}
   if(pass!==pass2){alert('Парольдер сәйкес емес');return}
   if(!confirm('Атыңыз: «'+name+'»\n\nАтыңыз толық және дұрыс па? Жалған ат жазсаңыз, админ аккаунтты өшіріп тастауы мүмкін.'))return;
-  const profilePair=readPair('reg-profile-pair');if(!profilePair){alert('Бейіндік пән жұбын таңдаңыз');return}
-  const r=await authCall('register',{name:name,pass:pass,profilePair});
+  const parent=!!document.getElementById('register-parent-mode')?.checked,profilePair=parent?null:readPair('reg-profile-pair');if(!parent&&!profilePair){alert('Бейіндік пән жұбын таңдаңыз');return}
+  const r=await authCall('register',{name:name,pass:pass,profilePair,parent});
   if(!r.ok){alert(r.msg||'Қате');return}
   ['reg-name','reg-pass','reg-pass2'].forEach(i=>{const e=document.getElementById(i);if(e)e.value=''});
   alert('✅ Тіркелу өтініші админге жіберілді. Админ рұқсат бергеннен кейін сайтқа кіре аласыз.');
@@ -12645,7 +12838,7 @@ const PROFILE_PAIRS=[["math", "physics"], ["math", "informatics"], ["math", "geo
 const pairLabel=pair=>pair[0]==='creative'?'Шығармашылық бағыт':pair.map(k=>PROFILE_SUBJECTS[k]||k).join(' + ');
 function pairOptions(selected){return '<option value="">Пән жұбын таңдаңыз *</option>'+PROFILE_PAIRS.map((pair,i)=>`<option value="${i}" ${JSON.stringify(pair)===JSON.stringify(selected)?'selected':''}>${esc(pairLabel(pair))}</option>`).join('')}
 function readPair(id){const v=document.getElementById(id)?.value;return v!==undefined&&v!==''?PROFILE_PAIRS[Number(v)]:null}
-function learnerAccount(){return !!user&&!user.isAdmin&&!user.isJuniorAdmin&&!(user.role==='teacher'&&user.teacherApproved)&&!isTeacherUser()}
+function learnerAccount(){return !!user&&user.role!=='parent'&&!user.isAdmin&&!user.isJuniorAdmin&&!(user.role==='teacher'&&user.teacherApproved)&&!isTeacherUser()}
 function currentPair(){const p=Object.values(LS.get('ubt_profiles',{})).find(p=>p.id===user?.id);return p?.profilePair?.length?p.profilePair:user?.profilePair||[]}
 function allowedClientSubjects(){if(!learnerAccount())return Object.keys(PROFILE_SUBJECTS);const pair=currentPair();return pair.length===2?(pair[0]==='creative'?['history','reading']:[...pair,'history','reading','mathlit']):[]}
 let choosingPair=false;
@@ -12760,7 +12953,8 @@ const securitySendDialog=schoolClassSendDialog;schoolClassSendDialog=function(){
 const securityUbt140=startUbt140;startUbt140=async function(){securitySubjectUI();if(learnerAccount()&&currentPair()[0]==='creative'){const r=await authCall('start_exam',{testId:'real:all'});if(!r.ok)return alert(r.msg);st=baseState();st.secureExam=r.exam;st.questions=r.questions;st.subjectName=r.topic;st.timerSeconds=r.timer;st.isRealUbt=true;beginTest();return}return securityUbt140.apply(this,arguments)};
 securitySubjectUI();
 function subscriptionInfo(){const e=LS.get('ubt_entitlement',{});return user&&e.uid===user.id?e:{}}
-function hasPremium(){const e=subscriptionInfo();return !!(user&&(user.isAdmin||user.isJuniorAdmin||isTeacherUser()||(e.premium&&(e.staff||e.expires*1000>Date.now()))))}
+function hasPremium(){const e=subscriptionInfo();return !!(user&&(user.id==='admin'||(e.premium&&e.expires*1000>Date.now())))}
+function hasPaidPlan(){const e=subscriptionInfo();return hasPremium()||!!(e.plan==='pro'&&e.expires*1000>Date.now())}
 function premiumDate(seconds){return seconds?new Date(seconds*1000).toLocaleString('kk-KZ'):'—'}
 let premiumPanelLoading=false;
 function showPremiumPanel(message=''){
@@ -12770,18 +12964,29 @@ function showPremiumPanel(message=''){
  showScr('s-premium');renderPremiumPanel(message);
  if(premiumPanelLoading)return;premiumPanelLoading=true;authCall('subscription_status',{}).then(r=>{if(r.ok){localStorage.setItem('ubt_entitlement',JSON.stringify(r.subscription));if(screen.classList.contains('active'))renderPremiumPanel(message)}}).finally(()=>premiumPanelLoading=false);
 }
+const UBT_WHATSAPP='https://wa.me/77056360080';
+const UBT_WHATSAPP_GROUP='https://chat.whatsapp.com/JVVi7OPce5R0DOO9AjoeKQ?s=cl&p=a&iam=2';
+function tariffName(plan){return {free:'Тегін',pro:'Pro',premium:'Premium',class:'Класс',staff:'Басты админ'}[plan]||'Тегін'}
+function tariffWhatsApp(plan){return UBT_WHATSAPP+'?text='+encodeURIComponent('Сәлеметсіз бе! ҰБТ PLUS сайтындағы '+tariffName(plan)+' тарифін алғым келеді. Логинім: '+(user?.name||'')+(plan==='class'?'. Қатысушылар санын және мерзімін келіскім келеді.':'. Бағасы мен мерзімін білгім келеді.'))}
 function renderPremiumPanel(message=''){
- const host=document.getElementById('premium-panel');if(!host||!user)return;const e=subscriptionInfo(),premium=hasPremium();
- host.innerHTML=`<div class="clean-hero"><div><span class="clean-eyebrow">ҰБТ PLUS</span><h1>${premium?'Premium қолжетімділігі белсенді':'Өз қарқыныңызбен дайындалыңыз'}</h1><p>${e.staff?'Қызметтік рөліңізге толық дайындық мүмкіндіктері берілген.':premium?'Мерзімі: '+premiumDate(e.expires):'Тегін дайындықты жалғастырыңыз немесе толық мүмкіндіктерді ашыңыз.'}</p></div></div>${message?`<div class="card" role="status" style="margin-bottom:15px">${esc(message)}</div>`:''}<div class="grid2"><div class="card"><h2>Тегін</h2><p style="margin:12px 0">Күніне 2 пәндік тест · Аптасына 1 толық тест</p><p>Бүгін қалғаны: <b>${e.subjectRemaining??2}</b> пәндік тест</p><p>Осы апта: <b>${e.fullRemaining??1}</b> толық тест</p><p>Сыйлық толық тест: <b>${e.welcomeFull??1}</b></p><p style="margin-top:12px">Күніне 5 қосымша сұрақ · Соңғы нәтиже · Шағын флешкарта жинағы · Жалпы дайындық жоспары</p></div><div class="card" style="border:2px solid #6366f1"><h2>✦ Premium</h2><p style="margin:12px 0">Өз пәндеріңізден шектеусіз тест пен толық сұрақтар базасы</p><p>Толық тарих және графиктер · Пәндер бойынша талдау · Әлсіз тақырыптарға жеке жоспар · Толық флешкарталар</p>${!premium&&!e.trialUsed?'<button class="btn btn-p" style="margin-top:18px" onclick="activatePremiumTrial(this)">3 күн тегін сынау</button>':''}${!e.staff?'<button class="btn btn-s" style="margin-top:12px" onclick="requestPremium(this)">Premium туралы өтініш жіберу</button>':''}<p class="sub" style="margin-top:12px">Карта талап етілмейді. Автоматты төлем алынбайды. Ақылы мерзімді басты админ растайды.</p></div></div><div class="card" style="margin-top:18px"><h3>Тегін де сақталатын мүмкіндіктер</h3><p style="margin-top:10px">Тест нәтижесі, рұқсат етілген қате талдауы, калькулятор және Менделеев кестесі.</p><p class="sub" style="margin-top:8px">Ортақ тест жауаптары тек алғашқы тапсырудан кейін 1 рет, өз тестіңіз — барлығы 5 рет ашылады. Premium бұл лимитті және пәндік шектеулерді өзгертпейді.</p><p class="sub" style="margin-top:8px">Күндік лимит Қазақстан уақытымен түнгі 00:00-де, апталық лимит дүйсенбіде жаңарады. Лимит алғашқы сұрақ ашылғанда есептеледі.</p></div>`;
+ const host=document.getElementById('premium-panel');if(!host||!user)return;const e=subscriptionInfo();
+ const plans=[
+ {id:'free',name:'Тегін',tag:'Танысып көруге',items:['Күніне 2 пәндік тест','Аптасына 1 толық тест','Пәндік базадан 10 сұрақтық танысу жинағы','Соңғы нәтиже, күннің 5 сұрағы'],why:'Сайтпен танысып, күнделікті дайындық әдетін қалыптастыруға арналған. Сыйлық толық тест пен күннің тапсырмалары қосымша қолжетімді.'},
+ {id:'pro',name:'Pro',tag:'Тұрақты дайындыққа',items:['Күніне 5 пәндік тест','Аптасына 3 толық тест','Пәндік жинақтар 10 сұрақпен қысқармайды','Толық нәтижелер тарихы және флешкарталар'],why:'Күн сайын бірнеше пәннен дайындалып, алдыңғы нәтижелерге қайта оралғысы келетін оқушыға. Жеке әлсіз тақырыптар талдауы Premium және Класс тарифтерінде.'},
+ {id:'premium',name:'Premium',tag:'Жеке терең дайындыққа',items:['Өз пәндеріңізден шектеусіз тест','Толық тарих және графиктер','Пәндік талдау, білім картасы, балл болжамы','Әлсіз тақырыптарға жеке жоспар, толық флешкарталар'],why:'Қай пәннен және тақырыптан қиналатынын анықтап, нәтижесіне қарай дайындық жоспарын құрғысы келетін оқушыға. Шектеусіз тест пән жұбы мен жария тесттің жеке ережелерін өзгертпейді.'},
+ {id:'class',name:'Класс',tag:'Бірге дайындалатын топқа',items:['Әр қатысушыға Premium мүмкіндіктері','Басты админ 30 аккаунтқа дейін бірге қосады','Әр оқушының жеке нәтижесі мен пән жұбы сақталады','Қатысушылар тізімі мен мерзімі WhatsApp-та келісіледі'],why:'Сыныпқа немесе дайындық тобына бірге қолжетімділік алуға арналған. Бұл тариф мұғалім не админ рөлін бермейді; мұғалімнің сыныпқа қатысты құқығын басты админ бөлек бекітеді.'}
+ ];
+ host.innerHTML=`<div class="clean-hero"><div><span class="clean-eyebrow">ҰБТ PLUS · ТАРИФТЕР</span><h1>Өзіңізге ыңғайлы дайындықты таңдаңыз</h1><p>Қазіргі тариф: <b>${esc(tariffName(e.plan))}</b>${e.expires?' · '+premiumDate(e.expires)+' дейін':''}</p><p>Ақылы тарифті тек басты админ қосады. Бағасы мен мерзімін WhatsApp арқылы келісіңіз.</p></div></div>${message?`<div class="card" role="status">${esc(message)}</div>`:''}<div class="grid2" style="margin-top:18px">${plans.map(p=>`<article class="card" style="display:flex;flex-direction:column;gap:12px;${p.id==='premium'?'border:2px solid #6366f1;':''}"><div><span class="sub">${p.tag}</span><h2>${p.name}${e.plan===p.id?' · Сіздің тарифіңіз':''}</h2></div><ul style="padding-left:20px;line-height:1.9">${p.items.map(i=>'<li>'+i+'</li>').join('')}</ul><div style="margin-top:auto">${p.id==='free'?'<p class="sub">Тіркеліп, тегін қолданыңыз</p>':`<a class="btn btn-p" style="display:inline-flex" href="${tariffWhatsApp(p.id)}" target="_blank" rel="noopener noreferrer">WhatsApp арқылы алу ↗</a>`}</div><details style="border-top:1px solid #71809655;padding-top:12px"><summary style="cursor:pointer;font-weight:600">Не үшін керек? Толығырақ</summary><p style="margin-top:12px;line-height:1.7">${p.why}</p></details></article>`).join('')}</div><div class="card" style="margin-top:18px"><h3>Сатып алу үшін WhatsApp-қа жазыңыз</h3><p style="margin:12px 0"><a href="${UBT_WHATSAPP}" target="_blank" rel="noopener noreferrer" style="font-size:21px;font-weight:700">8 705 636 0080 ↗</a></p><p>Тарифті таңдаңыз → логиніңізді жіберіңіз → бағасы мен мерзімін келісіңіз → басты админ қосады.</p><p class="sub" style="margin-top:10px">Сайт автоматты төлем алмайды. Пакетті қолданушы, мұғалім немесе кіші админ өздігінен қоса алмайды.</p><a class="btn btn-s" style="margin-top:14px" href="${UBT_WHATSAPP_GROUP}" target="_blank" rel="noopener noreferrer">WhatsApp тобына кіру ↗</a></div><div class="card" style="margin-top:18px"><h3>Барлығына ортақ</h3><p style="margin-top:10px">Калькулятор, Менделеев кестесі, тест нәтижесі және рұқсат етілген қате талдауы сақталады. Достармен жарыс, челлендж, диагностика және марафон өз ережелерімен жұмыс істейді.</p><p class="sub" style="margin-top:10px">Ортақ тест талдауы алғашқы тапсыруда 1 рет, өз тестіңіздікі барлығы 5 рет ашылады. Ақылы тариф осы қорғаныс пен пәндік шектеулерді өзгертпейді. Күндік лимит Қазақстан уақытымен 00:00-де, апталық лимит дүйсенбіде жаңарады.</p></div>`;
 }
-async function activatePremiumTrial(button){button.disabled=true;try{const r=await authCall('subscription_trial',{});if(!r.ok){alert(r.msg);return}localStorage.setItem('ubt_entitlement',JSON.stringify(r.subscription));renderPremiumPanel('Үш күндік сынақ қосылды. Мерзімі аяқталғанда төлем алынбайды.');window.__bridge.refresh().catch(()=>{})}finally{button.disabled=false}}
-async function requestPremium(button){button.disabled=true;try{const r=await authCall('subscription_request',{});alert(r.ok?'Өтініш басты админге жіберілді. Бұл батырма ақша алмайды.':r.msg)}finally{button.disabled=false}}
+async function activatePremiumTrial(){showPremiumPanel('Тарифті қосу үшін басты админге WhatsApp арқылы жазыңыз.')}
+function requestPremium(){window.open(tariffWhatsApp('premium'),'_blank','noopener,noreferrer')}
+
 async function startDailyFive(button){if(button)button.disabled=true;try{const r=await authCall('daily_five',{});if(!r.ok){alert(r.msg);return}st=baseState();st.secureExam=r.exam;st.questions=r.questions;st.subjectName=r.topic;st.timerSeconds=r.timer;st.isRealUbt=true;beginTest()}finally{if(button)button.disabled=false}}
 function subscriptionUI(){
  if(!user)return;
- let entry=document.getElementById('premium-menu-entry');if(!entry){entry=document.createElement('button');entry.id='premium-menu-entry';entry.className='app-menu-home';entry.textContent='✦ Premium / Тегін лимиттер';entry.onclick=()=>showPremiumPanel();document.querySelector('#app-menu nav')?.prepend(entry)}
+ let entry=document.getElementById('premium-menu-entry');if(!entry){entry=document.createElement('button');entry.id='premium-menu-entry';entry.className='app-menu-home';entry.textContent='✦ Тарифтер / WhatsApp';entry.onclick=()=>showPremiumPanel();document.querySelector('#app-menu nav')?.prepend(entry)}
  let daily=document.getElementById('daily-five-entry');if(!daily){daily=document.createElement('button');daily.id='daily-five-entry';daily.className='app-menu-home';daily.textContent='☀ Күннің 5 сұрағы';daily.onclick=()=>startDailyFive(daily);document.querySelector('#app-menu nav')?.prepend(daily)}
- const home=document.getElementById('ubd-home');if(home&&!document.getElementById('subscription-home-strip')){const strip=document.createElement('div');strip.id='subscription-home-strip';strip.className='card';strip.style.marginBottom='18px';const e=subscriptionInfo();strip.innerHTML=`<div class="row" style="justify-content:space-between"><div><b>${hasPremium()?'✦ Premium':'Тегін дайындық'}</b><p class="sub">${hasPremium()?'Өз пәндеріңізден шектеусіз дайындық':'Бүгін '+(e.subjectRemaining??2)+' пәндік тест · сыйлық '+(e.welcomeFull??1)+' толық тест'}</p></div><button class="btn btn-p btn-sm" onclick="startDailyFive(this)">Күннің 5 сұрағы</button><button class="btn btn-s btn-sm" onclick="showPremiumPanel()">${hasPremium()?'Мерзімін көру':'3 күн тегін сынау'}</button></div>`;home.prepend(strip)}
+ const home=document.getElementById('ubd-home');if(home&&!document.getElementById('subscription-home-strip')){const strip=document.createElement('div');strip.id='subscription-home-strip';strip.className='card';strip.style.marginBottom='18px';const e=subscriptionInfo();strip.innerHTML=`<div class="row" style="justify-content:space-between"><div><b>${esc(tariffName(subscriptionInfo().plan))}</b><p class="sub">${hasPremium()?'Өз пәндеріңізден шектеусіз дайындық':'Бүгін '+(e.subjectRemaining??2)+' пәндік тест · сыйлық '+(e.welcomeFull??1)+' толық тест'}</p></div><button class="btn btn-p btn-sm" onclick="startDailyFive(this)">Күннің 5 сұрағы</button><button class="btn btn-s btn-sm" onclick="showPremiumPanel()">Тарифтерді көру</button></div>`;home.prepend(strip)}
 }
 const subscriptionAuthCall=authCall;
 authCall=async function(type,data){
@@ -12804,10 +13009,10 @@ flashCards=function(key){
  if(key.startsWith('test:')){const t=allTests().find(t=>t.id===key.slice(5));if(!t||t.authorId!==user?.id||t.assignmentId||t.receivedFromAdmin)return []}
  const cards=subscriptionFlashCards.apply(this,arguments);
  if(key.startsWith('flash:'))return cards;
- return hasPremium()?cards:cards.slice(0,10);
+ return hasPaidPlan()?cards:cards.slice(0,10);
 };
 const subscriptionShowFlash=showFlash;
-showFlash=function(){const r=subscriptionShowFlash.apply(this,arguments);let note=document.getElementById('free-flash-note');if(!hasPremium()&&!note){note=document.createElement('p');note.id='free-flash-note';note.className='sub';note.textContent='Тегін танысу жинағы: әр дереккөзден 10 карточкаға дейін. Өз карточкаларыңыз шектелмейді.';document.querySelector('#s-flash .wrap')?.prepend(note)}if(note)note.hidden=hasPremium();return r};
+showFlash=function(){const r=subscriptionShowFlash.apply(this,arguments);let note=document.getElementById('free-flash-note');if(!hasPaidPlan()&&!note){note=document.createElement('p');note.id='free-flash-note';note.className='sub';note.textContent='Тегін танысу жинағы: әр дереккөзден 10 карточкаға дейін. Өз карточкаларыңыз шектелмейді.';document.querySelector('#s-flash .wrap')?.prepend(note)}if(note)note.hidden=hasPaidPlan();return r};
 const subscriptionAnalytics=showAnalytics;
 showAnalytics=function(){if(!hasPremium()){showPremiumPanel('Толық статистика мен пәндік талдау Premium-да қолжетімді. Соңғы нәтиже мен қате талдауы тегін.');return}const r=subscriptionAnalytics.apply(this,arguments);loadPremiumDashboard('s-analytics');return r};
 const subscriptionKnowledge=showKnowledgeMap;
@@ -12829,12 +13034,12 @@ let subscriptionAdminLoading=false;
 async function mountSubscriptionAdmin(){
  if(!user?.isAdmin||user.id!=='admin'||subscriptionAdminLoading)return;
  let host=document.getElementById('owner-subscriptions');if(!host){host=document.createElement('section');host.id='owner-subscriptions';host.className='card';document.querySelector('#s-admin .wrap')?.prepend(host)}
- host.innerHTML='<h3>Premium жазылымдарын басқару</h3><div class="grid2" style="margin-top:12px"><div class="fg"><label>Қолданушы логині</label><input id="subscription-target-login" maxlength="40" autocomplete="off"></div><div class="fg"><label>Мерзімі, күн</label><input id="subscription-target-days" type="number" min="1" max="3650" value="30"></div></div><div class="row"><button class="btn btn-s" onclick="ownerSubscriptionAction(\'view\',this)">Қарау</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'premium\',this)">Premium беру / ұзарту</button><button class="btn btn-d" onclick="ownerSubscriptionAction(\'free\',this)">Тегінге қайтару</button></div><p id="owner-subscription-status" class="sub" role="status" style="margin-top:12px"></p><h4 style="margin-top:16px">Premium өтініштері</h4><div id="subscription-pending-requests"></div>';
+ host.innerHTML='<h3>Тарифтерді басқару · тек басты админ</h3><div class="grid2" style="margin-top:12px"><div class="fg"><label>Қолданушы логині</label><input id="subscription-target-login" maxlength="40" autocomplete="off"></div><div class="fg"><label>Мерзімі, күн</label><input id="subscription-target-days" type="number" min="1" max="3650" value="30"></div></div><div class="row"><button class="btn btn-s" onclick="ownerSubscriptionAction(\'view\',this)">Қарау</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'pro\',this)">Pro</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'premium\',this)">Premium</button><button class="btn btn-p" onclick="ownerSubscriptionAction(\'class\',this)">Класс</button><button class="btn btn-d" onclick="ownerSubscriptionAction(\'free\',this)">Тегінге қайтару</button></div><p id="owner-subscription-status" class="sub" role="status" style="margin-top:12px"></p><h4 style="margin-top:16px">Класс · топқа беру</h4><p class="sub">30 адамға дейін, логиндерді әр жолға бөлек енгізіңіз. Мерзімі жоғарыдағы күн санымен беріледі.</p><textarea id="subscription-class-logins" rows="4" placeholder="Оқушы логиндері"></textarea><button class="btn btn-p" onclick="ownerClassGrant(this)">Топқа Класс беру</button><h4 style="margin-top:16px">Тариф өтініштері</h4><div id="subscription-pending-requests"></div>';
  subscriptionAdminLoading=true;try{const r=await authCall('owner_subscription_list',{});const list=document.getElementById('subscription-pending-requests');if(!list)return;list.textContent='';if(!r.ok){list.textContent=r.msg;return}if(!r.requests.length)list.textContent='Жаңа өтініш жоқ.';for(const item of r.requests){const row=document.createElement('div');row.className='item';const label=document.createElement('strong');label.textContent=item.name;const b=document.createElement('button');b.className='btn btn-s btn-sm';b.textContent='Таңдау';b.onclick=()=>{document.getElementById('subscription-target-login').value=item.name};row.append(label,b);list.appendChild(row)}}finally{subscriptionAdminLoading=false}
 }
 async function ownerSubscriptionAction(action,button){
  if(!user?.isAdmin||user.id!=='admin')return;const login=document.getElementById('subscription-target-login').value.trim(),days=Number(document.getElementById('subscription-target-days').value),status=document.getElementById('owner-subscription-status');if(!login){status.textContent='Логинді енгізіңіз';return}button.disabled=true;
- try{const r=await authCall(action==='view'?'owner_subscription_view':'owner_subscription_set',{login,plan:action==='premium'?'premium':'free',days});if(!r.ok){status.textContent=r.msg;return}status.textContent=(r.name||login)+' · '+r.subscription.plan+' · мерзімі: '+premiumDate(r.subscription.expires);window.__bridge.refresh().catch(()=>{})}finally{button.disabled=false}
+ try{const r=await authCall(action==='view'?'owner_subscription_view':'owner_subscription_set',{login,plan:action,days});if(!r.ok){status.textContent=r.msg;return}status.textContent=(r.name||login)+' · '+r.subscription.plan+' · мерзімі: '+premiumDate(r.subscription.expires);window.__bridge.refresh().catch(()=>{})}finally{button.disabled=false}
 }
 const subscriptionAdmin=showAdmin;showAdmin=function(){const r=subscriptionAdmin.apply(this,arguments);mountSubscriptionAdmin();return r};
 subscriptionUI();
@@ -12860,6 +13065,90 @@ async function growthReferral(button){button.disabled=true;try{const r=await aut
 async function growthDuelResult(button){button.disabled=true;try{const code=document.getElementById('growth-duel-code').value.trim()||localStorage.getItem('ubt_growth_duel_'+user.id)||'';const r=await authCall('growth',{action:'duel_results',code});document.getElementById('growth-duel-results').textContent=r.ok?(r.results.length?r.results.map(x=>x.label+': '+x.score+'/'+x.max).join(' · '):'Қатысушылар тестті аяқтаған жоқ.'):r.msg}finally{button.disabled=false}}
 async function growthShareResult(){const r=window.growthSummary.lastResult;if(!r)return;const c=document.createElement('canvas');c.width=1080;c.height=650;const x=c.getContext('2d');const g=x.createLinearGradient(0,0,1080,650);g.addColorStop(0,'#142348');g.addColorStop(1,'#285dda');x.fillStyle=g;x.fillRect(0,0,1080,650);x.fillStyle='#fff';x.font='bold 48px sans-serif';x.fillText('ҰБТ PLUS',70,100);x.font='30px sans-serif';x.fillText(String(r.topic).slice(0,45),70,190);x.font='bold 110px sans-serif';x.fillText(r.score+' / '+r.max,70,355);x.font='30px sans-serif';x.fillText('Күн сайын мақсатқа бір қадам!',70,470);x.font='24px sans-serif';x.fillText('Достар және челлендж',70,560);c.toBlob(async blob=>{if(!blob)return;const f=new File([blob],'ubt-result.png',{type:'image/png'});try{if(navigator.canShare?.({files:[f]})){await navigator.share({files:[f]});return}}catch(e){if(e.name==='AbortError')return}const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=f.name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),30000)},'image/png')}
 const growthSubscriptionUI=subscriptionUI;subscriptionUI=function(){growthSubscriptionUI();if(!user)return;const nav=document.querySelector('#app-menu nav');if(nav&&!document.getElementById('growth-menu-entry')){const b=document.createElement('button');b.id='growth-menu-entry';b.className='app-menu-home';b.textContent='🏆 Достар және челлендж';b.onclick=showGrowth;nav.prepend(b)}const home=document.getElementById('ubd-home');if(home&&!document.getElementById('growth-home-entry')){const b=document.createElement('button');b.id='growth-home-entry';b.className='btn btn-s';b.style.marginBottom='16px';b.textContent='🏆 Жарыс · Челлендж · 7 күндік марафон';b.onclick=showGrowth;home.prepend(b)}};subscriptionUI();
+
+async function ownerClassGrant(button){if(user?.id!=='admin')return;const logins=document.getElementById('subscription-class-logins').value.split(/\n|,/).map(x=>x.trim()).filter(Boolean),days=Number(document.getElementById('subscription-target-days').value),status=document.getElementById('owner-subscription-status');if(!logins.length||logins.length>30){status.textContent='1–30 логин енгізіңіз';return}button.disabled=true;try{const r=await authCall('owner_subscription_set',{plan:'class',logins,days});status.textContent=r.ok?r.count+' аккаунтқа Класс тарифі берілді.':r.msg;window.__bridge.refresh().catch(()=>{})}finally{button.disabled=false}}
+function whatsappLinksUI(){
+ let style=document.getElementById('wa-contact-style');if(!style){style=document.createElement('style');style.id='wa-contact-style';style.textContent='#wa-contact-edge{position:fixed;right:12px;bottom:16px;z-index:950;display:flex;flex-direction:column;gap:7px;align-items:flex-end}#wa-contact-edge a{background:#128c52;color:white;padding:10px 14px;border-radius:14px;box-shadow:0 4px 18px #0003;text-decoration:none;font-size:13px;font-weight:600}#wa-contact-edge a:last-child{background:#1b304c}#wa-welcome-group{margin:14px 0;padding:14px;border:1px solid #25d36666;border-radius:16px;background:#25d3660d}#wa-welcome-group a{display:inline-flex;margin-top:8px}@media(max-width:600px){#wa-contact-edge{right:8px;bottom:10px}#wa-contact-edge a{padding:8px 10px;font-size:11px}}';document.head.appendChild(style)}
+ let edge=document.getElementById('wa-contact-edge');if(!edge){edge=document.createElement('aside');edge.id='wa-contact-edge';edge.setAttribute('aria-label','WhatsApp байланыс');edge.innerHTML=`<a href="${UBT_WHATSAPP}" target="_blank" rel="noopener noreferrer" aria-label="WhatsApp: 8 705 636 0080">WhatsApp · 8 705 636 0080 ↗</a><a href="${UBT_WHATSAPP_GROUP}" target="_blank" rel="noopener noreferrer">WhatsApp тобы ↗</a>`;document.body.appendChild(edge)}
+ const active=document.querySelector('.screen.active')?.id;edge.hidden=realExamActive()||active==='s-rev';edge.style.display=edge.hidden?'none':'flex';
+ const host=user?document.getElementById('ubd-home'):document.getElementById('login-box')||document.getElementById('s-login')?.querySelector('.wrap')||document.getElementById('s-login');
+ const old=document.getElementById('wa-welcome-group');if(host&&old?.parentElement!==host)old?.remove();
+ if(host&&!document.getElementById('wa-welcome-group')){const box=document.createElement('div');box.id='wa-welcome-group';box.innerHTML=`<b>ҰБТ PLUS WhatsApp тобы</b><p class="sub" style="margin-top:5px">Топқа қосылу үшін төмендегі батырманы басыңыз.</p><a class="btn btn-s btn-sm" href="${UBT_WHATSAPP_GROUP}" target="_blank" rel="noopener noreferrer">Топқа кіру ↗</a>`;host.prepend(box)}
+ const menu=document.getElementById('premium-menu-entry');if(menu)menu.textContent='✦ Тегін · Pro · Premium · Класс';
+}
+const whatsappSubscriptionUI=subscriptionUI;subscriptionUI=function(){whatsappSubscriptionUI();whatsappLinksUI()};
+subscriptionUI();
+
+let pathState=null,pathTab='goal',pathLoading=false;
+function pathScreen(){let s=document.getElementById('s-path');if(!s){s=document.createElement('section');s.id='s-path';s.className='screen';s.innerHTML='<div class="wrap wide"><button class="btn btn-s btn-sm" onclick="goHome()">← Басты бет</button><h1 style="margin:20px 0">Мақсат және нәтижелер</h1><nav id="path-tabs" class="row" style="gap:8px;margin-bottom:20px;flex-wrap:wrap"></nav><div id="path-content" aria-live="polite"></div></div>';document.body.appendChild(s)}return s}
+async function showPath(tab='goal'){if(!user)return;closeSecureReview();closeAppMenu();pathTab=tab;pathScreen();showScr('s-path');document.getElementById('path-content').textContent='Жүктелуде…';const actor=user.id;const r=await authCall('path',{action:'status'});if(!user||user.id!==actor)return;if(!r.ok){document.getElementById('path-content').textContent=r.msg;return}pathState=r;renderPathTabs();await renderPathContent()}
+function renderPathTabs(){const tabs=[['goal','🎯 Менің мақсатым'],['grants','🎓 Грант / университет'],['rank','🏆 Мектеп және сынып'],['parent','👨‍👩‍👧 Ата-ана кабинеті']];if(pathState.managedClasses.length)tabs.push(['teacher','📋 Мұғалім есебі']);if(user.id==='admin')tabs.push(['owner','⚙ Басты админ']);document.getElementById('path-tabs').innerHTML=tabs.map(([id,label])=>`<button class="btn ${pathTab===id?'btn-p':'btn-s'} btn-sm" onclick="pathChangeTab('${id}')">${label}</button>`).join('')}
+async function pathChangeTab(tab){pathTab=tab;renderPathTabs();document.getElementById('path-content').textContent='Жүктелуде…';await renderPathContent()}
+function pathPairText(){return pathState.pair?.length?pairLabel(pathState.pair):'Пән жұбы әлі бекітілмеген'}
+function pathPlanHtml(p,summary){if(!p.date)return '<p class="sub">ҰБТ күнін сақтағанда жеке санауыш пен апта жоспары пайда болады.</p>';const today=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Almaty'}));const todayDate=Date.UTC(today.getFullYear(),today.getMonth(),today.getDate());const days=Math.ceil((Date.parse(p.date+'T00:00:00Z')-todayDate)/86400000),left=Math.max(0,days),latest=pathState.latestFull;return `<div class="grid2"><div class="card"><h2>${days<0?'Таңдалған ҰБТ күні өтті':left===0?'ҰБТ бүгін':`ҰБТ-ға ${left} күн қалды`}</h2><p style="margin-top:12px">Мақсат: ${p.target}/140 · Университет: ${esc(p.university||'Таңдалмаған')}</p><p>Соңғы толық тест: ${latest===null?'Әлі жоқ':latest+'/140'}${latest!==null?' · Мақсатқа '+Math.max(0,p.target-latest)+' балл қалды':''}</p><p class="sub">${days<0?'Күнді жаңартыңыз.':'Күніне '+p.daily+' сұрақ — қалған '+left+' күнде '+left*p.daily+' сұрақтық жоспар. Бұл баллға кепілдік бермейді.'}</p></div><div class="card"><h3>Осы апта</h3><p>Шешілген сұрақ: ${summary.questions} · Белсенді күн: ${summary.activeDays}/7</p><progress style="width:100%;margin:10px 0" max="${p.daily*7}" value="${Math.min(p.daily*7,summary.questions)}"></progress><p>${p.daily*7} сұрақтық апталық мақсат · қалғаны ${Math.max(0,p.daily*7-summary.questions)}</p></div></div><div class="card" style="margin-top:16px"><h3>7 күндік дайындық жоспары</h3><ol style="padding-left:22px;line-height:1.9">${['Бірінші бейіндік пән: тақырып қайталау','Екінші бейіндік пән: есеп пен жаттығу','Қазақстан тарихы: негізгі ұғымдар','Оқу сауаттылығы және математикалық сауаттылық','Қате кеткен тақырыптарды қайталау','Толық ҰБТ жаттығуы (тариф лимитімен)','Нәтижені талдау және келесі аптаны жоспарлау'].map(t=>`<li>${t} · ${p.daily} сұраққа дейін</li>`).join('')}</ol><p class="sub">Жүктемені өзіңіз өзгерте аласыз. Пәндік шектеулер және тест лимиттері сақталады.</p></div>`}
+async function renderPathContent(){const host=document.getElementById('path-content'),tab=pathTab,p=pathState.profile;
+ if(tab==='goal'){host.innerHTML=pathPlanHtml(p,pathState.summary)+`<form class="card" style="margin-top:18px" onsubmit="event.preventDefault();pathSaveGoal(this)"><h2>Жеке мақсатымды баптау</h2><p style="margin:12px 0">Пәндеріңіз: <b>${esc(pathPairText())}</b>. Өзгертуді басты админ бекітеді.</p><div class="grid2"><label>Қай университетке түскіңіз келеді?<input id="path-university" list="path-universities" value="${esc(p.university||'')}" maxlength="180"><datalist id="path-universities">${pathState.universities.map(u=>`<option value="${esc(u)}">`).join('')}</datalist></label><label>ҰБТ күні<input id="path-date" type="date" value="${esc(p.date||'')}" required></label><label>Мақсат балл<input id="path-target" type="number" min="1" max="140" value="${p.target||100}" required></label><label>Күндік сұрақ мақсаты<input id="path-daily" type="number" min="5" max="100" value="${p.daily||20}" required></label></div><button class="btn btn-p" style="margin-top:16px">Сақтау</button><p id="path-goal-status" role="status"></p></form>`;return}
+ if(tab==='grants'){host.innerHTML=`<div class="card"><h2>Баллым қай университетке сәйкес келеді?</h2><p class="sub" style="margin:12px 0">Пән жұбы: ${esc(pathPairText())}. Шағын тест нәтижесі 140 балға айналдырылмайды. Толық ҰБТ нәтижесі алынады немесе баллды өзіңіз енгізесіз.</p><div class="grid2"><label>Салыстыратын балл<input id="grant-score" type="number" min="0" max="140" step="1" value="${pathState.latestFull??''}" placeholder="0–140"></label><label>Университет<select id="grant-university"><option value="">Барлығы</option>${pathState.universities.map(u=>`<option ${p.university===u?'selected':''}>${esc(u)}</option>`).join('')}</select></label><label>Дерек жылы<select id="grant-year"><option value="">Барлық жыл</option>${pathState.years.map(y=>`<option value="${y}">${y}</option>`).join('')}</select></label><label>Конкурс / квота<select id="grant-quota">${pathState.quotas.map(q=>`<option value="${esc(q)}">${q==='general'?'Жалпы конкурс':esc(q)}</option>`).join('')}</select></label></div><button class="btn btn-p" style="margin-top:16px" onclick="pathCompare(this)">Салыстыру</button></div><div id="grant-results" style="margin-top:16px"></div>`;await pathCompare();return}
+ if(tab==='rank'){const r=await authCall('path',{action:'rankings'});if(pathTab!==tab)return;if(!r.ok){host.textContent=r.msg;return}host.innerHTML=`<div class="card"><h2>Сыныптар жарысы · соңғы 7 күн</h2><p class="sub" style="margin:12px 0">${esc(r.method)}</p>${pathRanksTable(r.classes,false)}</div><div class="card" style="margin-top:16px"><h2>Мектептер рейтингі</h2>${pathRanksTable(r.schools,true)}</div>`;return}
+ if(tab==='parent'){const r=await authCall('path',{action:'parent_dashboard'});if(pathTab!==tab)return;if(!r.ok){host.textContent=r.msg;return}host.innerHTML=`<div class="card"><h2>Балаңыздың нәтижесін бақылаңыз</h2><p style="margin:12px 0">Өз аккаунтыңызбен кіріңіз. Баланың логинін енгізіп, WhatsApp арқылы басты админге жазыңыз. Байланыс тексеріліп бекітілгенде есеп осы кабинетте ашылады. Ашық тұрған есеп минут сайын жаңарады.</p><a class="btn btn-s" href="${UBT_WHATSAPP_GROUP}" target="_blank" rel="noopener noreferrer">WhatsApp тобына кіру ↗</a> <a class="btn btn-s" href="${UBT_WHATSAPP+'?text='+encodeURIComponent('Сәлеметсіз бе! Ата-ана кабинетін байланыстыруды сұраймын. Менің логинім: '+user.name+'. Баламның логині: ')}" target="_blank" rel="noopener noreferrer">Басты админге жазу ↗</a><form onsubmit="event.preventDefault();pathParentRequest(this)" style="margin-top:16px"><label>Балаңыздың логині<input name="child" minlength="2" maxlength="40" required></label><label>Қосымша мәлімет (міндетті емес)<input name="note" maxlength="300"></label><button class="btn btn-p" style="margin-top:12px">Байланыстыруға өтініш</button><p class="path-status" role="status"></p></form>${r.requests.map(x=>`<p style="margin-top:10px">${esc(x.login)} · ${esc({pending:'Тексерілуде',approved:'Бекітілген',revoked:'Қолжетімділік тоқтатылған'}[x.status]||x.status)}</p>`).join('')}</div><div id="parent-children">${r.children.map((c,i)=>pathParentCard(c,i)).join('')||'<p class="sub" style="margin-top:16px">Әзірге бекітілген байланыс жоқ. Балаңыздың паролін жазбаңыз.</p>'}</div>`;window.pathParentChildren=r.children;return}
+ if(tab==='teacher'){host.innerHTML='<div class="card"><h2>Сыныптың ортақ есебі</h2><label>Сынып<select id="path-teacher-class">'+pathState.managedClasses.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')+'</select></label><button class="btn btn-p" style="margin-top:12px" onclick="pathTeacherLoad(this)">Есепті ашу</button></div><div id="path-teacher-result" style="margin-top:16px"></div>';if(pathState.managedClasses.length)await pathTeacherLoad();return}
+ if(tab==='owner'){await pathOwnerLoad();return}
+}
+function pathRanksTable(rows,school){return rows.length?'<div class="tscroll"><table><thead><tr><th>Орын</th><th>'+ (school?'Мектеп':'Сынып / мектеп')+'</th><th>Қатысу</th><th>Орташа /140</th></tr></thead><tbody>'+rows.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r.name)}${school?'':'<br><small>'+esc(r.school)+'</small>'}</td><td>${r.active}/${r.students}</td><td>${r.score}</td></tr>`).join('')+'</tbody></table></div>':'<p class="sub">Мәлімет жоқ. Сынып пен мектепті басты админ бекітеді; рейтинг үшін толық 140 балдық ҰБТ тапсырылуы керек.</p>'}
+async function pathSaveGoal(form){const b=form.querySelector('button');b.disabled=true;try{const r=await authCall('path',{action:'save',university:document.getElementById('path-university').value,date:document.getElementById('path-date').value,target:Number(document.getElementById('path-target').value),daily:Number(document.getElementById('path-daily').value)});if(!r.ok){document.getElementById('path-goal-status').textContent=r.msg;return}await showPath('goal')}finally{b.disabled=false}}
+async function pathCompare(button){const score=document.getElementById('grant-score')?.value;if(button)button.disabled=true;try{const r=await authCall('path',{action:'compare',score:score===''?null:Number(score),university:document.getElementById('grant-university').value,year:Number(document.getElementById('grant-year').value)||null,quota:document.getElementById('grant-quota').value});const host=document.getElementById('grant-results');if(!host)return;if(!r.ok){host.textContent=r.msg;return}host.innerHTML=`<p class="sub" style="margin-bottom:14px">${esc(r.notice)}</p>`+(r.rows.length?r.rows.map(x=>`<article class="card" style="margin-bottom:12px"><span class="badge">${x.year} · ${x.kind==='historical'?'Өткен конкурс нәтижесі':'Қабылдау үшін белгіленген шек'}</span><h3 style="margin-top:12px">${esc(x.university)}</h3><p>${esc(x.group+' · '+x.program)} · ${esc(x.city)}</p><h2 style="margin-top:10px">${x.score} балл</h2><p>${x.difference===null?'Салыстыру үшін баллыңызды енгізіңіз.':x.difference<0?Math.abs(x.difference)+' балл жетпейді.':x.difference===0?'Осы деректегі баллмен тең.':x.difference+' балл жоғары.'}</p><p class="sub">${x.kind==='historical'?'Келесі жылғы конкурс нәтижесі өзгеруі мүмкін.':'Бұл грант ұтқан соңғы адамның балы емес.'}</p><a href="${esc(x.source)}" target="_blank" rel="noopener noreferrer">Дереккөз ↗</a><p class="sub">${x.sourceType==='official'?'Университеттің ресми беті':'Ашық деректерді жинақтаушы, ресми емес дереккөз'} · Тексерілген: ${esc(x.checked)}</p></article>`).join(''):'<div class="card">Осы пән жұбы, жыл немесе квота бойынша расталған жазба әлі қосылмаған. Басты админ дереккөзбен бірге қоса алады.</div>')}finally{if(button)button.disabled=false}}
+function pathParentCard(c,i){return `<section class="card" style="margin-top:16px"><h2>${esc(c.login)} · апталық есеп</h2><div class="grid2" style="margin-top:12px"><p>Аяқталған тест: <b>${c.tests}</b></p><p>Жауап берілген сұрақ: <b>${c.questions}</b></p><p>Белсенді күн: <b>${c.activeDays}/7</b></p><p>Толық ҰБТ: <b>${c.firstFull===null?'Әлі тапсырылмады':c.firstFull+' → '+c.lastFull+' /140'}</b></p></div><p class="sub">Бұрынғы апта соңғы ҰБТ: ${c.previousFull??'Дерек жоқ'} · Мақсат: ${c.goal.target||'Таңдалмаған'}</p><button class="btn btn-s btn-sm" style="margin-top:12px" onclick="pathShareWeekly(${i})">Апталық есепті WhatsApp-та бөлісу</button><details style="margin-top:14px"><summary>Соңғы тесттер</summary>${c.recent.map(r=>`<p style="margin-top:8px">${esc(r.topic)} · ${r.score}/${r.max} · ${new Date(r.at*1000).toLocaleDateString('kk-KZ')}</p>`).join('')||'<p>Әзірге тест жоқ</p>'}</details></section>`}
+async function pathParentRequest(form){const b=form.querySelector('button');b.disabled=true;try{const r=await authCall('path',{action:'parent_request',login:form.elements.child.value,note:form.elements.note.value});form.querySelector('.path-status').textContent=r.msg;if(r.ok)setTimeout(()=>showPath('parent'),1800)}finally{b.disabled=false}}
+function pathShareWeekly(i){const c=window.pathParentChildren[i];if(!c)return;const text='ҰБТ PLUS · '+c.login+' · соңғы 7 күн\nАяқталған тест: '+c.tests+'\nЖауап берілген сұрақ: '+c.questions+'\nБелсенді күн: '+c.activeDays+'/7\nТолық ҰБТ: '+(c.firstFull===null?'әлі жоқ':c.firstFull+' → '+c.lastFull+' /140');window.open('https://wa.me/?text='+encodeURIComponent(text),'_blank','noopener,noreferrer')}
+async function pathTeacherLoad(button){if(button)button.disabled=true;try{const r=await authCall('path',{action:'teacher_report',classId:document.getElementById('path-teacher-class').value});const host=document.getElementById('path-teacher-result');if(!host)return;if(!r.ok){host.textContent=r.msg;return}window.pathTeacherReport=r;host.innerHTML=`<div class="card"><h2>${esc(r.class.name)}</h2><p class="sub">${esc(r.scope)}</p><p style="margin:12px 0">Сынып коды: <b>${esc(r.class.code||'')}</b></p><div class="row" style="flex-wrap:wrap"><button class="btn btn-s btn-sm" onclick="pathShareClass()">Сыныпқа сілтеме бөлісу</button><button class="btn btn-s btn-sm" onclick="pathExportExcel()">Excel (.xlsx)</button><button class="btn btn-s btn-sm" onclick="pathPrintReport()">PDF / Басып шығару</button></div>${pathTeacherTable(r.rows)}</div>`}finally{if(button)button.disabled=false}}
+function pathTeacherTable(rows){return '<div class="tscroll"><table><thead><tr><th>Оқушы логині</th><th>Тест саны</th><th>Жауап саны</th><th>Соңғы нәтиже</th><th>Орташа %</th></tr></thead><tbody>'+rows.map(r=>`<tr><td>${esc(r.login)}</td><td>${r.tests}</td><td>${r.answered}</td><td>${r.latest?r.latest.score+'/'+r.latest.max:'—'}</td><td>${r.average??'—'}</td></tr>`).join('')+'</tbody></table></div>'}
+function pathShareClass(){const c=window.pathTeacherReport?.class;if(!c)return;const url=new URL(document.referrer||location.href);url.search='';url.hash='';url.searchParams.set('ubt_class',c.code);growthShareText('ҰБТ PLUS · '+c.name+'\nСынып коды: '+c.code+'\n'+url.href+'\nАккаунтыңызбен кіріңіз. Сыныпқа қосуды басты админ бекітеді; жіберілген тесттер жеке кабинетте ашылады.')}
+function pathPrintReport(){const r=window.pathTeacherReport;if(!r)return;const w=window.open('','_blank');if(!w){alert('PDF үшін қалқымалы терезені ашуға рұқсат беріңіз');return}w.document.open();w.document.write('<!doctype html><meta charset="utf-8"><title>Сынып есебі</title><style>body{font-family:Arial,sans-serif;padding:25px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #bbb;padding:8px;text-align:left}</style><h1>'+esc(r.class.name)+'</h1><p>'+esc(r.scope)+'</p>'+pathTeacherTable(r.rows));w.document.close();setTimeout(()=>w.print(),300)}
+// Minimal standards-based XLSX with inline strings; no external CDN or spreadsheet formulas.
+function pathExportExcel(){const r=window.pathTeacherReport;if(!r)return;const rows=[['Оқушы логині','Тест саны','Жауап саны','Соңғы балл','Максимум','Орташа %'],...r.rows.map(x=>[x.login,x.tests,x.answered,x.latest?.score??'',x.latest?.max??'',x.average??''])];const xml=v=>String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g,'');const sheet='<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'+rows.map((row,i)=>'<row r="'+(i+1)+'">'+row.map((v,j)=>{const ref=String.fromCharCode(65+j)+(i+1);return typeof v==='number'?'<c r="'+ref+'"><v>'+v+'</v></c>':'<c r="'+ref+'" t="inlineStr"><is><t xml:space="preserve">'+xml(v)+'</t></is></c>'}).join('')+'</row>').join('')+'</sheetData></worksheet>';const files={'[Content_Types].xml':'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>','_rels/.rels':'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>','xl/workbook.xml':'<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Сынып есебі" sheetId="1" r:id="rId1"/></sheets></workbook>','xl/_rels/workbook.xml.rels':'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>','xl/worksheets/sheet1.xml':sheet};pathDownload(new Blob([pathZip(files)],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),'class-report.xlsx')}
+function pathZip(files){const enc=new TextEncoder(),parts=[],central=[];let offset=0;function crc(bytes){let c=0xffffffff;for(const b of bytes){c^=b;for(let i=0;i<8;i++)c=(c>>>1)^((c&1)?0xedb88320:0)}return (c^0xffffffff)>>>0}for(const [name,value] of Object.entries(files)){const n=enc.encode(name),v=enc.encode(value),checksum=crc(v),h=new Uint8Array(30+n.length),d=new DataView(h.buffer);d.setUint32(0,0x04034b50,true);d.setUint16(4,20,true);d.setUint32(14,checksum,true);d.setUint32(18,v.length,true);d.setUint32(22,v.length,true);d.setUint16(26,n.length,true);h.set(n,30);parts.push(h,v);const c=new Uint8Array(46+n.length),cd=new DataView(c.buffer);cd.setUint32(0,0x02014b50,true);cd.setUint16(4,20,true);cd.setUint16(6,20,true);cd.setUint32(16,checksum,true);cd.setUint32(20,v.length,true);cd.setUint32(24,v.length,true);cd.setUint16(28,n.length,true);cd.setUint32(42,offset,true);c.set(n,46);central.push(c);offset+=h.length+v.length}const size=central.reduce((n,a)=>n+a.length,0),end=new Uint8Array(22),ed=new DataView(end.buffer);ed.setUint32(0,0x06054b50,true);ed.setUint16(8,central.length,true);ed.setUint16(10,central.length,true);ed.setUint32(12,size,true);ed.setUint32(16,offset,true);const all=[...parts,...central,end],out=new Uint8Array(all.reduce((n,a)=>n+a.length,0));let i=0;for(const a of all){out.set(a,i);i+=a.length}return out}
+function pathDownload(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),30000)}
+async function pathOwnerLoad(){const r=await authCall('path',{action:'owner_overview'});if(pathTab!=='owner')return;const host=document.getElementById('path-content');if(!r.ok){host.textContent=r.msg;return}window.pathOwnerData=r;host.innerHTML=`<section class="card"><h2>Үздік сыныптар · басты админ</h2><p class="sub" style="margin:12px 0">${esc(r.method)}</p>${pathRanksTable(r.classes,false)}<label>Сыныпты таңдау<select id="path-owner-class" onchange="pathOwnerClassDetail()"><option value="">Таңдаңыз</option>${r.classes.map(c=>`<option value="${esc(c.id)}">${esc(c.name+' · '+c.school)}</option>`).join('')}</select></label><div id="path-owner-class-detail"></div></section><section class="card" style="margin-top:16px"><h2>Ата-ана байланыстарын бекіту</h2><p class="sub">WhatsApp арқылы тексергеннен кейін ғана бекітіңіз. Пароль талап етілмейді.</p>${r.requests.map((x,i)=>`<div class="item"><div><b>${esc(x.parentLogin||x.parent)}</b><p>Бала логині: ${esc(x.login)} · ${esc(x.status)}</p><p>${esc(x.note||'')}</p></div><div class="row"><button class="btn btn-p btn-sm" onclick="pathOwnerParent(${i},true,this)">Тексерілді / Бекіту</button><button class="btn btn-d btn-sm" onclick="pathOwnerParent(${i},false,this)">Қолжетімділікті жабу</button></div></div>`).join('')||'<p>Өтініш жоқ</p>'}</section><section class="card" style="margin-top:16px"><h2>Грант базасын жыл сайын жаңарту</h2><p style="margin:12px 0">Жыл, пән жұбы, конкурс/квота, балл түрі және HTTPS дереккөзі міндетті. Импорт бүкіл грант базасын ауыстырады. Алдымен көшірмесін сақтаңыз.</p><button class="btn btn-s" onclick="pathGrantExport(this)">Қазіргі JSON базасын жүктеу</button><label style="display:block;margin-top:12px">Жаңартылған JSON<input id="path-grant-file" type="file" accept="application/json,.json"></label><button class="btn btn-p" style="margin-top:12px" onclick="pathGrantImport(this)">JSON базасын тексеріп енгізу</button><p id="path-grant-status" role="status"></p></section>`}
+function pathOwnerClassDetail(){const c=window.pathOwnerData.classes.find(c=>c.id===document.getElementById('path-owner-class').value),host=document.getElementById('path-owner-class-detail');if(!c){host.textContent='';return}host.innerHTML=`<h3 style="margin-top:16px">${esc(c.name)}</h3><p>Мұғалімі: ${esc(c.teacher)} · Қатысу: ${c.active}/${c.students} (${c.participation}%)</p><p>Мектебі: ${esc(c.school)} · Орналасуы: ${esc(c.location||'—')}</p><div class="grid2" style="margin:12px 0"><label>Мектеп атауы<input id="path-school-name" maxlength="150" value="${esc(c.school==='Мектеп бекітілмеген'?'':c.school)}"></label><label>Қала / аудан<input id="path-school-location" maxlength="150" value="${esc(c.location||'')}"></label></div><button class="btn btn-p btn-sm" onclick="pathOwnerSchool(this)">Мектепті бекіту</button><div class="tscroll"><table><thead><tr><th>Оқушы логині</th><th>Соңғы толық ҰБТ</th><th>Тест саны</th><th>Мәлімет</th></tr></thead><tbody>${c.members.map((m,i)=>`<tr><td>${esc(m.login)}</td><td>${m.score??'—'}</td><td>${m.tests}</td><td><button class="btn btn-s btn-sm" onclick="pathOwnerStudent(${i},this)">Ашу</button></td></tr>`).join('')}</tbody></table></div><div id="path-owner-student"></div>`}
+async function pathOwnerSchool(button){button.disabled=true;try{const r=await authCall('path',{action:'owner_school',classId:document.getElementById('path-owner-class').value,school:document.getElementById('path-school-name').value,location:document.getElementById('path-school-location').value});if(!r.ok)return alert(r.msg);await pathOwnerLoad()}finally{button.disabled=false}}
+async function pathOwnerStudent(i,button){const c=window.pathOwnerData.classes.find(c=>c.id===document.getElementById('path-owner-class').value);if(!c)return;button.disabled=true;try{const r=await authCall('path',{action:'owner_student',uid:c.members[i].uid});if(!r.ok)return alert(r.msg);document.getElementById('path-owner-student').innerHTML='<p>Пән жұбы: '+esc(pairLabel(r.pair||[]))+' · Тариф: '+esc(tariffName(r.subscription.plan))+'</p>'+pathParentCard(r.summary,0);window.pathParentChildren=[r.summary]}finally{button.disabled=false}}
+async function pathOwnerParent(i,approve,button){const r=window.pathOwnerData.requests[i];if(approve&&!confirm('WhatsApp арқылы осы адамның баланың ата-анасы екенін тексердіңіз бе?'))return;button.disabled=true;try{const res=await authCall('path',{action:'owner_parent',id:r.id,approve,verified:approve});if(!res.ok)return alert(res.msg);await pathOwnerLoad()}finally{button.disabled=false}}
+async function pathGrantExport(button){button.disabled=true;try{const r=await authCall('path',{action:'grants_export'});if(!r.ok)return alert(r.msg);pathDownload(new Blob([JSON.stringify(r.records,null,2)],{type:'application/json'}),'grant-database.json')}finally{button.disabled=false}}
+async function pathGrantImport(button){const f=document.getElementById('path-grant-file').files[0],status=document.getElementById('path-grant-status');if(!f||f.size>4000000){status.textContent='4 МБ-тан кіші JSON файлын таңдаңыз';return}button.disabled=true;try{const records=JSON.parse(await f.text());if(!confirm('Қазіргі грант базасын жаңа JSON-мен ауыстыру керек пе?'))return;const r=await authCall('path',{action:'grants_import',records});status.textContent=r.ok?r.count+' жазба сақталды.':r.msg}catch(e){status.textContent='JSON оқылмады. Файл пішімін тексеріңіз.'}finally{button.disabled=false}}
+let pathOnboardingUid='',pathOnboardingLoading=false;
+async function pathMaybeOnboard(){
+ if(!user||user.isAdmin||user.isJuniorAdmin||isTeacherUser()||user.role==='parent'||pathOnboardingLoading||pathOnboardingUid===user.id||realExamActive()||currentPair().length!==2)return;
+ const actor=user.id;pathOnboardingLoading=true;try{const r=await authCall('path',{action:'status'});if(!user||user.id!==actor||!r.ok||realExamActive())return;pathOnboardingUid=actor;if(r.profile.onboarded)return;pathState=r;
+ let d=document.getElementById('path-onboarding');if(d)d.remove();d=document.createElement('dialog');d.id='path-onboarding';d.className='school-dialog';d.innerHTML=`<h2>Дайындықты өзіңізге бейімдейік</h2><p class="sub" style="margin:12px 0">Үш қадам. Кейін «Менің мақсатым» бөлімінде өзгерте аласыз.</p><p><b>1. Пәндеріңіз</b></p><p style="margin:8px 0 16px">${esc(pairLabel(r.pair))}</p><form id="path-onboard-form"><label><b>2. Қай университетке түскіңіз келеді?</b><input name="university" list="path-ob-unis" maxlength="180" placeholder="Университет атауы"><datalist id="path-ob-unis">${r.universities.map(u=>`<option value="${esc(u)}">`).join('')}</datalist></label><label><b>3. ҰБТ қашан?</b><input name="date" type="date" required></label><p class="path-status" role="status"></p><div class="row" style="margin-top:16px"><button class="btn btn-p">Сақтау</button><button type="button" class="btn btn-s" onclick="document.getElementById('path-onboarding').close()">Кейін толтырамын</button></div></form>`;document.body.appendChild(d);d.querySelector('form').onsubmit=async function(e){e.preventDefault();const b=this.querySelector('button');b.disabled=true;try{const res=await authCall('path',{action:'save',university:this.elements.university.value,date:this.elements.date.value,target:100,daily:20});if(!res.ok){this.querySelector('.path-status').textContent=res.msg;return}d.close();pathHomeRefresh()}finally{b.disabled=false}};d.showModal();
+ }finally{pathOnboardingLoading=false}
+}
+let pathHomeUid='',pathHomeRequest=false;
+async function pathHomeRefresh(){
+ if(!user||pathHomeRequest)return;const host=document.getElementById('ubd-home');if(!host)return;const actor=user.id;pathHomeRequest=true;try{const r=await authCall('path',{action:'status'});if(!user||user.id!==actor||!r.ok)return;document.getElementById('path-home-countdown')?.remove();if(!r.profile.date)return;const box=document.createElement('section');box.id='path-home-countdown';box.className='card';box.style.marginBottom='16px';const days=Math.ceil((Date.parse(r.profile.date+'T00:00:00+05:00')-Date.now())/86400000);box.innerHTML=`<b>${days<0?'ҰБТ күнін жаңартыңыз':days===0?'ҰБТ бүгін':'ҰБТ-ға '+days+' күн қалды'}</b><p class="sub" style="margin:8px 0">Мақсат ${r.profile.target}/140 · күніне ${r.profile.daily} сұрақ · ${esc(r.profile.university||'Университет таңдалмаған')}</p><button class="btn btn-s btn-sm" onclick="showPath('goal')">Апталық жоспар</button> <button class="btn btn-s btn-sm" onclick="showPath('grants')">Грантпен салыстыру</button>`;host.prepend(box)}finally{pathHomeRequest=false}
+}
+function pathNavigationUI(){
+ if(!document.getElementById('register-parent-mode')&&document.getElementById('register-box')){const label=document.createElement('label');label.style.cssText='display:flex;gap:8px;align-items:center;margin:12px 0';label.innerHTML='<input type="checkbox" id="register-parent-mode" style="width:auto"> Ата-ана ретінде тіркелемін';label.querySelector('input').onchange=function(){const pair=document.getElementById('reg-profile-pair');if(pair){pair.disabled=this.checked;pair.closest('.fg').hidden=this.checked}};document.getElementById('register-box').prepend(label)}
+ if(!user)return;const nav=document.querySelector('#app-menu nav');if(nav&&!document.getElementById('path-menu-entry')){const b=document.createElement('button');b.id='path-menu-entry';b.className='app-menu-home';b.textContent='🎓 Мақсат · Грант · Сынып · Ата-ана';b.onclick=()=>showPath(user.role==='parent'?'parent':'goal');nav.prepend(b)}
+ const home=document.getElementById('ubd-home');if(home&&!document.getElementById('path-home-entry')){const b=document.createElement('button');b.id='path-home-entry';b.className='btn btn-s';b.style.cssText='margin:0 8px 16px 0';b.textContent=user.role==='parent'?'👨‍👩‍👧 Баламның нәтижелері':'🎓 Менің мақсатым · Грант · Сынып рейтингі';b.onclick=()=>showPath(user.role==='parent'?'parent':'goal');home.prepend(b)}
+ if(pathHomeUid!==user.id){pathHomeUid=user.id;pathHomeRefresh()}
+ setTimeout(pathMaybeOnboard,4200);
+}
+const pathSubscriptionUI=subscriptionUI;subscriptionUI=function(){pathSubscriptionUI();pathNavigationUI()};
+const pathAfterFinish=afterFinish;afterFinish=function(){const result=pathAfterFinish.apply(this,arguments);const host=document.getElementById('res-break');if(host&&!document.getElementById('path-result-grants')){const box=document.createElement('section');box.id='path-result-grants';box.className='card';box.style.marginTop='16px';const full=st.verifiedExam?.max===140&&st.isRealUbt;box.innerHTML='<h3>🎓 Университет мақсатыңызға жақындайық</h3><p class="sub" style="margin:10px 0">'+(full?'Толық ҰБТ нәтижеңізді грант базасымен салыстырыңыз.':'Грантпен салыстыру үшін толық 140 балдық ҰБТ нәтижесі қажет. Шағын тест баллы қайта есептелмейді.')+'</p><button class="btn btn-p btn-sm" onclick="showPath(\'grants\')">Грант / университетпен салыстыру</button>';host.appendChild(box)}pathHomeRefresh();return result};
+let pathClassLinkChecked='';
+async function pathClassLanding(){
+ if(!user||pathClassLinkChecked===user.id)return;pathClassLinkChecked=user.id;let code='';
+ try{code=new URL(document.referrer||location.href).searchParams.get('ubt_class')||''}catch(e){}
+ try{code=new URL(window.parent.location.href).searchParams.get('ubt_class')||code}catch(e){}
+ if(!code)return;const r=await authCall('path',{action:'class_invite',code});if(!r.ok){alert(r.msg);return}
+ const host=document.getElementById('ubd-home');if(!host)return;document.getElementById('path-class-invitation')?.remove();const box=document.createElement('section');box.id='path-class-invitation';box.className='card';box.style.marginBottom='16px';box.innerHTML='<h3>'+esc(r.name)+'</h3><p>Мұғалім: '+esc(r.teacher)+' · Сынып коды: '+esc(r.code)+'</p>'+(r.member?'<button class="btn btn-p" style="margin-top:12px" onclick="showAssignedTests()">Маған жіберілген тесттер</button>':'<p class="sub">Сыныпқа қосу үшін басты админге өз логиніңіз бен сынып кодын жіберіңіз.</p><a class="btn btn-s" style="margin-top:12px" href="'+UBT_WHATSAPP+'?text='+encodeURIComponent('Сыныпқа қосылғым келеді. Логинім: '+user.name+'. Сынып коды: '+code)+'" target="_blank" rel="noopener noreferrer">Басты админге WhatsApp</a>');host.prepend(box);
+}
+const pathStartSession=startSession;startSession=async function(){pathHomeUid='';const r=await pathStartSession.apply(this,arguments);pathNavigationUI();await pathClassLanding();if(user?.role==='parent')await showPath('parent');return r};
+// Refresh linked child summaries only while the parent panel is visible.
+setInterval(async()=>{if(!user||document.hidden||pathTab!=='parent'||!document.getElementById('s-path')?.classList.contains('active')||realExamActive())return;const actor=user.id;try{const r=await authCall('path',{action:'parent_dashboard'});if(!r.ok||!user||user.id!==actor||pathTab!=='parent')return;const host=document.getElementById('parent-children');if(host){window.pathParentChildren=r.children;host.innerHTML=r.children.map((c,i)=>pathParentCard(c,i)).join('')||'<p class="sub" style="margin-top:16px">Әзірге бекітілген байланыс жоқ.</p>'}}catch(e){}},60000);
+const pathRenderTeacher=renderTeacher;renderTeacher=function(){const r=pathRenderTeacher.apply(this,arguments);const host=document.getElementById('tch-classes');if(host&&!document.getElementById('path-teacher-link')){const b=document.createElement('button');b.id='path-teacher-link';b.className='btn btn-p';b.style.marginBottom='16px';b.textContent='📋 Сынып есебі · Excel / PDF';b.onclick=()=>showPath('teacher');host.prepend(b)}return r};
+const pathShowAdmin=showAdmin;showAdmin=function(){const r=pathShowAdmin.apply(this,arguments);const host=document.querySelector('#s-admin .wrap');if(user?.id==='admin'&&host&&!document.getElementById('path-owner-link')){const b=document.createElement('button');b.id='path-owner-link';b.className='btn btn-p';b.style.marginBottom='16px';b.textContent='🏆 Үздік сыныптар · Ата-аналар · Грант базасы';b.onclick=()=>showPath('owner');host.prepend(b)}return r};
+pathNavigationUI();
 
 </script>
 <script>
