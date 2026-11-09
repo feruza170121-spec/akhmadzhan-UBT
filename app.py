@@ -22,7 +22,7 @@ import streamlit.components.v1 as components
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.environ.get("UBT_DATA_FILE") or os.path.join(_HERE, "ubt_data.json")
 FRONT_DIR = os.path.join(_HERE, "ubt_frontend_zheke")
-_NO_SYNC = ("ubt_current", "ubt_dark")
+_NO_SYNC = ("ubt_current", "ubt_dark", "ubt_ui_lang")
 
 _TABLE = "ubt_kv"
 _BOOK_BUCKET = "ubt-books"
@@ -445,7 +445,7 @@ def _review_record(state,sess,exam,answers):
     usage=_jload(state['db'].get('ubt_server_exam_review_usage_'+sess['uid'],'{}'),dict,{})
     u=usage.setdefault(family,{'attempts':0,'opens':0})
     u['attempts']+=1
-    eligible=own or u['attempts']==1
+    eligible=(own or u['attempts']==1) and not exam.get('noReview')
     ident='review_'+secrets.token_hex(18)
     records=_jload(state['db'].get('ubt_server_exam_review_records_'+sess['uid'],'{}'),dict,{})
     records[ident]={'uid':uid,'family':family,'own':own,'eligible':eligible,'questions':exam['questions'],'answers':answers,'topic':exam['topic'],'created':time.time(),'expires':time.time()+30*86400}
@@ -532,7 +532,7 @@ def _secure_snapshot(state,sess,db):
     if sess['uid']!='admin':
         allowed=_allowed_subjects(state,sess)
         tests=_jload(db.get('ubt_tests','[]'),list,[])
-        db['ubt_tests']=_jdump([t for t in tests if t.get('subject') in allowed])
+        db['ubt_tests']=_jdump([t for t in tests if t.get('subject') in allowed and not t.get('shopExclusive')])
         catalog=_jload(db.get('ubt_question_catalog','[]'),list,[])
         db['ubt_question_catalog']=_jdump([q for q in catalog if q.get('authorId')==sess['uid'] and q.get('subject') in allowed])
         named=_jload(db.get('ubt_real_bank_tests','[]'),list,[])
@@ -545,6 +545,8 @@ def _secure_snapshot(state,sess,db):
                 db[key]=_jdump([{k:v for k,v in r.items() if k not in ('questions','answers')} for r in rows if isinstance(r,dict)])
             elif key.startswith('ubt_mistakes_'):
                 db[key]='[]'
+    wallet=_econ_wallet(state,sess['uid'])
+    db['ubt_economy']=_jdump({k:wallet.get(k) for k in ('coins','shields','owned','equipped','streak')}|{'uid':sess['uid']})
     info=_subscription_info(state,sess)
     db['ubt_entitlement']=_jdump(info)
     if info['plan']=='free':
@@ -675,6 +677,8 @@ def _subscription_prepare(state,sess,exam):
     return ''
 
 def _subscription_charge(state,sess,exam,token):
+    issue=_shop_charge(state,sess,exam,token)
+    if issue:return issue
     if exam.get('quotaCharged'):return ''
     if exam.get('premiumAtStart'):
         exam['quotaCharged']=True;exam['quotaSource']='premium';_save_exam(state,token);return ''
@@ -1069,6 +1073,179 @@ def _path_request(state,sess,d):
             _put(state,'ubt_server_access_grants',_jdump(clean));_commit(state);return {'ok':True,'count':len(clean)}
         return {'ok':False,'msg':'Әрекет табылмады'}
 
+def _shop_charge(state,sess,exam,token):
+    if not exam.get('shopItem') or exam.get('shopCharged'):return ''
+    key='ubt_server_access_shop_purchases_'+sess['uid'];purchases=_jload(state['db'].get(key,'{}'),dict,{})
+    item=_jload(state['db'].get('ubt_server_access_shop','{}'),dict,{}).get(exam['shopItem']);purchase=purchases.get(exam['shopItem'])
+    if not item or not purchase:return 'Сатып алу құқығы табылмады'
+    charged=purchase.setdefault('charged',[])
+    if token not in charged:
+        if purchase.get('used',0)>=item['attempts']:return 'Сатып алынған тесттің тапсыру саны аяқталды'
+        charged.append(token);purchase['used']=len(charged)
+    exam['shopCharged']=True;_put(state,key,_jdump(purchases));_save_exam(state,token)
+    return ''
+
+_ECON_TIERS = ['Қола','Күміс','Алтын','Гауһар']
+
+def _econ_wallet(state,uid):
+    key='ubt_server_access_wallet_'+uid
+    w=_jload(state['db'].get(key,'{}'),dict,{})
+    if not w:
+        legacy=_jload(state['db'].get('ubt_streak_'+uid,'{}'),dict,{})
+        try:
+            last=legacy.get('last','');datetime.date.fromisoformat(last)
+            if last>_growth_day():last=''
+            count=max(0,min(3660,int(legacy.get('count',0))));best=max(count,min(3660,int(legacy.get('best',count))))
+        except (ValueError,TypeError):last='';count=0;best=0
+        w={'coins':0,'spent':0,'earned':0,'shields':0,'owned':[],'equipped':{},'streak':{'last':last,'count':count,'best':best},'rewardDay':'','families':[],'dailyCoins':0,'dailyXP':0,'dailyBonus':False}
+        _put(state,key,_jdump(w))
+    return w
+
+def _econ_save(state,uid,w):_put(state,'ubt_server_access_wallet_'+uid,_jdump(w))
+
+def _league_week():
+    return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5))).strftime('%G-W%V')
+
+def _league_sorted(group):
+    return sorted(group['members'].values(),key=lambda r:(-r['xp'],r.get('joined',0),r['uid']))
+
+def _league_ensure(state):
+    week=_league_week();key='ubt_server_access_leagues';league=_jload(state['db'].get(key,'{}'),dict,{})
+    if league.get('week')==week:return league
+    tiers=_jload(state['db'].get('ubt_server_access_league_tiers','{}'),dict,{})
+    if league.get('week'):
+        summary={}
+        for group in league.get('groups',[]):
+            ordered=_league_sorted(group);active=sum(r['xp']>0 for r in ordered)
+            for i,r in enumerate(ordered):
+                level=group['tier'];change=0
+                if active>=10 and r['xp']>0 and i<5:change=1 if level<3 else 0
+                elif active>=10 and i>=len(ordered)-5:change=-1 if level>0 else 0
+                tiers[r['uid']]=max(0,min(3,level+change));summary[r['uid']]={'week':league['week'],'rank':i+1,'xp':r['xp'],'change':change,'tier':tiers[r['uid']]}
+        _put(state,'ubt_server_access_league_previous',_jdump(summary))
+    people=[p for p in _profiles(state).values() if p.get('accessApproved') is True and p.get('role') not in ('parent','teacher') and p.get('id')!='admin' and p.get('id') not in _admin_uids(state)]
+    groups=[];now=time.time()
+    for tier in range(4):
+        students=sorted([p for p in people if max(0,min(3,int(tiers.get(p['id'],0))))==tier],key=lambda p:hashlib.sha256((week+p['id']).encode()).hexdigest())
+        for start in range(0,len(students),30):groups.append({'id':str(tier)+'-'+str(start//30),'tier':tier,'members':{p['id']:{'uid':p['id'],'xp':0,'joined':now} for p in students[start:start+30]}})
+    league={'week':week,'groups':groups};_put(state,key,_jdump(league));_put(state,'ubt_server_access_league_tiers',_jdump(tiers));return league
+
+def _league_member(state,uid):
+    league=_league_ensure(state)
+    group=next((g for g in league['groups'] if uid in g['members']),None)
+    if not group:
+        p=_person_profile(state,uid)
+        if not p or p.get('role') in ('parent','teacher') or uid=='admin' or uid in _admin_uids(state):return league,None
+        tiers=_jload(state['db'].get('ubt_server_access_league_tiers','{}'),dict,{});tier=max(0,min(3,int(tiers.get(uid,0))))
+        group=next((g for g in league['groups'] if g['tier']==tier and len(g['members'])<30),None)
+        if not group:group={'id':str(tier)+'-new-'+secrets.token_hex(4),'tier':tier,'members':{}};league['groups'].append(group)
+        group['members'][uid]={'uid':uid,'xp':0,'joined':time.time()};_put(state,'ubt_server_access_leagues',_jdump(league))
+    return league,group
+
+def _econ_finish(state,sess,exam,result,token,answers):
+    uid=sess['uid'];w=_econ_wallet(state,uid);day=_growth_day();eligible=len(answers)>=max(1,math.ceil(len(exam['questions'])/2)) and not exam.get('selfAuthored') and uid!='admin' and _person_profile(state,uid).get('role') not in ('parent','teacher') and uid not in _admin_uids(state)
+    if eligible:
+        if w.get('rewardDay')!=day:w.update(rewardDay=day,families=[],dailyCoins=0,dailyXP=0,dailyBonus=False)
+        family=_review_fingerprint(exam['questions']);xp=0;coins=0
+        if family not in w['families']:
+            w['families'].append(family);xp=min(100-w['dailyXP'],len(answers)+(5 if result['score']/result['max']>=.8 else 0));xp=max(0,xp)
+            if w['dailyCoins']==0:coins=10
+            if (exam.get('dailyPractice') or exam.get('growthMode')=='challenge') and not w['dailyBonus']:coins+=10;w['dailyBonus']=True
+            coins=min(coins,20-w['dailyCoins']);w['dailyCoins']+=coins;w['dailyXP']+=xp;w['coins']+=coins;w['earned']+=coins
+            league,group=_league_member(state,uid)
+            if group:group['members'][uid]['xp']+=xp;_put(state,'ubt_server_access_leagues',_jdump(league))
+        streak=w['streak'];last=streak.get('last');gap=(datetime.date.fromisoformat(day)-datetime.date.fromisoformat(last)).days if last else 999
+        if gap>0:
+            if gap==2 and w['shields']>0:w['shields']-=1;gap=1;streak['protectedDay']=(datetime.date.fromisoformat(day)-datetime.timedelta(days=1)).isoformat()
+            streak['count']=streak.get('count',0)+1 if gap==1 else 1;streak['best']=max(streak.get('best',0),streak['count']);streak['last']=day
+        result['economy']={'coins':coins,'xp':xp,'balance':w['coins'],'streak':dict(w['streak'])}
+        _econ_save(state,uid,w)
+    if exam.get('shopItem'):
+        purchases=_jload(state['db'].get('ubt_server_access_shop_purchases_'+uid,'{}'),dict,{})
+        owned=purchases.get(exam['shopItem'])
+        if owned:
+            if token not in owned.setdefault('finished',[]):owned['finished'].append(token)
+            if owned.get('pending')==token:owned.pop('pending',None)
+            _put(state,'ubt_server_access_shop_purchases_'+uid,_jdump(purchases))
+        ident='CERT-'+secrets.token_hex(8).upper();certificate={'id':ident,'uid':uid,'name':_person_profile(state,uid).get('name',sess.get('name','Оқушы')),'title':exam.get('topic','Тест'),'score':result['score'],'max':result['max'],'at':time.time(),'kind':'diploma' if result['score']/result['max']>=.8 and len(answers)>=len(exam['questions'])/2 else 'certificate','exam':token}
+        certificates=_jload(state['db'].get('ubt_server_access_certificates_'+uid,'{}'),dict,{})
+        certificates[ident]=certificate;_put(state,'ubt_server_access_certificates_'+uid,_jdump(certificates));result['certificateId']=ident
+
+def _econ_request(state,sess,d):
+    if not sess or sess.get('codeGuest'):return {'ok':False,'msg':'Аккаунтыңызға кіріңіз'}
+    with state['lock']:
+        uid=sess['uid'];owner=uid=='admin' and sess.get('admin');action=d.get('action','status');w=_econ_wallet(state,uid)
+        items=_jload(state['db'].get('ubt_server_access_shop','{}'),dict,{})
+        purchases=_jload(state['db'].get('ubt_server_access_shop_purchases_'+uid,'{}'),dict,{})
+        if action=='status':
+            allowed=_allowed_subjects(state,sess)
+            visible=[dict(id=i,**{k:r.get(k) for k in ('title','subject','price','attempts','minutes','active')},count=len(r['questions']),purchased=i in purchases,used=purchases.get(i,{}).get('used',0)) for i,r in items.items() if (r.get('active') or i in purchases) and r['subject'] in allowed]
+            return {'ok':True,'wallet':w,'items':visible,'cosmetics':[{'id':'shield','title':'Серияны 1 күн қорғау','price':30},{'id':'frame_gold','title':'Алтын аватар жақтауы','price':50},{'id':'theme_ocean','title':'Мұхит түсті тақырып','price':70}],'certificates':list(_jload(state['db'].get('ubt_server_access_certificates_'+uid,'{}'),dict,{}).values())[-100:]}
+        if action=='league':
+            league,group=_league_member(state,uid)
+            prev=_jload(state['db'].get('ubt_server_access_league_previous','{}'),dict,{}).get(uid)
+            if not group:return {'ok':True,'week':league['week'],'group':None,'previous':prev}
+            rows=_league_sorted(group)
+            return {'ok':True,'week':league['week'],'group':group['id'],'tier':group['tier'],'tierName':_ECON_TIERS[group['tier']],'rows':[{'rank':i+1,'label':'Оқушы '+hashlib.sha256(r['uid'].encode()).hexdigest()[:5],'xp':r['xp'],'me':r['uid']==uid} for i,r in enumerate(rows)],'previous':prev,'active':sum(r['xp']>0 for r in rows)}
+        if action=='buy_cosmetic':
+            ident=d.get('id');price={'shield':30,'frame_gold':50,'theme_ocean':70}.get(ident)
+            if price is None:return {'ok':False,'msg':'Тауар табылмады'}
+            if ident!='shield' and ident in w['owned']:return {'ok':False,'msg':'Бұл зат сатып алынған'}
+            if ident=='shield' and w['shields']>=3:return {'ok':False,'msg':'Ең көбі 3 қорғаныс сақтауға болады'}
+            if w['coins']<price:return {'ok':False,'msg':'Монета жеткіліксіз'}
+            w['coins']-=price;w['spent']+=price
+            if ident=='shield':w['shields']+=1
+            else:w['owned'].append(ident)
+            _econ_save(state,uid,w);_commit(state);return {'ok':True,'wallet':w}
+        if action=='equip':
+            ident=d.get('id');slot=d.get('slot')
+            if slot not in ('frame','theme') or ident not in ('','frame_gold' if slot=='frame' else 'theme_ocean') or (ident and ident not in w['owned']):return {'ok':False,'msg':'Алдымен затты сатып алыңыз'}
+            w['equipped'][slot]=ident;_econ_save(state,uid,w);_commit(state);return {'ok':True,'wallet':w}
+        if action=='buy_test':
+            ident=str(d.get('id',''));item=items.get(ident)
+            if not item or not item.get('active'):return {'ok':False,'msg':'Бұл тест сатылымда жоқ'}
+            if item['subject'] not in _allowed_subjects(state,sess):return {'ok':False,'msg':'Тест сіздің пән жұбыңызға сәйкес емес'}
+            if ident in purchases:return {'ok':True,'msg':'Тест бұрын сатып алынған'}
+            if w['coins']<item['price']:return {'ok':False,'msg':'Монета жеткіліксіз'}
+            w['coins']-=item['price'];w['spent']+=item['price'];purchases[ident]={'at':time.time(),'used':0,'finished':[],'price':item['price']}
+            _econ_save(state,uid,w);_put(state,'ubt_server_access_shop_purchases_'+uid,_jdump(purchases));_commit(state);return {'ok':True,'wallet':w}
+        if action=='start_test':
+            ident=str(d.get('id',''));item=items.get(ident);purchase=purchases.get(ident)
+            if not item or not purchase:return {'ok':False,'msg':'Алдымен тестті монетаға сатып алыңыз'}
+            if item['subject'] not in _allowed_subjects(state,sess):return {'ok':False,'msg':'Пән жұбы сәйкес емес'}
+            old=purchase.get('pending');exam=state['exams'].get(old)
+            if exam and not exam.get('completed') and exam['expires']>time.time():return {'ok':True,'exam':old,'questions':[_exam_question_meta(q,i) for i,q in enumerate(exam['questions'])],'timer':max(1,int(exam['expires']-time.time()-90)),'topic':exam['topic']}
+            if purchase['used']>=item['attempts']:return {'ok':False,'msg':'Сатып алынған тесттің тапсыру саны аяқталды'}
+            if not _exam_capacity(state,uid):return {'ok':False,'msg':'Алдымен белсенді тестті аяқтаңыз'}
+            token=secrets.token_urlsafe(32);exam={'uid':uid,'testId':'shop:'+ident,'shopItem':ident,'assignmentId':None,'classId':None,'owner':False,'reward':False,'publishedQuota':False,'questions':[dict(q,subject=item['subject']) for q in item['questions']],'topic':item['title'],'selfAuthored':False,'reviewFamily':'shop:'+ident,'expires':time.time()+item['minutes']*60+90,'premiumAtStart':True,'noReview':True}
+            state['exams'][token]=exam;purchase['pending']=token;_put(state,'ubt_server_access_shop_purchases_'+uid,_jdump(purchases));_save_exam(state,token);_commit(state)
+            return {'ok':True,'exam':token,'questions':[_exam_question_meta(q,i) for i,q in enumerate(exam['questions'])],'timer':item['minutes']*60,'topic':item['title']}
+        if action=='certificate':
+            certificate=_jload(state['db'].get('ubt_server_access_certificates_'+uid,'{}'),dict,{}).get(str(d.get('id','')))
+            if not certificate:return {'ok':False,'msg':'Сертификат табылмады'}
+            return {'ok':True,'certificate':certificate}
+        if not owner:return {'ok':False,'msg':'Дүкенді тек басты админ басқарады'}
+        if action=='owner_items':
+            tests=[{'id':t['id'],'title':t.get('topic','Тест'),'subject':t.get('subject'),'count':len(t.get('questions',[]))} for t in _jload(state['db'].get('ubt_tests','[]'),list,[]) if t.get('authorId')=='admin' and t.get('questions') and not t.get('assignmentId') and not t.get('classId') and t.get('subject') in _SUBJECT_NAMES]
+            return {'ok':True,'tests':tests,'items':[dict(id=i,**{k:r.get(k) for k in ('title','price','attempts','active','sourceId')}) for i,r in items.items()]}
+        if action=='owner_list':
+            source=next((t for t in _jload(state['db'].get('ubt_tests','[]'),list,[]) if t.get('id')==d.get('testId') and t.get('authorId')=='admin'),None)
+            price=d.get('price');attempts=d.get('attempts',1);minutes=d.get('minutes',30)
+            if not source or source.get('assignmentId') or source.get('classId'):return {'ok':False,'msg':'Басты админнің жеке тестін таңдаңыз'}
+            if type(price) is not int or not 1<=price<=10000 or type(attempts) is not int or not 1<=attempts<=100 or type(minutes) is not int or not 1<=minutes<=300:return {'ok':False,'msg':'Баға 1–10000, тапсыру саны 1–100, уақыт 1–300 болсын'}
+            try:clean=_school_test_payload([source])[0]
+            except ValueError as error:return {'ok':False,'msg':str(error)}
+            ident='shop_'+secrets.token_hex(12);items[ident]={'sourceId':source['id'],'title':clean['topic'],'subject':clean['subject'],'questions':clean['questions'],'price':price,'attempts':attempts,'minutes':minutes,'active':True,'created':time.time()}
+            tests=_jload(state['db'].get('ubt_tests','[]'),list,[])
+            for t in tests:
+                if t.get('id')==source['id']:t.update(shopExclusive=True,isPublic=False,publicListing=False,adminApproved=False,status='private')
+            _put(state,'ubt_tests',_jdump(tests));_put(state,'ubt_server_access_shop',_jdump(items));_commit(state);return {'ok':True,'id':ident}
+        if action=='owner_hide':
+            item=items.get(str(d.get('id','')))
+            if not item:return {'ok':False,'msg':'Тест табылмады'}
+            item['active']=d.get('active') is True;_put(state,'ubt_server_access_shop',_jdump(items));_commit(state);return {'ok':True}
+        return {'ok':False,'msg':'Әрекет табылмады'}
+
 def _new_session(state, uid, name, admin, device=""):
     admin = uid == "admin"
     now = time.time()
@@ -1273,6 +1450,7 @@ def _start_exam(state, sess, d):
     with state["lock"]:
         test = next((t for t in _jload(state["db"].get("ubt_tests", "[]"), list, [])
                      if isinstance(t, dict) and t.get("id") == tid), None)
+        if test and test.get('shopExclusive') and sess['uid']!='admin':return {'ok':False,'msg':'Бұл тест тек монета дүкенінен сатып алынады'}
         if tid.startswith(("real:","realnamed:")):
             if sess.get("codeGuest"):
                 return {"ok":False,"msg":"Аккаунтыңызға кіріңіз"}
@@ -1515,6 +1693,7 @@ def _finish_exam(state, sess, d):
         exam["growthAnswers"] = answers
         _growth_finish(state,sess,exam,result)
         _path_finish(state,sess,exam,result,token,answers)
+        _econ_finish(state,sess,exam,result,token,answers)
         exam.pop("growthAnswers",None)
         exam["completed"] = result
         exam["expires"] = time.time() + 86400
@@ -2849,7 +3028,7 @@ def _handle_req(state, sid, rq):
     sess = _session(state, rq.get("tok"))
     if not isinstance(typ, str) or len(_jdump(d)) > 8_000_000:
         return {"ok": False, "msg": "Сұраныс тым үлкен немесе жарамсыз"}
-    if sess and sess.get("juniorAdmin") and typ not in ('login', 'resume', 'login_remembered', 'logout', 'remember_account', 'forget_account', 'start_exam', 'start_personal_practice', 'growth', 'path', 'subscription_status', 'subscription_trial', 'subscription_request', 'premium_dashboard', 'daily_five', 'exam_question', 'send_personal_test', 'review_open', 'review_close', 'resume_exam', 'finish_exam', 'cancel_exam', 'start_assigned_test', 'start_public_mix', 'exam_check_answer', 'explain_review', 'approved_test_list', 'notifications_list', 'save_public_test', 'remove_saved_public_test', 'public_profile', 'content_security_event', 'visit_record', 'support_open', 'support_read', 'support_send', 'messenger_contacts', 'messenger_thread', 'messenger_send', 'profile_animation_get', 'chat_claim', 'book_open'):
+    if sess and sess.get("juniorAdmin") and typ not in ('login', 'resume', 'login_remembered', 'logout', 'remember_account', 'forget_account', 'start_exam', 'start_personal_practice', 'growth', 'path', 'economy', 'subscription_status', 'subscription_trial', 'subscription_request', 'premium_dashboard', 'daily_five', 'exam_question', 'send_personal_test', 'review_open', 'review_close', 'resume_exam', 'finish_exam', 'cancel_exam', 'start_assigned_test', 'start_public_mix', 'exam_check_answer', 'explain_review', 'approved_test_list', 'notifications_list', 'save_public_test', 'remove_saved_public_test', 'public_profile', 'content_security_event', 'visit_record', 'support_open', 'support_read', 'support_send', 'messenger_contacts', 'messenger_thread', 'messenger_send', 'profile_animation_get', 'chat_claim', 'book_open'):
         return {"ok":False,"msg":"Кіші админде басқару құқығы жоқ. Тест тапсыру және өз тестін жүктеу ғана қолжетімді."}
     with state["lock"]:
         now = time.time()
@@ -2946,6 +3125,8 @@ def _handle_req(state, sid, rq):
         return _subscription_request(state,sess,typ,d)
     if typ=='premium_dashboard':
         return _premium_dashboard(state,sess)
+    if typ=='economy':
+        return _econ_request(state,sess,d)
     if typ=='path':
         return _path_request(state,sess,d)
     if typ=='growth':
@@ -4043,7 +4224,7 @@ def _authorize(state, sess, k, v, chat_token=""):
         return _merge_chat(state, sess, v, chat_token)
     if k in ("ubt_real_bank_tests","ubt_hidden_source_tests"):
         return None
-    if k == "ubt_entitlement":
+    if k in ("ubt_entitlement","ubt_economy"):
         return None
     if k == "ubt_real_bank_meta":
         return None
@@ -6673,7 +6854,7 @@ function sendChatMsg(){
   const text=document.getElementById('chat-text').value.trim();
   if(!text){alert('Хабарлама жазыңыз');return}
   const msgs=getChatMessages();
-  msgs.push({id:newMsgId(),from:chatLogin,thread:threadKey(chatLogin),text:text,role:'user',time:new Date().toLocaleString('kk-KZ'),read:false});
+  msgs.push({id:newMsgId(),from:chatLogin,thread:threadKey(chatLogin),text:text,role:'user',time:new Date().toLocaleString(uiLocale()),read:false});
   saveChatMessages(msgs);
   document.getElementById('chat-text').value='';
   renderChatMessages();
@@ -6767,7 +6948,7 @@ function adminSendReply(key,inputId){
   const text=inp.value.trim();if(!text)return;
   const msgs=getChatMessages();
   const first=msgs.find(m=>threadOf(m)===key&&m.role!=='admin');
-  msgs.push({id:newMsgId(),from:'Админ',to:first?first.from:key,thread:key,text:text,role:'admin',time:new Date().toLocaleString('kk-KZ'),read:true});
+  msgs.push({id:newMsgId(),from:'Админ',to:first?first.from:key,thread:key,text:text,role:'admin',time:new Date().toLocaleString(uiLocale()),read:true});
   saveChatMessages(msgs);
   adminOpenThread=key;renderAdminChat();
 }
@@ -6846,7 +7027,7 @@ function renderAdminInbox(){
   if(!form.dataset.letterId||form.dataset.letterId!=='new'&&!list.some(m=>m.id===form.dataset.letterId&&m.role!=='user'))form.dataset.letterId='new';
   el.innerHTML=list.length?list.map((m,i)=>{
     const replies=all.filter(r=>r.role==='user'&&r.replyTo===m.id);
-    return `<div class="card" style="padding:16px;margin-bottom:10px;border-left:4px solid ${m.role==='user'?'#89b695':m.read?'#dce8dc':'#ef4444'}"><div class="row" style="justify-content:space-between"><b>${m.role==='user'?'✏️ Менің хабарламам':'📩 Админнен'} · ${list.length-i}</b><span class="sub">${esc(new Date(m.time*1000).toLocaleString('kk-KZ'))}</span></div><p style="white-space:pre-wrap;overflow-wrap:anywhere;margin-top:10px">${esc(m.text)}</p>${replies.map(r=>`<div style="margin:10px 0 0 auto;padding:10px;border-radius:12px;background:#e1f3e5;max-width:85%;white-space:pre-wrap;overflow-wrap:anywhere"><b>↩ Менің жауабым</b> · <small>${esc(new Date(r.time*1000).toLocaleString('kk-KZ'))}</small><div>${esc(r.text)}</div></div>`).join('')}${m.role!=='user'?`<button class="btn btn-s btn-sm" style="margin-top:12px" onclick="selectAdminInboxLetter(${jsq(m.id)})">↩ Осы хабарламаға жауап беру</button>`:''}</div>`
+    return `<div class="card" style="padding:16px;margin-bottom:10px;border-left:4px solid ${m.role==='user'?'#89b695':m.read?'#dce8dc':'#ef4444'}"><div class="row" style="justify-content:space-between"><b>${m.role==='user'?'✏️ Менің хабарламам':'📩 Админнен'} · ${list.length-i}</b><span class="sub">${esc(new Date(m.time*1000).toLocaleString(uiLocale()))}</span></div><p style="white-space:pre-wrap;overflow-wrap:anywhere;margin-top:10px">${esc(m.text)}</p>${replies.map(r=>`<div style="margin:10px 0 0 auto;padding:10px;border-radius:12px;background:#e1f3e5;max-width:85%;white-space:pre-wrap;overflow-wrap:anywhere"><b>↩ Менің жауабым</b> · <small>${esc(new Date(r.time*1000).toLocaleString(uiLocale()))}</small><div>${esc(r.text)}</div></div>`).join('')}${m.role!=='user'?`<button class="btn btn-s btn-sm" style="margin-top:12px" onclick="selectAdminInboxLetter(${jsq(m.id)})">↩ Осы хабарламаға жауап беру</button>`:''}</div>`
   }).join(''):'<div class="card"><p class="sub">Әзірге админнен хабарлама келген жоқ.</p></div>';
   form.style.display='block';
   const selected=list.find(m=>m.id===form.dataset.letterId);
@@ -6890,7 +7071,7 @@ function renderAdminLetterHistory(){
   const all=LS.get('ubt_admin_letters',[]),list=all.slice(-30).reverse();
   const count=all.filter(m=>m.role==='user'&&!m.read).length, badge=document.getElementById('admin-letter-unread');
   badge.style.display=count?'inline-block':'none';badge.textContent=count+' жаңа жауап';
-  el.innerHTML=list.length?'<h4 style="margin:10px 0">Соңғы хабарламалар мен жауаптар</h4>'+list.map(m=>`<div class="item"><div class="info"><h4>${esc(m.toName||'Қолданушы')} · ${m.role==='user'?'↩ Жауабы':'📨 Админнен'} ${m.role==='user'?(m.read?'✓ Оқылды':'🔴 Жаңа'):(m.read?'✓ Оқылды':'· Жаңа')}</h4>${m.replyTo?`<p class="sub">Хатқа жауап: ${esc((all.find(x=>x.id===m.replyTo)||{}).text||'').slice(0,100)}</p>`:''}<p>${esc(new Date(m.time*1000).toLocaleString('kk-KZ'))}</p><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(m.text)}</p></div><div class="acts"><button class="btn btn-s btn-sm" onclick="adminChooseLetterRecipient(${jsq(m.toName)})">↩ Жауап жазу</button></div></div>`).join(''):'<p class="sub">Әзірге хабарлама жіберілмеген.</p>';
+  el.innerHTML=list.length?'<h4 style="margin:10px 0">Соңғы хабарламалар мен жауаптар</h4>'+list.map(m=>`<div class="item"><div class="info"><h4>${esc(m.toName||'Қолданушы')} · ${m.role==='user'?'↩ Жауабы':'📨 Админнен'} ${m.role==='user'?(m.read?'✓ Оқылды':'🔴 Жаңа'):(m.read?'✓ Оқылды':'· Жаңа')}</h4>${m.replyTo?`<p class="sub">Хатқа жауап: ${esc((all.find(x=>x.id===m.replyTo)||{}).text||'').slice(0,100)}</p>`:''}<p>${esc(new Date(m.time*1000).toLocaleString(uiLocale()))}</p><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(m.text)}</p></div><div class="acts"><button class="btn btn-s btn-sm" onclick="adminChooseLetterRecipient(${jsq(m.toName)})">↩ Жауап жазу</button></div></div>`).join(''):'<p class="sub">Әзірге хабарлама жіберілмеген.</p>';
 }
 async function adminSendLetter(){
   if(!user||!user.isAdmin)return;
@@ -9134,7 +9315,7 @@ function finishTest(force){
   if(!st.verifiedExam){
     if(!st.isMistakes&&wrong.length){let m=LS.get('ubt_mistakes_'+user.id,[]);const ids=new Set(m.map(x=>x.id));wrong.forEach(q=>{if(!ids.has(q.id))m.push(q)});LS.set('ubt_mistakes_'+user.id,m)}
     const resultId="res_"+Date.now()+"_"+Math.random().toString(36).slice(2);let pg=getProg(user.id);pg.push({id:resultId,t:Date.now(),score,max,topic:st.subjectName,viol:lock.viol,is140:!!st.is140});LS.set('ubt_prog_'+user.id,pg);
-    let hist=LS.get('ubt_hist_'+user.id,[]);hist.unshift({id:resultId,date:new Date().toLocaleString('kk-KZ'),score,max,topic:st.subjectName,viol:lock.viol,answers:{...st.answers},questions:st.questions.map(q=>({...q,points:practicePoints(q)})),is140:!!st.is140,questionCount:st.questions.length});
+    let hist=LS.get('ubt_hist_'+user.id,[]);hist.unshift({id:resultId,date:new Date().toLocaleString(uiLocale()),score,max,topic:st.subjectName,viol:lock.viol,answers:{...st.answers},questions:st.questions.map(q=>({...q,points:practicePoints(q)})),is140:!!st.is140,questionCount:st.questions.length});
     LS.set('ubt_hist_'+user.id,hist);
   }
   let gained=score*10;
@@ -9149,7 +9330,7 @@ function finishTest(force){
     ${lock.viol?`<div class="res-row"><span>Ереже бұзу ескертулері</span><span style="font-weight:700;color:var(--err)">${lock.viol} / ${MAX_VIOL}</span></div>`:''}`;
   const certArea=document.getElementById('ubt-cert-area');
   const eligible=!!st.verifiedExam&&max>0&&score/max>=.8&&!st.isMistakes&&lock.viol===0;
-  st.certificate=eligible?{name:user.name,topic:st.subjectName||'ҰБТ тесті',score,max,date:new Date().toLocaleDateString('kk-KZ')}:null;
+  st.certificate=eligible?{name:user.name,topic:st.subjectName||'ҰБТ тесті',score,max,date:new Date().toLocaleDateString(uiLocale())}:null;
   certArea.innerHTML=eligible?'<button class="btn ubt-cert-btn" onclick="ubtDownloadCertificate()">🏅 Сертификатты жүктеу</button><p class="sub">80% немесе одан жоғары нәтиже. Бұл — платформаның оқу сертификаты.</p>':(st.verifiedExam?'<p class="sub">Сертификат үшін кемінде 80% және ереже бұзусыз нәтиже қажет.</p>':'<p class="sub">Бұл — жаттығу нәтижесі. Сертификат сервер растаған тест нәтижесіне ғана беріледі.</p>');
   showScr('s-res');
 }
@@ -9857,7 +10038,7 @@ function logViol(kind){
     if(!user||user.isAdmin)return;
     const now=Date.now();if(lastViolLog[kind]&&now-lastViolLog[kind]<3000)return;lastViolLog[kind]=now;
     const k='ubt_viol_'+user.id;const a=LS.get(k,[]);
-    a.unshift({t:new Date().toLocaleString('kk-KZ'),k:kind,test:(lock&&lock.on&&st)?(st.subjectName||''):''});
+    a.unshift({t:new Date().toLocaleString(uiLocale()),k:kind,test:(lock&&lock.on&&st)?(st.subjectName||''):''});
     LS.set(k,a.slice(0,100));
   }catch(e){}
 }
@@ -11023,7 +11204,7 @@ function showStudent(cid,sid){
   const scores=assigned.flatMap(a=>(a.results||[]).map(r=>({title:a.title,score:r.score,max:r.max,at:r.at})));
   document.getElementById('tch-detail').innerHTML=`<div class="card" style="border-color:var(--p)">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h3>👤 ${esc(p?p.name:'?')} · Балдары</h3><button class="btn btn-s btn-sm" onclick="document.getElementById('tch-detail').innerHTML=''">Жабу</button></div>
-    ${scores.length?scores.map(r=>`<div class="res-row"><span>${esc(r.title)} · ${new Date(r.at*1000).toLocaleString('kk-KZ')}</span><b>${r.score} / ${r.max}</b></div>`).join(''):'<p class="sub">Жіберілген тест әлі тапсырылмаған</p>'}
+    ${scores.length?scores.map(r=>`<div class="res-row"><span>${esc(r.title)} · ${new Date(r.at*1000).toLocaleString(uiLocale())}</span><b>${r.score} / ${r.max}</b></div>`).join(''):'<p class="sub">Жіберілген тест әлі тапсырылмаған</p>'}
   </div>`;
   document.getElementById('tch-detail').scrollIntoView({behavior:'smooth',block:'start'});
 }
@@ -12211,7 +12392,7 @@ function schoolRenderPerson(){
   const teacher=p.role==='teacher',classes=d.classes.filter(c=>teacher?c.teacherId===p.id:(c.students||[]).includes(p.id));
   const deliveries=LS.get('ubt_teacher_deliveries',[]).filter(x=>x.uid===p.id).slice().reverse();
   const oldSource=document.getElementById('school-profile-test'),previous=oldSource?oldSource.value:'';
-  document.getElementById('school-person-body').innerHTML=`<div class="school-person-head"><div class="school-mark">${esc(String(p.name||'?')[0])}</div><div><span class="school-tag">${teacher?'МҰҒАЛІМ':'ОҚУШЫ'}</span><h2>${esc(p.name)}</h2><p class="sub">${teacher?esc(subjName(p.teacherSubject||'other')):'Сынып: '+esc(classes.map(c=>c.name).join(', ')||'Тағайындалмаған')}</p></div></div><div class="school-actions">${user.isAdmin?`<button class="btn btn-s btn-sm" onclick="adminViewUser(${jsq(p.id)})">Профильді басқару</button>`:''}${teacher&&user.id===p.id?`<button class="btn btn-p btn-sm" onclick="showMyTests()">Өз тесттерім</button><button class="btn btn-s btn-sm" onclick="showFileTest()">Файлдан тест құру</button>`:''}${!teacher&&user.isAdmin?`<button class="btn btn-p btn-sm" onclick="schoolMoveDialog(${jsq(p.id)})">Сыныпқа тағайындау / ауыстыру</button>`:''}</div><h3 class="school-subhead">СЫНЫПТАР</h3>${classes.length?classes.map(c=>`<button class="btn btn-s btn-sm" style="margin:0 8px 8px 0" onclick="schoolOpenClass(${jsq(c.id)})">${esc(c.name)} ↗</button>`).join(''):'<p class="sub">Сынып әлі тағайындалмаған.</p>'}${teacher&&user.isAdmin?`<section class="card school-person-compose" style="margin-top:22px"><h3>Мұғалімге тест файлын жіберу</h3><p class="sub" style="margin:8px 0 14px">Жіберілген тест мұғалімнің «Өз тесттерім» бөліміне сақталады. Мұғалім оны сыныбына тарата алады.</p><div class="grid2"><div class="fg"><label>Дайын тестті таңдау</label><select id="school-profile-test" onchange="schoolClearImported()"><option value="">Тестті таңдаңыз</option>${allTests().filter(t=>!t.assignmentId&&t.questions&&t.questions.length).map(t=>`<option value="${esc(t.id)}">${esc(t.topic||'Тест')} · ${t.questions.length} сұрақ</option>`).join('')}</select></div><div class="fg"><label>Немесе тест файлын таңдау</label><input type="file" accept=".json,.txt,.docx,.csv,.tsv" onchange="schoolReadTestFile(this)"></div></div><div id="school-file-status" class="school-status" role="status">${schoolState.imported?esc(schoolState.fileName)+' · '+schoolState.imported.length+' тест дайын.':'JSON, TXT, DOCX, CSV · 5 МБ дейін. 500-ден көп сұрақ бөлек тесттерге бөлінеді.'}</div><button class="btn btn-p" style="margin-top:14px" onclick="schoolSendTeacher(this)">Мұғалімге жіберу →</button></section>`:''}${teacher&&(user.isAdmin||user.id===p.id)?`<section class="card" style="margin-top:22px"><h3>Админнен келген тесттер</h3><p class="sub" style="margin:6px 0 14px">Тесттер мұғалімнің жеке базасында да сақталған.</p>${deliveries.length?deliveries.slice(0,50).map(x=>`<div class="item"><div class="info"><h4>${esc(x.title)}</h4><p>${esc(x.fileName||'Дайын тест')} · ${new Date(x.created*1000).toLocaleDateString('kk-KZ')}</p></div><div class="acts"><button class="btn btn-s btn-sm" onclick="exportJsonTest(${jsq(x.testId)})">JSON жүктеу</button>${user.id===p.id?`<button class="btn btn-p btn-sm" onclick="schoolClassSendDialog('',${jsq(x.testId)})">Сыныбыма жіберу</button>`:''}</div></div>`).join(''):'<p class="sub">Келген тест жоқ.</p>'}</section>`:''}`;
+  document.getElementById('school-person-body').innerHTML=`<div class="school-person-head"><div class="school-mark">${esc(String(p.name||'?')[0])}</div><div><span class="school-tag">${teacher?'МҰҒАЛІМ':'ОҚУШЫ'}</span><h2>${esc(p.name)}</h2><p class="sub">${teacher?esc(subjName(p.teacherSubject||'other')):'Сынып: '+esc(classes.map(c=>c.name).join(', ')||'Тағайындалмаған')}</p></div></div><div class="school-actions">${user.isAdmin?`<button class="btn btn-s btn-sm" onclick="adminViewUser(${jsq(p.id)})">Профильді басқару</button>`:''}${teacher&&user.id===p.id?`<button class="btn btn-p btn-sm" onclick="showMyTests()">Өз тесттерім</button><button class="btn btn-s btn-sm" onclick="showFileTest()">Файлдан тест құру</button>`:''}${!teacher&&user.isAdmin?`<button class="btn btn-p btn-sm" onclick="schoolMoveDialog(${jsq(p.id)})">Сыныпқа тағайындау / ауыстыру</button>`:''}</div><h3 class="school-subhead">СЫНЫПТАР</h3>${classes.length?classes.map(c=>`<button class="btn btn-s btn-sm" style="margin:0 8px 8px 0" onclick="schoolOpenClass(${jsq(c.id)})">${esc(c.name)} ↗</button>`).join(''):'<p class="sub">Сынып әлі тағайындалмаған.</p>'}${teacher&&user.isAdmin?`<section class="card school-person-compose" style="margin-top:22px"><h3>Мұғалімге тест файлын жіберу</h3><p class="sub" style="margin:8px 0 14px">Жіберілген тест мұғалімнің «Өз тесттерім» бөліміне сақталады. Мұғалім оны сыныбына тарата алады.</p><div class="grid2"><div class="fg"><label>Дайын тестті таңдау</label><select id="school-profile-test" onchange="schoolClearImported()"><option value="">Тестті таңдаңыз</option>${allTests().filter(t=>!t.assignmentId&&t.questions&&t.questions.length).map(t=>`<option value="${esc(t.id)}">${esc(t.topic||'Тест')} · ${t.questions.length} сұрақ</option>`).join('')}</select></div><div class="fg"><label>Немесе тест файлын таңдау</label><input type="file" accept=".json,.txt,.docx,.csv,.tsv" onchange="schoolReadTestFile(this)"></div></div><div id="school-file-status" class="school-status" role="status">${schoolState.imported?esc(schoolState.fileName)+' · '+schoolState.imported.length+' тест дайын.':'JSON, TXT, DOCX, CSV · 5 МБ дейін. 500-ден көп сұрақ бөлек тесттерге бөлінеді.'}</div><button class="btn btn-p" style="margin-top:14px" onclick="schoolSendTeacher(this)">Мұғалімге жіберу →</button></section>`:''}${teacher&&(user.isAdmin||user.id===p.id)?`<section class="card" style="margin-top:22px"><h3>Админнен келген тесттер</h3><p class="sub" style="margin:6px 0 14px">Тесттер мұғалімнің жеке базасында да сақталған.</p>${deliveries.length?deliveries.slice(0,50).map(x=>`<div class="item"><div class="info"><h4>${esc(x.title)}</h4><p>${esc(x.fileName||'Дайын тест')} · ${new Date(x.created*1000).toLocaleDateString(uiLocale())}</p></div><div class="acts"><button class="btn btn-s btn-sm" onclick="exportJsonTest(${jsq(x.testId)})">JSON жүктеу</button>${user.id===p.id?`<button class="btn btn-p btn-sm" onclick="schoolClassSendDialog('',${jsq(x.testId)})">Сыныбыма жіберу</button>`:''}</div></div>`).join(''):'<p class="sub">Келген тест жоқ.</p>'}</section>`:''}`;
   const next=document.getElementById('school-profile-test');if(next&&Array.from(next.options).some(o=>o.value===previous))next.value=previous;
 }
 function schoolClearImported(){if(document.getElementById('school-profile-test').value){schoolState.imported=null;schoolState.fileName='';document.getElementById('school-file-status').textContent='Дайын тест таңдалды.'}}
@@ -12955,7 +13136,7 @@ securitySubjectUI();
 function subscriptionInfo(){const e=LS.get('ubt_entitlement',{});return user&&e.uid===user.id?e:{}}
 function hasPremium(){const e=subscriptionInfo();return !!(user&&(user.id==='admin'||(e.premium&&e.expires*1000>Date.now())))}
 function hasPaidPlan(){const e=subscriptionInfo();return hasPremium()||!!(e.plan==='pro'&&e.expires*1000>Date.now())}
-function premiumDate(seconds){return seconds?new Date(seconds*1000).toLocaleString('kk-KZ'):'—'}
+function premiumDate(seconds){return seconds?new Date(seconds*1000).toLocaleString(uiLocale()):'—'}
 let premiumPanelLoading=false;
 function showPremiumPanel(message=''){
  if(!user){showScr('s-login');return}
@@ -13097,7 +13278,7 @@ async function renderPathContent(){const host=document.getElementById('path-cont
 function pathRanksTable(rows,school){return rows.length?'<div class="tscroll"><table><thead><tr><th>Орын</th><th>'+ (school?'Мектеп':'Сынып / мектеп')+'</th><th>Қатысу</th><th>Орташа /140</th></tr></thead><tbody>'+rows.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r.name)}${school?'':'<br><small>'+esc(r.school)+'</small>'}</td><td>${r.active}/${r.students}</td><td>${r.score}</td></tr>`).join('')+'</tbody></table></div>':'<p class="sub">Мәлімет жоқ. Сынып пен мектепті басты админ бекітеді; рейтинг үшін толық 140 балдық ҰБТ тапсырылуы керек.</p>'}
 async function pathSaveGoal(form){const b=form.querySelector('button');b.disabled=true;try{const r=await authCall('path',{action:'save',university:document.getElementById('path-university').value,date:document.getElementById('path-date').value,target:Number(document.getElementById('path-target').value),daily:Number(document.getElementById('path-daily').value)});if(!r.ok){document.getElementById('path-goal-status').textContent=r.msg;return}await showPath('goal')}finally{b.disabled=false}}
 async function pathCompare(button){const score=document.getElementById('grant-score')?.value;if(button)button.disabled=true;try{const r=await authCall('path',{action:'compare',score:score===''?null:Number(score),university:document.getElementById('grant-university').value,year:Number(document.getElementById('grant-year').value)||null,quota:document.getElementById('grant-quota').value});const host=document.getElementById('grant-results');if(!host)return;if(!r.ok){host.textContent=r.msg;return}host.innerHTML=`<p class="sub" style="margin-bottom:14px">${esc(r.notice)}</p>`+(r.rows.length?r.rows.map(x=>`<article class="card" style="margin-bottom:12px"><span class="badge">${x.year} · ${x.kind==='historical'?'Өткен конкурс нәтижесі':'Қабылдау үшін белгіленген шек'}</span><h3 style="margin-top:12px">${esc(x.university)}</h3><p>${esc(x.group+' · '+x.program)} · ${esc(x.city)}</p><h2 style="margin-top:10px">${x.score} балл</h2><p>${x.difference===null?'Салыстыру үшін баллыңызды енгізіңіз.':x.difference<0?Math.abs(x.difference)+' балл жетпейді.':x.difference===0?'Осы деректегі баллмен тең.':x.difference+' балл жоғары.'}</p><p class="sub">${x.kind==='historical'?'Келесі жылғы конкурс нәтижесі өзгеруі мүмкін.':'Бұл грант ұтқан соңғы адамның балы емес.'}</p><a href="${esc(x.source)}" target="_blank" rel="noopener noreferrer">Дереккөз ↗</a><p class="sub">${x.sourceType==='official'?'Университеттің ресми беті':'Ашық деректерді жинақтаушы, ресми емес дереккөз'} · Тексерілген: ${esc(x.checked)}</p></article>`).join(''):'<div class="card">Осы пән жұбы, жыл немесе квота бойынша расталған жазба әлі қосылмаған. Басты админ дереккөзбен бірге қоса алады.</div>')}finally{if(button)button.disabled=false}}
-function pathParentCard(c,i){return `<section class="card" style="margin-top:16px"><h2>${esc(c.login)} · апталық есеп</h2><div class="grid2" style="margin-top:12px"><p>Аяқталған тест: <b>${c.tests}</b></p><p>Жауап берілген сұрақ: <b>${c.questions}</b></p><p>Белсенді күн: <b>${c.activeDays}/7</b></p><p>Толық ҰБТ: <b>${c.firstFull===null?'Әлі тапсырылмады':c.firstFull+' → '+c.lastFull+' /140'}</b></p></div><p class="sub">Бұрынғы апта соңғы ҰБТ: ${c.previousFull??'Дерек жоқ'} · Мақсат: ${c.goal.target||'Таңдалмаған'}</p><button class="btn btn-s btn-sm" style="margin-top:12px" onclick="pathShareWeekly(${i})">Апталық есепті WhatsApp-та бөлісу</button><details style="margin-top:14px"><summary>Соңғы тесттер</summary>${c.recent.map(r=>`<p style="margin-top:8px">${esc(r.topic)} · ${r.score}/${r.max} · ${new Date(r.at*1000).toLocaleDateString('kk-KZ')}</p>`).join('')||'<p>Әзірге тест жоқ</p>'}</details></section>`}
+function pathParentCard(c,i){return `<section class="card" style="margin-top:16px"><h2>${esc(c.login)} · апталық есеп</h2><div class="grid2" style="margin-top:12px"><p>Аяқталған тест: <b>${c.tests}</b></p><p>Жауап берілген сұрақ: <b>${c.questions}</b></p><p>Белсенді күн: <b>${c.activeDays}/7</b></p><p>Толық ҰБТ: <b>${c.firstFull===null?'Әлі тапсырылмады':c.firstFull+' → '+c.lastFull+' /140'}</b></p></div><p class="sub">Бұрынғы апта соңғы ҰБТ: ${c.previousFull??'Дерек жоқ'} · Мақсат: ${c.goal.target||'Таңдалмаған'}</p><button class="btn btn-s btn-sm" style="margin-top:12px" onclick="pathShareWeekly(${i})">Апталық есепті WhatsApp-та бөлісу</button><details style="margin-top:14px"><summary>Соңғы тесттер</summary>${c.recent.map(r=>`<p style="margin-top:8px">${esc(r.topic)} · ${r.score}/${r.max} · ${new Date(r.at*1000).toLocaleDateString(uiLocale())}</p>`).join('')||'<p>Әзірге тест жоқ</p>'}</details></section>`}
 async function pathParentRequest(form){const b=form.querySelector('button');b.disabled=true;try{const r=await authCall('path',{action:'parent_request',login:form.elements.child.value,note:form.elements.note.value});form.querySelector('.path-status').textContent=r.msg;if(r.ok)setTimeout(()=>showPath('parent'),1800)}finally{b.disabled=false}}
 function pathShareWeekly(i){const c=window.pathParentChildren[i];if(!c)return;const text='ҰБТ PLUS · '+c.login+' · соңғы 7 күн\nАяқталған тест: '+c.tests+'\nЖауап берілген сұрақ: '+c.questions+'\nБелсенді күн: '+c.activeDays+'/7\nТолық ҰБТ: '+(c.firstFull===null?'әлі жоқ':c.firstFull+' → '+c.lastFull+' /140');window.open('https://wa.me/?text='+encodeURIComponent(text),'_blank','noopener,noreferrer')}
 async function pathTeacherLoad(button){if(button)button.disabled=true;try{const r=await authCall('path',{action:'teacher_report',classId:document.getElementById('path-teacher-class').value});const host=document.getElementById('path-teacher-result');if(!host)return;if(!r.ok){host.textContent=r.msg;return}window.pathTeacherReport=r;host.innerHTML=`<div class="card"><h2>${esc(r.class.name)}</h2><p class="sub">${esc(r.scope)}</p><p style="margin:12px 0">Сынып коды: <b>${esc(r.class.code||'')}</b></p><div class="row" style="flex-wrap:wrap"><button class="btn btn-s btn-sm" onclick="pathShareClass()">Сыныпқа сілтеме бөлісу</button><button class="btn btn-s btn-sm" onclick="pathExportExcel()">Excel (.xlsx)</button><button class="btn btn-s btn-sm" onclick="pathPrintReport()">PDF / Басып шығару</button></div>${pathTeacherTable(r.rows)}</div>`}finally{if(button)button.disabled=false}}
@@ -13149,6 +13330,63 @@ setInterval(async()=>{if(!user||document.hidden||pathTab!=='parent'||!document.g
 const pathRenderTeacher=renderTeacher;renderTeacher=function(){const r=pathRenderTeacher.apply(this,arguments);const host=document.getElementById('tch-classes');if(host&&!document.getElementById('path-teacher-link')){const b=document.createElement('button');b.id='path-teacher-link';b.className='btn btn-p';b.style.marginBottom='16px';b.textContent='📋 Сынып есебі · Excel / PDF';b.onclick=()=>showPath('teacher');host.prepend(b)}return r};
 const pathShowAdmin=showAdmin;showAdmin=function(){const r=pathShowAdmin.apply(this,arguments);const host=document.querySelector('#s-admin .wrap');if(user?.id==='admin'&&host&&!document.getElementById('path-owner-link')){const b=document.createElement('button');b.id='path-owner-link';b.className='btn btn-p';b.style.marginBottom='16px';b.textContent='🏆 Үздік сыныптар · Ата-аналар · Грант базасы';b.onclick=()=>showPath('owner');host.prepend(b)}return r};
 pathNavigationUI();
+
+let econState=null,econTab='league';
+async function showEconomy(tab='league'){if(!user)return;closeAppMenu();closeSecureReview();econTab=tab;let s=document.getElementById('s-economy');if(!s){s=document.createElement('section');s.id='s-economy';s.className='screen';s.innerHTML='<div class="wrap wide"><button class="btn btn-s btn-sm" onclick="goHome()">← Басты бет</button><h1 style="margin:18px 0">Лига және монета дүкені</h1><div id="econ-tabs" class="row" style="flex-wrap:wrap;margin-bottom:18px"></div><div id="econ-body" aria-live="polite"></div></div>';document.body.appendChild(s)}showScr('s-economy');document.getElementById('econ-body').textContent='Жүктелуде…';const actor=user.id,r=await authCall('economy',{action:'status'});if(!user||user.id!==actor)return;if(!r.ok){document.getElementById('econ-body').textContent=r.msg;return}econState=r;econCache(r.wallet);const tabs=[['league','🏆 Апталық лига'],['shop','🪙 Дүкен'],['owned','📚 Менің сатып алғандарым'],['certificates','📜 Диплом / сертификат']];if(user.id==='admin')tabs.push(['admin','⚙ Дүкенді басқару']);document.getElementById('econ-tabs').innerHTML=tabs.map(([id,label])=>`<button class="btn ${id===tab?'btn-p':'btn-s'} btn-sm" onclick="showEconomy('${id}')">${label}</button>`).join('');await econRender()}
+function econCache(w){if(!user||!w)return;localStorage.setItem('ubt_economy',JSON.stringify({...w,uid:user.id}));econCosmetics()}
+function econWallet(){const w=LS.get('ubt_economy',{});return user&&w.uid===user.id?w:{coins:0,shields:0,owned:[],equipped:{},streak:{last:'',count:0,best:0}}}
+async function econRender(){const host=document.getElementById('econ-body'),tab=econTab,w=econState.wallet;
+ if(tab==='league'){const r=await authCall('economy',{action:'league'});if(econTab!==tab)return;if(!r.ok){host.textContent=r.msg;return}if(!r.group){host.innerHTML='<div class="card"><h2>Лигалар оқушыларға арналған</h2><p>Басты админ, кіші админ, мұғалім және ата-ана оқушылармен лигада жарыспайды.</p></div>';return}host.innerHTML=`<div class="card"><span class="badge">${esc(r.week)}</span><h2 style="margin:12px 0">${esc(r.tierName)} лигасы</h2><p>Қола → Күміс → Алтын → Гауһар · топта ${r.rows.length}/30 оқушы</p><p class="sub" style="margin-top:10px">Дүйсенбіде жаңа апта басталады. Кемінде 10 белсенді қатысушы болғанда үздік 5 жоғарылайды, соңғы 5 төмендейді. Қола лигасынан төмен түспейді, Гауһардан жоғары көтерілмейді.</p><p class="sub">Күніне ең көбі 100 XP. Өз тестіңіз және бір жинақты сол күні қайталау жаңа XP бермейді. Тең ұпайда топқа ертерек қосылған қатысушы алда болады.</p>${r.previous?`<p style="margin:12px 0">Алдыңғы апта: ${r.previous.rank}-орын · ${r.previous.xp} XP · ${r.previous.change>0?'↑ Жоғарыладыңыз':r.previous.change<0?'↓ Төмендедіңіз':'Деңгей сақталды'}</p>`:''}<div class="tscroll"><table><thead><tr><th>Орын</th><th>Қатысушы</th><th>Апталық XP</th></tr></thead><tbody>${r.rows.map(x=>`<tr style="${x.me?'background:#6366f122;font-weight:bold':''}"><td>${x.rank}</td><td>${x.me?'Сіз':esc(x.label)}</td><td>${x.xp}</td></tr>`).join('')}</tbody></table></div></div>`;return}
+ if(tab==='shop'||tab==='owned'){const items=econState.items.filter(i=>tab==='owned'?i.purchased:i.active);host.innerHTML=`<div class="card"><h2>🪙 ${w.coins} монета</h2><p style="margin:12px 0">Серия: ${w.streak?.count||0} күн · Қорғаныс: ${w.shields}/3</p><p class="sub">Күннің алғашқы жарамды тесті — 10 монета. Күндік 5 сұрақ немесе челлендж — қосымша 10 монета. Тест сұрақтарының кемінде жартысына жауап беру керек. Күніне ең көбі 20 монета.</p><p class="sub">Сатып алынған тест тек сайт ішінде ашылады. Сұрақтар, жауаптар және тест файлы жүктелмейді; нәтиже мен сертификатты сақтауға болады. Сатып алу пән жұбын өзгертпейді. Алғашқы сұрақ ашылғанда бір тапсыру есептеледі; одан кейін шықсаңыз не уақыт өтсе, ол қайтарылмайды.</p></div><h2 style="margin:20px 0">${tab==='owned'?'Менің тесттерім':'Тесттер'}</h2><div class="grid2">${items.map(x=>`<article class="card"><h3>${esc(x.title)}</h3><p style="margin:12px 0">${esc(subjName(x.subject))} · ${x.count} сұрақ · ${x.minutes} минут</p><p>${x.attempts} тапсыру · ${x.used||0} пайдаланылды</p><button class="btn btn-p" style="margin-top:12px" onclick="econTest('${x.id}',${x.purchased},this)">${x.purchased?'Тестті ашу':x.price+' монетаға алу'}</button></article>`).join('')||'<p class="sub">Әзірге тест жоқ. Дүкенге тестті басты админ қосады.</p>'}</div>${tab==='shop'?'<h2 style="margin:24px 0 14px">Серия және безендіру</h2><div class="grid2">'+econState.cosmetics.map(x=>`<article class="card"><h3>${esc(x.title)}</h3><p style="margin:12px 0">${x.id==='shield'?'Бір күнді өткізіп, келесі күні тест тапсырсаңыз, қорғаныс автоматты жұмсалып, серия сақталады. Екі не одан көп күнге жарамайды.':'Сұрақтарға және баллға әсер етпейтін жеке безендіру.'}</p>${w.owned.includes(x.id)?`<button class="btn btn-s" onclick="econEquip('${x.id}',this)">Қолдану / Алып тастау</button>`:`<button class="btn btn-p" onclick="econBuyCosmetic('${x.id}',this)">${x.price} монетаға алу</button>`}</article>`).join('')+'</div>':''}`;return}
+ if(tab==='certificates'){host.innerHTML='<div class="card"><h2>Менің дипломдарым мен сертификаттарым</h2><p class="sub" style="margin:12px 0">Дүкен тестін аяқтағаннан кейін беріледі. 80% және жоғары — жетістік дипломы, қалғаны — қатысу сертификаты. Бұл платформаның ішкі құжаты.</p>'+econState.certificates.slice().reverse().map(c=>`<div class="item"><div><h3>${esc(c.title)}</h3><p>${c.score}/${c.max} · ${esc(c.id)}</p></div><button class="btn btn-s btn-sm" onclick="econCertificate('${c.id}',this)">Қарау / PDF сақтау</button></div>`).join('')+'</div>';return}
+ if(tab==='admin'){const r=await authCall('economy',{action:'owner_items'});if(econTab!==tab)return;if(!r.ok){host.textContent=r.msg;return}host.innerHTML=`<section class="card"><h2>Дүкенге тест қою · тек басты админ</h2><p class="sub" style="margin:12px 0">Басты админнің жеке базасынан тесттің қорғалған көшірмесі жасалады. Дүкендегі көшірмені оқушы экспорттай алмайды.</p><form onsubmit="event.preventDefault();econListTest(this)"><label>Тест<select name="testId">${r.tests.map(t=>`<option value="${esc(t.id)}">${esc(t.title)} · ${t.count} сұрақ</option>`).join('')}</select></label><div class="grid2"><label>Бағасы, монета<input name="price" type="number" min="1" max="10000" value="30" required></label><label>Тапсыру саны<input name="attempts" type="number" min="1" max="100" value="1" required></label><label>Уақыты, минут<input name="minutes" type="number" min="1" max="300" value="30" required></label></div><button class="btn btn-p" style="margin-top:14px">Дүкенге қою</button><p class="econ-status" role="status"></p></form></section><section class="card" style="margin-top:16px"><h2>Дүкендегі тесттер</h2>${r.items.map(x=>`<div class="item"><div><b>${esc(x.title)}</b><p>${x.price} монета · ${x.attempts} тапсыру · ${x.active?'Сатылымда':'Сатылымнан алынған'}</p></div><button class="btn btn-s btn-sm" onclick="econHide('${x.id}',${!x.active},this)">${x.active?'Сатылымнан алу':'Сатылымға қайтару'}</button></div>`).join('')}</section>`}
+}
+async function econTest(id,purchased,button){button.disabled=true;try{if(!purchased){if(!confirm('Монетаға осы тестті сатып аласыз ба?'))return;const r=await authCall('economy',{action:'buy_test',id});if(!r.ok)return alert(r.msg);await showEconomy('owned');return}const r=await authCall('economy',{action:'start_test',id});if(!r.ok)return alert(r.msg);st=baseState();st.secureExam=r.exam;st.questions=r.questions;st.subjectName=r.topic;st.timerSeconds=r.timer;st.isRealUbt=true;beginTest()}finally{button.disabled=false}}
+async function econBuyCosmetic(id,b){b.disabled=true;try{const r=await authCall('economy',{action:'buy_cosmetic',id});if(!r.ok)return alert(r.msg);await showEconomy('shop')}finally{b.disabled=false}}
+async function econEquip(id,b){b.disabled=true;try{const slot=id==='frame_gold'?'frame':'theme',current=econWallet().equipped[slot];const r=await authCall('economy',{action:'equip',id:current===id?'':id,slot});if(!r.ok)return alert(r.msg);econCache(r.wallet);await showEconomy('shop')}finally{b.disabled=false}}
+async function econListTest(form){const b=form.querySelector('button');b.disabled=true;try{const r=await authCall('economy',{action:'owner_list',testId:form.elements.testId.value,price:Number(form.elements.price.value),attempts:Number(form.elements.attempts.value),minutes:Number(form.elements.minutes.value)});if(!r.ok){form.querySelector('.econ-status').textContent=r.msg;return}await showEconomy('admin')}finally{b.disabled=false}}
+async function econHide(id,active,b){b.disabled=true;try{const r=await authCall('economy',{action:'owner_hide',id,active});if(!r.ok)return alert(r.msg);await showEconomy('admin')}finally{b.disabled=false}}
+async function econCertificate(id,b){b.disabled=true;try{const r=await authCall('economy',{action:'certificate',id});if(!r.ok)return alert(r.msg);const c=r.certificate,w=window.open('','_blank');if(!w)return alert('PDF үшін қалқымалы терезеге рұқсат беріңіз');w.document.open();w.document.write('<!doctype html><html lang="kk"><meta charset="utf-8"><title>'+esc(c.id)+'</title><style>body{font-family:Arial,sans-serif;color:#172449;margin:35px}.cert{border:10px double #b49345;padding:55px;text-align:center;max-width:1000px;margin:auto}h1{font-size:40px;letter-spacing:4px}h2{font-size:30px}.sub{color:#64748b;line-height:1.7}button{padding:12px 20px;margin:20px}@media print{button{display:none}.cert{break-inside:avoid}body{margin:0}@page{size:A4 landscape;margin:15mm}}</style><div class="cert"><p>ҰБТ PLUS</p><h1>'+(c.kind==='diploma'?'ЖЕТІСТІК ДИПЛОМЫ':'ҚАТЫСУ СЕРТИФИКАТЫ')+'</h1><h2>'+esc(c.name)+'</h2><p>«'+esc(c.title)+'» тестін аяқтады</p><h2>'+c.score+' / '+c.max+' балл</h2><p>'+new Date(c.at*1000).toLocaleDateString(uiLocale())+'</p><p class="sub">Құжат нөмірі: '+esc(c.id)+'<br>ҰБТ PLUS платформасының ішкі құжаты. Мемлекеттік білім құжаты емес.</p></div><button onclick="window.print()">PDF ретінде сақтау / Басып шығару</button></html>');w.document.close()}finally{b.disabled=false}}
+function econCosmetics(){const w=econWallet();document.body.classList.toggle('econ-ocean',w.equipped?.theme==='theme_ocean');document.body.classList.toggle('econ-gold-frame',w.equipped?.frame==='frame_gold');if(!document.getElementById('econ-style')){const s=document.createElement('style');s.id='econ-style';s.textContent='body.econ-ocean{--p:#087e9c;--grad:linear-gradient(130deg,#087e9c,#065b78)}body.econ-gold-frame .profile-bar .avatar,body.econ-gold-frame #prof-avatar,body.econ-gold-frame .ubd-profile-orbit{outline:3px solid #e0b748;outline-offset:3px}#econ-wallet-strip{margin-bottom:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}';document.head.appendChild(s)}}
+const econTouchStreak=touchStreak;touchStreak=function(){const s=econWallet().streak||{};return {count:s.count||0,bonus:0,isNew:false}};
+getStreak=function(){return econWallet().streak||{last:'',count:0,best:0}};
+currentStreak=function(){const w=econWallet(),s=w.streak||{};const gap=s.last?daysBetween(s.last,dayKey()):99;return gap<=1||(gap===2&&w.shields>0)?s.count||0:0};
+const econAuth=authCall;authCall=async function(type,data){const r=await econAuth(type,data);if(r.ok&&type==='finish_exam'&&r.economy&&user){const w=econWallet();econCache({...w,coins:r.economy.balance,streak:r.economy.streak});if(r.certificateId)window.lastShopCertificate=r.certificateId}return r};
+function econNavigation(){econCosmetics();if(!user)return;const nav=document.querySelector('#app-menu nav');if(nav&&!document.getElementById('econ-menu-entry')){const b=document.createElement('button');b.id='econ-menu-entry';b.className='app-menu-home';b.textContent='🏆 Лига · 🪙 Монета дүкені';b.onclick=()=>showEconomy();nav.prepend(b)}const home=document.getElementById('ubd-home');if(home&&!document.getElementById('econ-wallet-strip')){const strip=document.createElement('div');strip.id='econ-wallet-strip';strip.className='card';strip.innerHTML='<button class="btn btn-s btn-sm" onclick="showEconomy(\'league\')">🏆 Апталық лига</button><button class="btn btn-s btn-sm" onclick="showEconomy(\'shop\')">🪙 '+econWallet().coins+' · Дүкен</button><button class="btn btn-s btn-sm" onclick="showEconomy(\'certificates\')">📜 Сертификаттар</button>';home.prepend(strip)}}
+const econSubscriptionUI=subscriptionUI;subscriptionUI=function(){econSubscriptionUI();econNavigation()};
+const econSync=syncRefresh;syncRefresh=function(){const r=econSync.apply(this,arguments);document.getElementById('econ-wallet-strip')?.remove();econNavigation();return r};
+const econFinishUI=afterFinish;afterFinish=function(){const r=econFinishUI.apply(this,arguments);const e=st.verifiedExam?.economy,host=document.getElementById('res-break');if(host&&e&&!document.getElementById('econ-earned')){const p=document.createElement('p');p.id='econ-earned';p.className='quote';p.textContent='🪙 +'+e.coins+' монета · +'+e.xp+' XP · Баланс: '+e.balance;host.appendChild(p)}if(host&&st.verifiedExam?.certificateId&&!document.getElementById('econ-result-certificate')){const b=document.createElement('button');b.id='econ-result-certificate';b.className='btn btn-p';b.textContent='📜 Диплом / сертификатты ашу';const id=st.verifiedExam.certificateId;b.onclick=()=>econCertificate(id,b);host.appendChild(b)}return r};
+econNavigation();
+
+const UI_RU={
+'Басты бет':'Главная','Кіру':'Войти','Тіркелу':'Регистрация','Шығу':'Выйти','Артқа':'Назад','Сақтау':'Сохранить','Жабу':'Закрыть','Ашу':'Открыть','Қарау':'Просмотр','Таңдау':'Выбрать','Барлығы':'Все','Жүктелуде…':'Загрузка…','Іздеу':'Поиск','Профиль':'Профиль','Менің профилім':'Мой профиль','Пароль':'Пароль','Аты':'Имя','Логин':'Логин','Оқушы':'Ученик','Мұғалім':'Учитель','Басты админ':'Главный админ','Кіші админ':'Младший админ','Ата-ана':'Родитель','Оқушылар':'Ученики','Мұғалімдер':'Учителя','Сыныптар':'Классы','Сынып':'Класс','Пән':'Предмет','Пәндер':'Предметы','Тесттер':'Тесты','Менің тесттерім':'Мои тесты','Тестті бастау':'Начать тест','Тестті ашу':'Открыть тест','Тестті аяқтау':'Завершить тест','Аяқтау':'Завершить','Жалғастыру':'Продолжить','Келесі':'Далее','Алдыңғы':'Назад','Нәтиже':'Результат','Нәтижелер':'Результаты','Қатемен жұмыс':'Работа над ошибками','Статистика':'Статистика','Тарих':'История','Толық тарих':'Полная история','Флешкарталар':'Флеш-карточки','Калькулятор':'Калькулятор','Нұсқаулық':'Инструкция','Менделеев кестесі':'Таблица Менделеева','Тегін':'Бесплатно','Класс':'Класс','Тарифтерді көру':'Посмотреть тарифы','Мерзімін көру':'Срок действия','Күннің 5 сұрағы':'5 вопросов дня','Күннің челленджі':'Челлендж дня','Досыңмен жарыс':'Соревнование с другом','Бастапқы диагностика':'Начальная диагностика','7 күндік марафон':'Марафон на 7 дней','Достар және челлендж':'Друзья и челленджи','Дос шақыру':'Пригласить друга','Жарыс ашу':'Создать соревнование','Кодпен қатысу':'Войти по коду','Жарыс нәтижесі':'Результаты соревнования','Қатысу':'Участвовать','Деңгейімді білу':'Узнать свой уровень','Бүгінгі тапсырма':'Задание на сегодня','Шақыруды бөлісу':'Поделиться приглашением','Кодты енгізу':'Ввести код','Нәтиже карточкасы':'Карточка результата','Карточканы сақтау / бөлісу':'Сохранить / поделиться карточкой','Бүгінгі рейтинг':'Рейтинг дня','Мақсат және нәтижелер':'Цель и результаты','Менің мақсатым':'Моя цель','Грант / университет':'Грант / университет','Мектеп және сынып':'Школа и класс','Ата-ана кабинеті':'Кабинет родителя','Мұғалім есебі':'Отчёт учителя','Жеке мақсатымды баптау':'Настроить свою цель','Қай университетке түскіңіз келеді?':'В какой университет хотите поступить?','ҰБТ күні':'Дата ЕНТ','Мақсат балл':'Целевой балл','Күндік сұрақ мақсаты':'Вопросов в день','Салыстыратын балл':'Балл для сравнения','Университет':'Университет','Дерек жылы':'Год данных','Конкурс / квота':'Конкурс / квота','Жалпы конкурс':'Общий конкурс','Салыстыру':'Сравнить','Балаңыздың нәтижесін бақылаңыз':'Следите за результатами ребёнка','Балаңыздың логині':'Логин ребёнка','Қосымша мәлімет (міндетті емес)':'Дополнительные сведения (необязательно)','Байланыстыруға өтініш':'Заявка на привязку','Соңғы тесттер':'Последние тесты','Апталық есепті WhatsApp-та бөлісу':'Поделиться недельным отчётом в WhatsApp','Сыныптың ортақ есебі':'Общий отчёт класса','Есепті ашу':'Открыть отчёт','Сыныпқа сілтеме бөлісу':'Поделиться ссылкой на класс','Оқушы логині':'Логин ученика','Тест саны':'Количество тестов','Жауап саны':'Количество ответов','Соңғы нәтиже':'Последний результат','Орташа %':'Средний %','Орын':'Место','Сынып / мектеп':'Класс / школа','Мектеп':'Школа','Орташа /140':'Средний /140','Мектептер рейтингі':'Рейтинг школ','Мектеп атауы':'Название школы','Қала / аудан':'Город / район','Мектепті бекіту':'Подтвердить школу','Соңғы толық ҰБТ':'Последний полный ЕНТ','Мәлімет':'Информация','Грант базасын жыл сайын жаңарту':'Ежегодное обновление базы грантов','Қазіргі JSON базасын жүктеу':'Скачать текущую JSON-базу','Жаңартылған JSON':'Обновлённый JSON','JSON базасын тексеріп енгізу':'Проверить и загрузить JSON-базу','Дайындықты өзіңізге бейімдейік':'Настроим подготовку под вас','1. Пәндеріңіз':'1. Ваши профильные предметы','2. Қай университетке түскіңіз келеді?':'2. В какой университет хотите поступить?','3. ҰБТ қашан?':'3. Когда ЕНТ?','Кейін толтырамын':'Заполню позже','Университет атауы':'Название университета','Тексерілуде':'На проверке','Бекітілген':'Подтверждено','Жалпы дайындық жоспары':'Общий план подготовки','Жеке жоспарды ашу':'Открыть личный план','Тарифтер / WhatsApp':'Тарифы / WhatsApp','Сатып алу үшін WhatsApp-қа жазыңыз':'Для покупки напишите в WhatsApp','WhatsApp арқылы алу ↗':'Купить через WhatsApp ↗','WhatsApp тобына кіру ↗':'Вступить в группу WhatsApp ↗','Топқа кіру ↗':'Вступить в группу ↗','WhatsApp тобы ↗':'Группа WhatsApp ↗','Басты админге жазу ↗':'Написать главному админу ↗','Тегін де сақталатын мүмкіндіктер':'Возможности бесплатного доступа','Барлығына ортақ':'Доступно всем','Танысып көруге':'Для знакомства','Тұрақты дайындыққа':'Для регулярной подготовки','Жеке терең дайындыққа':'Для углублённой подготовки','Бірге дайындалатын топқа':'Для совместной подготовки','Өзіңізге ыңғайлы дайындықты таңдаңыз':'Выберите удобный формат подготовки','Не үшін керек? Толығырақ':'Зачем это нужно? Подробнее','Тіркеліп, тегін қолданыңыз':'Зарегистрируйтесь и пользуйтесь бесплатно','Лига және монета дүкені':'Лиги и магазин монет','Апталық лига':'Недельная лига','Дүкен':'Магазин','Менің сатып алғандарым':'Мои покупки','Диплом / сертификат':'Диплом / сертификат','Дүкенді басқару':'Управление магазином','Қола':'Бронзовая','Күміс':'Серебряная','Алтын':'Золотая','Гауһар':'Бриллиантовая','Қатысушы':'Участник','Апталық XP':'XP за неделю','Сіз':'Вы','Серия және безендіру':'Серия и оформление','Серияны 1 күн қорғау':'Защита серии на 1 день','Алтын аватар жақтауы':'Золотая рамка аватара','Мұхит түсті тақырып':'Тема «Океан»','Қолдану / Алып тастау':'Применить / снять','Менің дипломдарым мен сертификаттарым':'Мои дипломы и сертификаты','Қарау / PDF сақтау':'Просмотр / сохранить PDF','Тесттерді басқару':'Управление тестами','Тест':'Тест','Бағасы, монета':'Цена в монетах','Тапсыру саны':'Количество попыток','Уақыты, минут':'Время, минуты','Дүкенге қою':'Добавить в магазин','Дүкендегі тесттер':'Тесты в магазине','Сатылымнан алу':'Снять с продажи','Сатылымға қайтару':'Вернуть в продажу','Сатылымда':'В продаже','Сатылымнан алынған':'Снято с продажи','Алдымен тестті монетаға сатып алыңыз':'Сначала купите тест за монеты','Монета жеткіліксіз':'Недостаточно монет','Тауар табылмады':'Товар не найден','Бұл зат сатып алынған':'Этот предмет уже куплен','Ең көбі 3 қорғаныс сақтауға болады':'Можно хранить не более 3 защит серии','Алдымен затты сатып алыңыз':'Сначала купите предмет','Тест табылмады':'Тест не найден','Пән жұбы сәйкес емес':'Профильные предметы не совпадают','Сатып алынған тесттің тапсыру саны аяқталды':'Попытки купленного теста закончились','Алдымен белсенді тестті аяқтаңыз':'Сначала завершите активный тест','Бұл тест сатылымда жоқ':'Этот тест не продаётся','Сертификат табылмады':'Сертификат не найден','Монетаға осы тестті сатып аласыз ба?':'Купить этот тест за монеты?','Қазақ тілі':'Казахский язык','Орыс тілі':'Русский язык','Қазақстан тарихы':'История Казахстана','Оқу сауаттылығы':'Грамотность чтения','Математикалық сауаттылық':'Математическая грамотность','Математика':'Математика','Физика':'Физика','Химия':'Химия','Биология':'Биология','География':'География','Информатика':'Информатика','Ағылшын тілі':'Английский язык','Дүниежүзі тарихы':'Всемирная история','Құқық негіздері':'Основы права','Жіберу':'Отправить','Өшіру':'Удалить','Қосу':'Добавить','Болдырмау':'Отмена','Иә':'Да','Жоқ':'Нет','Сұрақтар базасы':'База вопросов','ҰБТ базасы':'База ЕНТ','Жария тесттер':'Опубликованные тесты','Пәндік тесттер':'Предметные тесты','Өз тестім':'Мой тест','Хабарламалар':'Сообщения','Хабарлама':'Сообщение','Параметрлер':'Настройки','Көмек':'Помощь','Ата-ана ретінде тіркелемін':'Регистрируюсь как родитель','Құпиясөзді қайталаңыз':'Повторите пароль','Парольді қайталаңыз':'Повторите пароль','Парольді ұмыттыңыз ба?':'Забыли пароль?','Менің нәтижелерім':'Мои результаты','Сақталған тесттер':'Сохранённые тесты','Кітапхана':'Библиотека','Жоспар':'План','Білім картасы':'Карта знаний','Балл болжамы':'Прогноз балла','Рейтинг':'Рейтинг','Жеке кабинет':'Личный кабинет'
+};
+function uiLang(){return localStorage.getItem('ubt_ui_lang')==='ru'?'ru':'kk'}
+function uiLocale(){return uiLang()==='ru'?'ru-RU':'kk-KZ'}
+function uiTranslate(s){if(uiLang()!=='ru')return s;const raw=String(s),trim=raw.trim();if(UI_RU[trim])return raw.replace(trim,UI_RU[trim]);let text=raw.replace(/^([\s←→🏆🪙📚📜🎓🎯👨‍👩‍👧⚙✦☀]+)(.*?)(\s*)$/u,(m,a,b,c)=>UI_RU[b]?a+UI_RU[b]+c:m);const patterns=[[/ҰБТ/g,'ЕНТ'],[/Басты бет/g,'Главная'],[/Апталық лига/g,'Недельная лига'],[/Монета дүкені/g,'Магазин монет'],[/Диплом \/ сертификатты ашу/g,'Открыть диплом / сертификат'],[/Қола → Күміс → Алтын → Гауһар/g,'Бронза → Серебро → Золото → Бриллиант'],[/Тегін · Pro · Premium · Класс/g,'Бесплатно · Pro · Premium · Класс'],[/Бүгінгі рейтинг/g,'Рейтинг дня'],[/монетаға алу/g,'монет — купить'],[/Қола лигасы/g,'Бронзовая лига'],[/Күміс лигасы/g,'Серебряная лига'],[/Алтын лигасы/g,'Золотая лига'],[/Гауһар лигасы/g,'Бриллиантовая лига'],[/Серия:/g,'Серия:'],[/Қорғаныс:/g,'Защита:'],[/топта /g,'в группе '],[/ оқушы/g,' учеников'],[/ сұрақ/g,' вопросов'],[/ минут/g,' минут'],[/ тапсыру/g,' попыток'],[/ пайдаланылды/g,' использовано'],[/Алдыңғы апта:/g,'Предыдущая неделя:'],[/Деңгей сақталды/g,'Уровень сохранён'],[/Жоғарыладыңыз/g,'Повышение'],[/Төмендедіңіз/g,'Понижение'],[/ күн/g,' дней'],[/монета/g,'монет'],[/Апталық XP/g,'XP за неделю'],[/Соңғы толық/g,'Последний полный'],[/күн қалды/g,'дней осталось'],[/Күніне /g,'В день '],[/Аптасына /g,'В неделю '],[/пәндік тест/g,'предметных теста'],[/толық тест/g,'полных теста'],[/Сұрақ саны/g,'Количество вопросов'],[/Сұрақ /g,'Вопрос '],[/Жауап /g,'Ответ ']];for(const [a,b]of patterns)text=text.replace(a,b);return text}
+Object.assign(UI_RU,{
+'Дүйсенбіде жаңа апта басталады. Кемінде 10 белсенді қатысушы болғанда үздік 5 жоғарылайды, соңғы 5 төмендейді. Қола лигасынан төмен түспейді, Гауһардан жоғары көтерілмейді.':'Новая неделя начинается в понедельник. При 10 активных участниках и более первые 5 повышаются, последние 5 понижаются. Ниже Бронзы и выше Бриллианта переходов нет.',
+'Күніне ең көбі 100 XP. Өз тестіңіз және бір жинақты сол күні қайталау жаңа XP бермейді. Тең ұпайда топқа ертерек қосылған қатысушы алда болады.':'Не более 100 XP в день. Свои тесты и повтор одного набора в тот же день не дают новых XP. При равных очках выше участник, вступивший в группу раньше.',
+'Лигалар оқушыларға арналған':'Лиги предназначены для учеников',
+'Басты админ, кіші админ, мұғалім және ата-ана оқушылармен лигада жарыспайды.':'Главный и младший администраторы, учителя и родители не соревнуются с учениками в лигах.',
+'Күннің алғашқы жарамды тесті — 10 монета. Күндік 5 сұрақ немесе челлендж — қосымша 10 монета. Тест сұрақтарының кемінде жартысына жауап беру керек. Күніне ең көбі 20 монета.':'Первый подходящий тест за день — 10 монет. Ежедневные 5 вопросов или челлендж — ещё 10 монет. Нужно ответить минимум на половину вопросов. Не более 20 монет в день.',
+'Сатып алынған тест тек сайт ішінде ашылады. Сұрақтар, жауаптар және тест файлы жүктелмейді; нәтиже мен сертификатты сақтауға болады. Сатып алу пән жұбын өзгертпейді. Алғашқы сұрақ ашылғанда бір тапсыру есептеледі; одан кейін шықсаңыз не уақыт өтсе, ол қайтарылмайды.':'Купленный тест открывается только внутри сайта. Вопросы, ответы и файл теста не скачиваются; результат и сертификат можно сохранить. Покупка не меняет профильные предметы. Попытка списывается при открытии первого вопроса и после выхода или истечения времени не возвращается.',
+'Бір күнді өткізіп, келесі күні тест тапсырсаңыз, қорғаныс автоматты жұмсалып, серия сақталады. Екі не одан көп күнге жарамайды.':'Если пропустить один день и пройти тест на следующий, защита спишется автоматически и сохранит серию. Пропуск двух дней и более не покрывается.',
+'Сұрақтарға және баллға әсер етпейтін жеке безендіру.':'Личное оформление, которое не влияет на вопросы и баллы.',
+'Әзірге тест жоқ. Дүкенге тестті басты админ қосады.':'Тестов пока нет. Их добавляет главный администратор.',
+'Дүкен тестін аяқтағаннан кейін беріледі. 80% және жоғары — жетістік дипломы, қалғаны — қатысу сертификаты. Бұл платформаның ішкі құжаты.':'Выдаются после завершения теста из магазина. При 80% и выше — диплом достижения, в остальных случаях — сертификат участия. Это внутренний документ платформы.',
+'Дүкенге тест қою · тек басты админ':'Добавление теста в магазин · только главный администратор',
+'Басты админнің жеке базасынан тесттің қорғалған көшірмесі жасалады. Дүкендегі көшірмені оқушы экспорттай алмайды.':'Создаётся защищённая копия теста из личной базы главного администратора. Ученик не может экспортировать копию из магазина.',
+'Жаңа тест құру':'Создать новый тест','Сыныптар тізімі':'Список классов','Бейіндік пәндер':'Профильные предметы','Бейіндік пәндеріңізді таңдаңыз':'Выберите профильные предметы','Пән жұбын таңдаңыз':'Выберите профильные предметы','Өзіңізді тексеріңіз':'Проверьте себя','ҰБТ тестін бастау':'Начать тест ЕНТ','Нәтижені сақтау':'Сохранить результат','Дайындық':'Подготовка','Баптаулар':'Настройки','Менің жетістіктерім':'Мои достижения'
+});
+const uiTextMemory=new WeakMap(),uiAttrMemory=new WeakMap();let uiTranslateQueued=false;
+function uiTranslateDOM(){uiTranslateQueued=false;document.documentElement.lang=uiLang();document.title=uiLang()==='ru'?'ЕНТ PLUS':'ҰБТ PLUS';const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,{acceptNode(n){const p=n.parentElement;if(!p||!n.data.trim()||p.closest('script,style,textarea,pre,code,#qtext,#qmedia,.qtbl,.op,#rev-list,.qimg,.katex,[contenteditable],[data-i18n-skip],#ui-language-control'))return NodeFilter.FILTER_REJECT;return NodeFilter.FILTER_ACCEPT}});while(walker.nextNode()){const n=walker.currentNode;let r=uiTextMemory.get(n);if(!r||n.data!==r.output)r={original:n.data,output:n.data};const translated=uiTranslate(r.original);r.output=translated;uiTextMemory.set(n,r);if(n.data!==translated)n.data=translated}document.querySelectorAll('input[placeholder],button[title],select[aria-label]').forEach(el=>{let store=uiAttrMemory.get(el)||{};for(const attr of ['placeholder','title','aria-label']){if(!el.hasAttribute(attr))continue;let r=store[attr],value=el.getAttribute(attr);if(!r||value!==r.output)r={original:value,output:value};r.output=uiTranslate(r.original);store[attr]=r;if(value!==r.output)el.setAttribute(attr,r.output)}uiAttrMemory.set(el,store)})}
+function uiQueueTranslate(){if(uiTranslateQueued)return;uiTranslateQueued=true;setTimeout(uiTranslateDOM,80)}
+function setUiLanguage(lang){localStorage.setItem('ubt_ui_lang',lang==='ru'?'ru':'kk');uiTranslateDOM();const select=document.getElementById('ui-language-select');if(select)select.value=uiLang();const note=document.getElementById('ui-language-note');if(note)note.textContent=uiLang()==='ru'?'Русский интерфейс · вопросы на языке базы':'Қазақша интерфейс · сұрақтар база тілінде'}
+function uiLanguageControl(){let box=document.getElementById('ui-language-control');if(!box){box=document.createElement('div');box.id='ui-language-control';box.style.cssText='display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0';box.innerHTML='<label for="ui-language-select">🌐</label><select id="ui-language-select" aria-label="Қазақша / Русский" style="width:auto;min-width:130px"><option value="kk">Қазақша</option><option value="ru">Русский</option></select><small id="ui-language-note" class="sub"></small>';box.querySelector('select').onchange=e=>setUiLanguage(e.target.value)}const host=user?(document.querySelector('#app-menu nav')||document.querySelector('.profile-bar')):(document.getElementById('login-box')||document.getElementById('s-login'));if(host&&box.parentElement!==host)host.prepend(box);box.querySelector('select').value=uiLang();box.querySelector('small').textContent=uiLang()==='ru'?'Русский интерфейс · вопросы на языке базы':'Қазақша интерфейс · сұрақтар база тілінде';uiQueueTranslate()}
+const uiOriginalAlert=window.alert.bind(window),uiOriginalConfirm=window.confirm.bind(window);window.alert=message=>uiOriginalAlert(uiTranslate(message));window.confirm=message=>uiOriginalConfirm(uiTranslate(message));
+new MutationObserver(uiQueueTranslate).observe(document.body,{childList:true,subtree:true,characterData:true});
+const uiSubscriptionUI=subscriptionUI;subscriptionUI=function(){uiSubscriptionUI();uiLanguageControl()};uiLanguageControl();
 
 </script>
 <script>
