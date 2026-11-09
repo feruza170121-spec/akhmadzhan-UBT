@@ -13611,6 +13611,81 @@ const uiOriginalAlert=window.alert.bind(window),uiOriginalConfirm=window.confirm
 new MutationObserver(uiQueueTranslate).observe(document.body,{childList:true,subtree:true,characterData:true});
 const uiSubscriptionUI=subscriptionUI;subscriptionUI=function(){uiSubscriptionUI();uiLanguageControl()};uiLanguageControl();
 
+/* UBT PLUS: site-wide context-menu deterrent + per-user visible watermark.
+   A normal website cannot disable the iOS hardware screenshot function. */
+(function(){
+  'use strict';
+  var wm=null, timer=null, lastLabel='';
+  function isPrimaryOwner(){try{return !!(user&&user.isAdmin&&user.id==='admin')}catch(e){return false}}
+  function loggedIn(){try{return !!(user&&user.id)}catch(e){return false}}
+  function label(){
+    try{
+      var name=String(user.name||user.login||'Қолданушы').slice(0,48);
+      var id=String(user.id||'').slice(0,32);
+      var stamp=new Date().toLocaleString('kk-KZ',{dateStyle:'short',timeStyle:'short'});
+      return 'ҰБТ PLUS  •  '+name+'  •  UID: '+id+'  •  '+stamp;
+    }catch(e){return 'ҰБТ PLUS · ҚОРҒАЛҒАН МАТЕРИАЛ'}
+  }
+  function installCss(){
+    if(document.getElementById('ubt-security-style'))return;
+    var st=document.createElement('style');st.id='ubt-security-style';
+    st.textContent=''
+      +'html,body,.screen,.screen *{-webkit-touch-callout:none}'
+      +'body:not(.primary-owner),body:not(.primary-owner) .screen,body:not(.primary-owner) .screen *{-webkit-user-select:none!important;user-select:none!important;-webkit-user-drag:none!important}'
+      +'body:not(.primary-owner) input,body:not(.primary-owner) textarea,body:not(.primary-owner) [contenteditable="true"],body:not(.primary-owner) [contenteditable="true"] *{-webkit-user-select:text!important;user-select:text!important;-webkit-touch-callout:default!important}'
+      +'#ubt-security-watermark{position:fixed;inset:0;z-index:99990;display:none;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:repeat(5,minmax(0,1fr));align-items:center;justify-items:center;overflow:hidden;pointer-events:none!important;contain:strict;opacity:.16}'
+      +'#ubt-security-watermark .ubt-wm-label{display:block;max-width:95vw;white-space:nowrap;transform:rotate(-27deg);font:700 10px/1.4 Arial,sans-serif;letter-spacing:.5px;color:#64748b;text-shadow:0 1px 1px #fff;padding:8px 3px}'
+      +'@media(max-width:700px){#ubt-security-watermark{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(6,minmax(0,1fr));opacity:.20}#ubt-security-watermark .ubt-wm-label{font-size:9px;white-space:normal;text-align:center;overflow-wrap:anywhere}}'
+      +'@media print{#ubt-security-watermark{display:none!important}}';
+    document.head.appendChild(st);
+  }
+  function paint(){
+    if(!document.body)return;
+    installCss();
+    if(!loggedIn()||isPrimaryOwner()||document.getElementById('s-login')?.classList.contains('active')){
+      if(wm)wm.style.display='none';return;
+    }
+    if(!wm||!wm.isConnected){wm=document.createElement('div');wm.id='ubt-security-watermark';wm.setAttribute('aria-hidden','true');for(var i=0;i<12;i++){var span=document.createElement('span');span.className='ubt-wm-label';wm.appendChild(span)}document.body.appendChild(wm)}
+    var text=label();
+    if(text!==lastLabel){lastLabel=text;wm.querySelectorAll('.ubt-wm-label').forEach(function(el){el.textContent=text})}
+    wm.style.display='grid';
+  }
+  function blockContext(e){
+    if(!loggedIn()||isPrimaryOwner())return;
+    if(e.type==='mousedown'&&e.button!==2)return;
+    e.preventDefault();e.stopPropagation();if(e.stopImmediatePropagation)e.stopImmediatePropagation();return false;
+  }
+  function protectDoc(d){
+    if(!d||d.__ubtContextShield)return;
+    try{Object.defineProperty(d,'__ubtContextShield',{value:true,configurable:true})}catch(e){d.__ubtContextShield=true}
+    d.addEventListener('contextmenu',blockContext,true);
+    d.addEventListener('mousedown',blockContext,true);
+    d.addEventListener('dragstart',function(e){if(loggedIn()&&!isPrimaryOwner()){e.preventDefault();e.stopImmediatePropagation()}},true);
+    d.addEventListener('selectstart',function(e){if(loggedIn()&&!isPrimaryOwner()&&!e.target.closest?.('input,textarea,[contenteditable="true"]'))e.preventDefault()},true);
+  }
+  protectDoc(document);
+  try{protectDoc(window.parent.document)}catch(e){}
+  try{protectDoc(window.top.document)}catch(e){}
+  document.addEventListener('keydown',function(e){
+    if(!loggedIn()||isPrimaryOwner())return;
+    var k=String(e.key||'').toLowerCase(),mod=e.ctrlKey||e.metaKey;
+    if(k==='contextmenu'||(mod&&['c','x','s','p','u'].indexOf(k)>=0)||(mod&&e.shiftKey&&['i','j','c','s'].indexOf(k)>=0)){
+      e.preventDefault();e.stopImmediatePropagation();
+    }
+    if(e.key==='PrintScreen'||e.code==='PrintScreen'){
+      // This can deter keyboard-triggered capture, but cannot stop iOS/OS screenshots.
+      e.preventDefault();
+      var note=document.getElementById('ubt-capture-note');
+      if(!note){note=document.createElement('div');note.id='ubt-capture-note';note.textContent='Материал авторлық сутаңбамен қорғалған';note.style.cssText='position:fixed;z-index:100002;left:50%;bottom:22px;transform:translateX(-50%);background:#172554;color:#fff;padding:10px 16px;border-radius:12px;font:600 13px Arial;pointer-events:none';document.body.appendChild(note)}
+      note.style.display='block';setTimeout(function(){note.style.display='none'},2200);
+    }
+  },true);
+  paint();
+  timer=setInterval(paint,1200);
+  document.addEventListener('visibilitychange',function(){if(!document.hidden)paint()});
+  try{var priorShow=showScr;showScr=function(){var result=priorShow.apply(this,arguments);setTimeout(paint,50);return result}}catch(e){}
+  try{new MutationObserver(function(){if(!wm||!wm.isConnected)paint()}).observe(document.documentElement,{childList:true,subtree:true})}catch(e){}
+})();
 </script>
 <script>
 (function(){
