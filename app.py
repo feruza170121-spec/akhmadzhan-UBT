@@ -532,6 +532,8 @@ def _profile_request(state,sess,typ,d):
     if not sess or sess.get('codeGuest'):return {'ok':False,'msg':'Аккаунтыңызға кіріңіз'}
     uid=sess['uid'] if typ=='choose_profile_pair' else str(d.get('uid') or '')
     with state['lock']:
+        profile=_person_profile(state,uid)
+        if uid=='admin' or uid in _admin_uids(state) or profile.get('role')=='teacher':return {'ok':False,'msg':'Пән жұбы тек оқушыға қажет'}
         if typ=='owner_set_pair' and not sess.get('admin'):return {'ok':False,'msg':'Тек басты админ өзгерте алады'}
         if typ=='choose_profile_pair' and _profile_pair(state,uid):return {'ok':False,'msg':'Пәндерді өзгерту үшін басты админге хабарласыңыз'}
         if not _set_profile_pair(state,uid,d.get('pair')):return {'ok':False,'msg':'Тізімнен пән жұбын таңдаңыз'}
@@ -595,7 +597,7 @@ def _send_personal_test(state,sess,d):
         if not source or not target:return {'ok':False,'msg':'Өз тестіңізді және тіркелген оқушы логинін таңдаңыз'}
         if _is_teacher(state,sess['uid']):
             prof=next((p for p in _profiles(state).values() if p.get('id')==sess['uid']),{})
-            if source.get('subject')!=prof.get('teacherSubject'):return {'ok':False,'msg':'Мұғалім тек өзінің пәнінен тест жібереді'}
+            if prof.get('teacherSubject') and source.get('subject')!=prof.get('teacherSubject'):return {'ok':False,'msg':'Мұғалім тек өзінің пәнінен тест жібереді'}
             if not any(c.get('teacherId')==sess['uid'] and target['id'] in c.get('students',[]) for c in _jload(state['db'].get('ubt_classes','[]'),list,[])):return {'ok':False,'msg':'Тек өз сыныбыңыздың оқушысына жіберіңіз'}
         target_session={'uid':target['id'],'admin':target['id']=='admin','juniorAdmin':target['id'] in _admin_uids(state)}
         issue=_subject_guard(state,target_session,source.get('subject'))
@@ -2121,10 +2123,10 @@ def _school_request(state, sess, typ, d):
         return {"ok": False, "msg": "Бұл әрекетті тек басты админ орындай алады"}
     if typ == "school_create_person":
         name, password, role = _clean_name(d.get("name")), str(d.get("pass") or ""), d.get("role")
-        if not name or role not in ("teacher", "student") or not _MIN_PASS <= len(password) <= 200:
+        if not name or role not in ("teacher", "student", "junior_admin") or not _MIN_PASS <= len(password) <= 200:
             return {"ok": False, "msg": "Аты 2–40, пароль 10–200 таңба болуы керек"}
-        subject = str(d.get("subject") or "other")
-        if role == "teacher" and subject not in _SUBJECT_NAMES:
+        subject = str(d.get("subject") or "")
+        if role == "teacher" and subject and subject not in _SUBJECT_NAMES:
             return {"ok": False, "msg": "Пәнді дұрыс таңдаңыз"}
         ph = _hash_pw(password)
         with state["lock"]:
@@ -2333,7 +2335,7 @@ def _access_request(state, sess, typ, d, sid, token):
         with state["lock"]:
             uid = str(d.get("uid") or "")
             if typ == "admin_create_admin":
-                created = _school_request(state,sess,"school_create_person",{"name":d.get("name"),"pass":d.get("password"),"role":"student"})
+                created = _school_request(state,sess,"school_create_person",{"name":d.get("name"),"pass":d.get("password"),"role":"junior_admin"})
                 if not created.get("ok"):
                     return created
                 uid=created["uid"]
@@ -3164,7 +3166,7 @@ def _handle_req(state, sid, rq):
     if sess and _is_teacher(state,sess['uid']) and typ in ('teacher_assign_class','messenger_send_test'):
         source=next((t for t in _available_send_tests(state) if t.get('id')==d.get('testId')),None)
         prof=next((p for p in _profiles(state).values() if p.get('id')==sess['uid']),{})
-        if not source or source.get('subject')!=prof.get('teacherSubject'):
+        if not source or (prof.get('teacherSubject') and source.get('subject')!=prof.get('teacherSubject')):
             return {'ok':False,'msg':'Мұғалім тек өзінің бекітілген пәнінен тест жібере алады'}
     if _closed(state) and not (sess and sess["uid"]=="admin") and typ not in ("login","logout"):
         return {"ok":False,"msg":"Сайт уақытша жабық. Тек басты админ кіре алады"}
@@ -3789,8 +3791,8 @@ def _handle_req(state, sid, rq):
                     return {"ok":False,"msg":"Бейіндік пән жұбын таңдаңыз"}
             if d.get("teacher"):
                 subject = str(d.get("subject") or "")[:40]
-                if subject not in _SUBJECT_NAMES:
-                    return {"ok": False, "msg": "Мұғалім пәнін таңдаңыз"}
+                if subject and subject not in _SUBJECT_NAMES:
+                    return {"ok": False, "msg": "Пән жарамсыз"}
                 prof["role"] = "teacher"
                 prof["teacherApproved"] = False
                 prof["teacherInfo"] = str(d.get("info") or "")[:200]
@@ -5549,7 +5551,7 @@ body:not(.primary-owner) input,body:not(.primary-owner) textarea,body:not(.prima
 
       <div class="fg"><label>Аты-жөніңіз (логин) *</label><input id="tr-name" placeholder="Мыс: Айгүл Серікқызы" maxlength="30"></div>
       <div class="fg"><label>Мектеп / пән</label><input id="tr-info" placeholder="Мыс: №12 мектеп, математика" maxlength="80"></div>
-      <div class="fg"><label>Қай пәннен сабақ бересіз? *</label><select id="tr-subject"></select></div>
+      <div class="fg" hidden><select id="tr-subject" aria-hidden="true"></select></div>
       <div class="fg"><label>Пароль *</label><input id="tr-pass" type="password" placeholder="Кемінде 10 таңба"></div>
       <div class="fg"><label>Парольді қайталаңыз *</label><input id="tr-pass2" type="password" placeholder="Қайталаңыз"></div>
       <button class="btn btn-p" style="width:100%;margin-bottom:10px" onclick="doRegisterTeacher()">Өтініш жіберу</button>
@@ -11459,13 +11461,12 @@ function showTeacherReg(){
 function doRegisterTeacher(){return guarded(async()=>{
   const name=document.getElementById('tr-name').value.trim();
   const info=document.getElementById('tr-info').value.trim();
-  const subject=document.getElementById('tr-subject').value;
+  const subject='';
   const pass=document.getElementById('tr-pass').value,pass2=document.getElementById('tr-pass2').value;
   if(!name||name.length<2){alert('Аты-жөніңізді жазыңыз');return}
   if(!pass||pass.length<10){alert('Пароль кемінде 10 таңба');return}
   if(pass!==pass2){alert('Парольдер сәйкес емес');return}
-  if(!subject){alert('Қай пәннен сабақ беретініңізді таңдаңыз');return}
-  const r=await authCall('register',{name:name,pass:pass,teacher:true,info:info,subject});
+    const r=await authCall('register',{name:name,pass:pass,teacher:true,info:info,subject});
   if(!r.ok){alert(r.msg||'Қате');return}
   ['tr-name','tr-info','tr-pass','tr-pass2','tr-subject'].forEach(i=>document.getElementById(i).value='');
   alert('✅ Мұғалімнің тіркелу өтініші админге жіберілді. Рұқсат берілгеннен кейін ғана сайтқа кіре аласыз.');
@@ -11495,8 +11496,7 @@ function requestTeacher(){
   const info=((document.getElementById('tch-want-info')||{}).value||'').trim();
   const subject=((document.getElementById('tch-want-subject')||{}).value||'');
   if(info.length<2){alert('Мектеп / пәніңізді жазыңыз');return}
-  if(!subject){alert('Қай пәннен сабақ беретініңізді таңдаңыз');return}
-  const ok=mutateProfile((findUserByLogin(user.name)||{}).id,p=>{if(p.role==='teacher'&&p.teacherApproved)return;p.role='teacher';p.teacherApproved=false;p.teacherInfo=info;p.teacherSubject=subject});
+    const ok=mutateProfile((findUserByLogin(user.name)||{}).id,p=>{if(p.role==='teacher'&&p.teacherApproved)return;p.role='teacher';p.teacherApproved=false;p.teacherInfo=info;p.teacherSubject=subject});
   if(!ok){alert('Аккаунт табылмады');return}
   alert('✅ Өтініш админге жіберілді. Админ мақұлдағаннан кейін мұғалім кабинеті мен сынып ашу ашылады.');
   renderTeacher();
@@ -12484,13 +12484,13 @@ function schoolCreatePersonDialog(){
   if(!user||!user.isAdmin)return;const teacher=schoolState.kind==='teachers';
   document.getElementById('school-new-person-title').textContent=teacher?'Мұғалім қосу':'Оқушы қосу';
   document.getElementById('school-new-person-name').value='';document.getElementById('school-new-person-pass').value='';
-  document.getElementById('school-new-person-subject').innerHTML=schoolSubjectOptions();document.getElementById('school-new-person-subject-wrap').hidden=!teacher;document.getElementById('school-new-person-status').textContent='';
+  document.getElementById('school-new-person-subject').innerHTML=schoolSubjectOptions();document.getElementById('school-new-person-subject-wrap').hidden=true;document.getElementById('school-new-person-status').textContent='';
   document.getElementById('school-person-dialog').showModal();
 }
 async function schoolCreatePerson(button){
   if(!user||!user.isAdmin||schoolState.busy)return;const teacher=schoolState.kind==='teachers',password=document.getElementById('school-new-person-pass'),name=document.getElementById('school-new-person-name').value.trim();
   if(name.length<2||password.value.length<10){document.getElementById('school-new-person-status').textContent='Аты кемінде 2, пароль кемінде 10 таңба болсын.';return}
-  await schoolAction(button,'school_create_person',{name,pass:password.value,role:teacher?'teacher':'student',subject:document.getElementById('school-new-person-subject').value,profilePair:readPair('school-new-profile-pair')},()=>{password.value='';document.getElementById('school-person-dialog').close();schoolRenderPeople()});
+  await schoolAction(button,'school_create_person',{name,pass:password.value,role:teacher?'teacher':'student',subject:'',profilePair:readPair('school-new-profile-pair')},()=>{password.value='';document.getElementById('school-person-dialog').close();schoolRenderPeople()});
 }
 async function schoolAction(button,type,data,onSuccess){
   if(schoolState.busy)return;schoolState.busy=true;if(button)button.disabled=true;
@@ -13142,7 +13142,7 @@ const PROFILE_PAIRS=[["math", "physics"], ["math", "informatics"], ["math", "geo
 const pairLabel=pair=>pair[0]==='creative'?'Шығармашылық бағыт':pair.map(k=>PROFILE_SUBJECTS[k]||k).join(' + ');
 function pairOptions(selected){return '<option value="">Пән жұбын таңдаңыз *</option>'+PROFILE_PAIRS.map((pair,i)=>`<option value="${i}" ${JSON.stringify(pair)===JSON.stringify(selected)?'selected':''}>${esc(pairLabel(pair))}</option>`).join('')}
 function readPair(id){const v=document.getElementById(id)?.value;return v!==undefined&&v!==''?PROFILE_PAIRS[Number(v)]:null}
-function learnerAccount(){return !!user&&user.role!=='parent'&&!user.isAdmin&&!user.isJuniorAdmin&&!(user.role==='teacher'&&user.teacherApproved)&&!isTeacherUser()}
+function learnerAccount(){return !!user&&user.role!=='parent'&&user.role!=='teacher'&&user.role!=='junior_admin'&&!user.isAdmin&&!user.isJuniorAdmin&&!isTeacherUser()}
 function currentPair(){const p=Object.values(LS.get('ubt_profiles',{})).find(p=>p.id===user?.id);return p?.profilePair?.length?p.profilePair:user?.profilePair||[]}
 function allowedClientSubjects(){if(!learnerAccount())return Object.keys(PROFILE_SUBJECTS);const pair=currentPair();return pair.length===2?(pair[0]==='creative'?['history','reading']:[...pair,'history','reading','mathlit']):[]}
 let choosingPair=false;
@@ -13167,7 +13167,7 @@ function securitySubjectUI(){
  document.querySelectorAll('select option').forEach(o=>{if(!learnerAccount()&&PROFILE_SUBJECTS[o.value]){o.hidden=false;o.disabled=false}});
  if(user&&!user.isAdmin&&!user.isJuniorAdmin&&isTeacherUser()){
   const prof=findUserByLogin(user.name)||user,subject=prof.teacherSubject;
-  ['class-send-test','school-send-test'].forEach(id=>{const el=document.getElementById(id);if(!el)return;Array.from(el.options).forEach(o=>{const test=allTests().find(t=>t.id===o.value);o.hidden=!!test&&test.subject!==subject;o.disabled=o.hidden});if(el.selectedOptions[0]?.disabled)el.value=Array.from(el.options).find(o=>!o.disabled)?.value||''});
+  ['class-send-test','school-send-test'].forEach(id=>{const el=document.getElementById(id);if(!el)return;Array.from(el.options).forEach(o=>{const test=allTests().find(t=>t.id===o.value);o.hidden=!!subject&&!!test&&test.subject!==subject;o.disabled=o.hidden});if(el.selectedOptions[0]?.disabled)el.value=Array.from(el.options).find(o=>!o.disabled)?.value||''});
  }
 }
 let securityCacheWipedUid='';
@@ -13280,9 +13280,9 @@ syncRefresh=function(){const r=securitySync.apply(this,arguments);wipeLegacyAnsw
 const securitySchoolDialog=schoolCreatePersonDialog;
 schoolCreatePersonDialog=function(){securitySubjectUI();const r=securitySchoolDialog.apply(this,arguments);document.getElementById('school-new-profile-pair-wrap').hidden=schoolState.kind==='teachers';document.getElementById('school-new-profile-pair').innerHTML=pairOptions([]);return r};
 const securityAdminView=adminViewUser;
-adminViewUser=function(id){const r=securityAdminView.apply(this,arguments);if(user?.id==='admin'){document.getElementById('owner-pair-editor')?.remove();const target=Object.values(LS.get('ubt_profiles',{})).find(p=>p.id===id);const host=document.getElementById('s-admin-user')||document.querySelector('.screen.active .wrap');if(host&&target){const box=document.createElement('div');box.id='owner-pair-editor';box.className='card';box.innerHTML='<h3>Оқушының бейіндік пәндері</h3><select id="owner-profile-pair">'+pairOptions(target.profilePair||[])+'</select><button class="btn btn-p" style="margin-top:12px">Сақтау</button>';box.querySelector('button').onclick=async()=>{const pair=readPair('owner-profile-pair');const res=await authCall('owner_set_pair',{uid:id,pair});if(!res.ok)return alert(res.msg);await window.__bridge.refresh();alert('Пән жұбы өзгертілді')};host.appendChild(box)}}return r};
+adminViewUser=function(id){const r=securityAdminView.apply(this,arguments);if(user?.id==='admin'){document.getElementById('owner-pair-editor')?.remove();const target=Object.values(LS.get('ubt_profiles',{})).find(p=>p.id===id);const host=document.getElementById('s-admin-user')||document.querySelector('.screen.active .wrap');if(host&&target&&target.role!=='teacher'&&!target.isJuniorAdmin&&target.id!=='admin'){const box=document.createElement('div');box.id='owner-pair-editor';box.className='card';box.innerHTML='<h3>Оқушының бейіндік пәндері</h3><select id="owner-profile-pair">'+pairOptions(target.profilePair||[])+'</select><button class="btn btn-p" style="margin-top:12px">Сақтау</button>';box.querySelector('button').onclick=async()=>{const pair=readPair('owner-profile-pair');const res=await authCall('owner_set_pair',{uid:id,pair});if(!res.ok)return alert(res.msg);await window.__bridge.refresh();alert('Пән жұбы өзгертілді')};host.appendChild(box)}}return r};
 const securityMyTests=showMyTests;
-showMyTests=function(){const r=securityMyTests.apply(this,arguments);if(user&&(user.isAdmin||user.isJuniorAdmin||isTeacherUser()))document.querySelectorAll('#s-mytests .item').forEach(row=>{const start=row.querySelector('[onclick^="startUserTest("]');if(!start)return;const match=start.getAttribute('onclick').match(/startUserTest\((.*)\)/);if(!match)return;let id;try{id=JSON.parse(match[1].replace(/&quot;/g,'"'))}catch(e){return}const t=allTests().find(t=>t.id===id);if(!t||t.authorId!==user.id||row.querySelector('.personal-send-test'))return;if(isTeacherUser()&&!user.isAdmin&&t.subject!==(findUserByLogin(user.name)||{}).teacherSubject)return;const b=document.createElement('button');b.className='btn btn-s btn-sm personal-send-test';b.textContent='Оқушыға жіберу';b.onclick=async()=>{const login=prompt('Тіркелген оқушының логині:');if(!login)return;b.disabled=true;const res=await authCall('send_personal_test',{testId:id,login});b.disabled=false;alert(res.ok?'Тест оқушыға жіберілді':res.msg)};row.querySelector('.acts')?.appendChild(b)});return r};
+showMyTests=function(){const r=securityMyTests.apply(this,arguments);if(user&&(user.isAdmin||user.isJuniorAdmin||isTeacherUser()))document.querySelectorAll('#s-mytests .item').forEach(row=>{const start=row.querySelector('[onclick^="startUserTest("]');if(!start)return;const match=start.getAttribute('onclick').match(/startUserTest\((.*)\)/);if(!match)return;let id;try{id=JSON.parse(match[1].replace(/&quot;/g,'"'))}catch(e){return}const t=allTests().find(t=>t.id===id);if(!t||t.authorId!==user.id||row.querySelector('.personal-send-test'))return;if(isTeacherUser()&&!user.isAdmin&&(findUserByLogin(user.name)||{}).teacherSubject&&t.subject!==(findUserByLogin(user.name)||{}).teacherSubject)return;const b=document.createElement('button');b.className='btn btn-s btn-sm personal-send-test';b.textContent='Оқушыға жіберу';b.onclick=async()=>{const login=prompt('Тіркелген оқушының логині:');if(!login)return;b.disabled=true;const res=await authCall('send_personal_test',{testId:id,login});b.disabled=false;alert(res.ok?'Тест оқушыға жіберілді':res.msg)};row.querySelector('.acts')?.appendChild(b)});return r};
 const securitySendDialog=schoolClassSendDialog;schoolClassSendDialog=function(){const r=securitySendDialog.apply(this,arguments);securitySubjectUI();return r};
 const securityUbt140=startUbt140;startUbt140=async function(){securitySubjectUI();if(learnerAccount()&&currentPair()[0]==='creative'){const r=await authCall('start_exam',{testId:'real:all'});if(!r.ok)return alert(r.msg);st=baseState();st.secureExam=r.exam;st.questions=r.questions;st.subjectName=r.topic;st.timerSeconds=r.timer;st.isRealUbt=true;beginTest();return}return securityUbt140.apply(this,arguments)};
 securitySubjectUI();
