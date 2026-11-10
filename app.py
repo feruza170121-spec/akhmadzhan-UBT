@@ -1132,8 +1132,88 @@ def _econ_request(state,sess,d):
             item['active']=d.get('active') is True;_put(state,'ubt_server_access_shop',_jdump(items));_commit(state);return {'ok':True}
         return {'ok':False,'msg':'Әрекет табылмады'}
 
+def _device_account(state,device,uid=None):
+    if not device:return False
+    key='ubt_server_access_device_accounts';binding=hashlib.sha256(str(device).encode()).hexdigest()
+    records=_jload(state['db'].get(key,'{}'),dict,{})
+    if uid is None:return not bool(records.get(binding))
+    if records.get(binding) not in (None,uid):return False
+    if records.get(binding)!=uid:records[binding]=uid;_put(state,key,_jdump(records))
+    return True
+
+def _owner_notice(state,uid,text):
+    key='ubt_server_access_owner_notices';rows=_jload(state['db'].get(key,'[]'),list,[])
+    now=int(time.time())
+    if rows and rows[-1].get('uid')==uid and rows[-1].get('text')==text and now-rows[-1].get('at',0)<10:return
+    rows.append({'id':secrets.token_hex(12),'uid':uid,'name':_person_profile(state,uid).get('name',uid),'text':str(text)[:400],'at':now})
+    _put(state,key,_jdump(rows[-500:]))
+
+def _teacher_tools(state,sess,d):
+    if not sess or sess.get('codeGuest'):return {'ok':False,'msg':'Аккаунтыңызға кіріңіз'}
+    owner=sess.get('admin') and sess['uid']=='admin';action=d.get('action');uid=sess['uid']
+    with state['lock']:
+        tests=_jload(state['db'].get('ubt_tests','[]'),list,[])
+        stars=_jload(state['db'].get('ubt_server_access_featured_tests','{}'),dict,{})
+        if action=='catalog':
+            search=str(d.get('search') or '').strip().casefold()[:120];subject=d.get('subject');allowed=_allowed_subjects(state,sess);rows=[]
+            for t in tests:
+                if not _approved_test(t) or t.get('publicListing') is False or t.get('classId') or t.get('assignmentId') or t.get('subject') not in allowed:continue
+                if subject and t.get('subject')!=subject:continue
+                if search and search not in (str(t.get('topic',''))+' '+str(t.get('authorName',''))+' '+str(t.get('subjectName',''))).casefold():continue
+                rows.append({'id':t['id'],'title':t.get('topic','Тест'),'subject':t.get('subjectName') or t.get('subject'),'author':t.get('authorName',''),'count':len(t.get('questions',[])),'starred':bool(stars.get(t['id']))})
+            rows.sort(key=lambda t:(not t['starred'],t['title'].casefold(),t['id']))
+            offset=d.get('offset',0);offset=offset if type(offset)is int and 0<=offset<=100000 else 0
+            return {'ok':True,'items':rows[offset:offset+50],'total':len(rows),'subjects':{k:v for k,v in _SUBJECT_NAMES.items() if k in allowed}}
+        if not owner:
+            _owner_notice(state,uid,'Рұқсатсыз басқару немесе бөтен тестке қол жеткізу талпынысы');_commit(state)
+            return {'ok':False,'msg':'Тек басты админге қолжетімді'}
+        if action=='notices':return {'ok':True,'items':_jload(state['db'].get('ubt_server_access_owner_notices','[]'),list,[])[-100:][::-1]}
+        target=str(d.get('uid') or '')
+        if action=='teacher_tests':
+            profile=_person_profile(state,target)
+            if profile.get('role')!='teacher':return {'ok':False,'msg':'Мұғалім табылмады'}
+            return {'ok':True,'items':[{'id':t['id'],'title':t.get('topic','Тест'),'count':len(t.get('questions',[])),'starred':bool(stars.get(t['id'])),'subject':t.get('subjectName') or t.get('subject')} for t in tests if t.get('authorId')==target and not t.get('assignmentId') and not t.get('receivedFromAdmin')]}
+        test=next((t for t in tests if t.get('id')==d.get('testId')),None)
+        if action in ('inspect','copy','star'):
+            if not test:return {'ok':False,'msg':'Тест табылмады'}
+            if action=='inspect':return {'ok':True,'test':test}
+            if action=='star':
+                if type(d.get('value'))is not bool:return {'ok':False,'msg':'Мән жарамсыз'}
+                if d['value']:stars[test['id']]=True
+                else:stars.pop(test['id'],None)
+                _put(state,'ubt_server_access_featured_tests',_jdump(stars));_commit(state);return {'ok':True}
+            if test.get('authorId')=='admin':return {'ok':True,'id':test['id'],'existing':True}
+            existing=next((t for t in tests if t.get('authorId')=='admin' and t.get('copiedFromId')==test['id']),None)
+            if existing:return {'ok':True,'id':existing['id'],'existing':True}
+            row=dict(test,id='owner_copy_'+secrets.token_hex(12),authorId='admin',authorName=sess.get('name') or 'Басты админ',copiedFromId=test['id'],isPublic=False,status='private',adminApproved=False,publicListing=False,approvedListing=False)
+            for field in ('assignmentId','classId','accessCode','shopExclusive','receivedFromAdmin'):row.pop(field,None)
+            tests.append(row);raw=_jdump(tests)
+            if len(raw)>7_800_000:return {'ok':False,'msg':'Базаның көлемі тым үлкен'}
+            _put(state,'ubt_tests',raw);_commit(state);return {'ok':True,'id':row['id']}
+        if action=='manage_teacher':
+            profiles=_profiles(state);profile=next((p for p in profiles.values() if p.get('id')==target),None)
+            if not profile or profile.get('role')!='teacher':return {'ok':False,'msg':'Мұғалім табылмады'}
+            change=d.get('change')
+            if change=='approve':profile.update(accessApproved=True,teacherApproved=True)
+            elif change=='revoke':profile.update(accessApproved=False,teacherApproved=False);_revoke_uid(state,target)
+            elif change=='subject':
+                if d.get('subject') not in _SUBJECT_NAMES:return {'ok':False,'msg':'Пәнді таңдаңыз'}
+                profile['teacherSubject']=d['subject']
+            elif change=='password':
+                password=d.get('password')
+                if not isinstance(password,str) or not _MIN_PASS<=len(password)<=200:return {'ok':False,'msg':'Пароль кемінде 10 таңба болсын'}
+                profile['ph']=_hash_pw(password);profile.pop('password',None);_revoke_uid(state,target)
+            elif change=='delete':
+                profiles={k:p for k,p in profiles.items() if p.get('id')!=target};_revoke_uid(state,target)
+                bindings=_jload(state['db'].get('ubt_server_access_device_accounts','{}'),dict,{})
+                _put(state,'ubt_server_access_device_accounts',_jdump({k:v for k,v in bindings.items() if v!=target}))
+            else:return {'ok':False,'msg':'Әрекетті таңдаңыз'}
+            _put(state,'ubt_profiles',_jdump(profiles));_commit(state);return {'ok':True}
+        return {'ok':False,'msg':'Әрекет жоқ'}
+
 def _new_session(state, uid, name, admin, device=""):
     admin = uid == "admin"
+    if not admin and not _device_account(state,device,uid):return None
     now = time.time()
     if len(state["sessions"]) > 5000:
         for t in [t for t, s in state["sessions"].items() if s["exp"] < now]:
@@ -1814,6 +1894,7 @@ def _security_request(state,sess,d):
             return {"ok":True,"count":row["count"],"debounced":True}
         if event=="screenshot_shortcut":row["count"]+=1
         row["events"].append({"id":eid,"event":event,"time":now})
+        _owner_notice(state,sess["uid"],"Мазмұнды көшіру/түсіру талпынысы: "+event)
         row["events"]=row["events"][-100:]
         _put(state,key,_jdump(data));_commit(state)
         blocked=row["count"]>=20
@@ -1971,8 +2052,8 @@ def _school_test_payload(items):
     return out
 
 def _school_request(state, sess, typ, d):
-    if not sess or not sess["admin"]:
-        return {"ok": False, "msg": "Бұл әрекетті тек админ орындай алады"}
+    if not sess or not sess["admin"] or sess["uid"]!="admin":
+        return {"ok": False, "msg": "Бұл әрекетті тек басты админ орындай алады"}
     if typ == "school_create_person":
         name, password, role = _clean_name(d.get("name")), str(d.get("pass") or ""), d.get("role")
         if not name or role not in ("teacher", "student") or not _MIN_PASS <= len(password) <= 200:
@@ -2535,11 +2616,67 @@ def _publication_request(state,sess,typ,d):
         return {"ok":False,"msg":"Аккаунтыңызға кіріңіз"}
     with state["lock"]:
         tests=_jload(state["db"].get("ubt_tests","[]"),list,[])
-        if typ in ("owner_publication_list","owner_set_publication"):
+        if typ=='owner_history_bulk':
+            if not sess.get('admin') or sess['uid']!='admin':return {'ok':False,'msg':'Тек басты админге қолжетімді'}
+            action=d.get('action');incoming=d.get('schemes')
+            if action not in ('restore','publish','private','to_bank') or not isinstance(incoming,list) or not 1<=len(incoming)<=200:return {'ok':False,'msg':'Тақырыптар тізімі жарамсыз'}
+            if any(not isinstance(t,dict) or not re.fullmatch(r'hist_\d{2,3}',str(t.get('id',''))) or t.get('subject')!='history' for t in incoming):return {'ok':False,'msg':'Тек дайын тарих схемаларын таңдаңыз'}
+            saved=_jload(state['db'].get('ubt_schemes','[]'),list,[]);by_id={t.get('id'):t for t in saved if isinstance(t,dict)}
+            selected=[]
+            for source in incoming:
+                t=dict(by_id.get(source['id']) or source)
+                t.update(authorId='admin',authorName=sess.get('name') or 'Админ')
+                if action in ('publish','private'):t.update(isPublic=action=='publish',status='approved' if action=='publish' else 'private')
+                by_id[t['id']]=t;selected.append(t)
+            schemes=list(by_id.values());raw=_jdump(schemes)
+            if len(raw)>_SCH_MAX_ALL:return {'ok':False,'msg':'Схемалардың көлемі тым үлкен'}
+            count=0;questions_count=0
+            if action=='to_bank':
+                existing={t.get('id'):t for t in tests if isinstance(t,dict)}
+                for scheme in selected:
+                    facts=[]
+                    def visit(node):
+                        if not isinstance(node,dict):return
+                        title=str(node.get('title') or node.get('tab') or scheme.get('title') or 'Тарих')
+                        for f in node.get('fields',[]):
+                            if isinstance(f,dict) and str(f.get('k','')).strip() and str(f.get('v','')).strip():facts.append((title,str(f['k']).strip(),str(f['v']).strip()))
+                        for child in node.get('children',[]):visit(child)
+                    visit(scheme.get('root',{}))
+                    for node in scheme.get('kids',[]):visit(node)
+                    facts=list(dict.fromkeys(facts));qs=[]
+                    for title,label,value in facts:
+                        choices=list(dict.fromkeys(v for _,k,v in facts if k==label and v!=value))
+                        choices+=list(dict.fromkeys(v for _,_,v in facts if v!=value and v not in choices))
+                        if not choices:continue
+                        opts=[value]+choices[:3];ident=hashlib.sha256(_jdump([scheme['id'],title,label,value]).encode()).hexdigest()[:24]
+                        answer=int(ident[:4],16)%len(opts);opts.insert(answer,opts.pop(0))
+                        qs.append({'id':'hq_'+ident,'text':title+' — '+label+': дұрыс мәліметті таңдаңыз.','options':opts,'correct':answer,'points':1,'subject':'history'})
+                    if not qs:continue
+                    for offset in range(0,len(qs),500):
+                        tid='histbank_'+scheme['id']+'_'+str(offset//500);old=existing.get(tid,{})
+                        row=dict(old,id=tid,topic=str(scheme.get('title') or 'Тарих')+(' · '+str(offset//500+1) if len(qs)>500 else ''),subject='history',subjectName=_SUBJECT_NAMES['history'],authorId='admin',authorName=sess.get('name') or 'Админ',questions=qs[offset:offset+500])
+                        row.setdefault('status','private');row.setdefault('isPublic',False);existing[tid]=row;count+=1;questions_count+=len(row['questions'])
+                result=_jdump(list(existing.values()))
+                if len(result)>7_800_000:return {'ok':False,'msg':'Тесттер базасының көлемі тым үлкен'}
+                _put(state,'ubt_tests',result)
+            _put(state,'ubt_schemes',raw);_put(state,'ubt_hist_hidden','[]');_commit(state)
+            return {'ok':True,'schemes':len(selected),'tests':count,'questions':questions_count}
+        if typ in ("owner_publication_list","owner_set_publication","owner_bulk_publication"):
             if not sess["admin"] or sess["uid"]!="admin":
                 return {"ok":False,"msg":"Тек басты админге қолжетімді"}
             available=[t for t in _available_send_tests(state) if not t.get("assignmentId") and not t.get("classId") and not t.get("receivedFromAdmin")]
 
+            # Include imported subject banks as separate, stable publishable tests.
+            present_ids={t['id'] for t in available}
+            represented={(t.get('subject'),str(t.get('topic') or '').strip()) for t in available}
+            for source in _real_named_tests(state):
+                subject=source.get('subject');title=str(source.get('title') or 'ҰБТ жинағы').strip();questions=source.get('questions',[])
+                if subject not in _SUBJECT_NAMES or (subject,title) in represented:continue
+                for offset in range(0,len(questions),500):
+                    tid='bankpub_'+hashlib.sha256(_jdump([source.get('id'),subject,offset//500]).encode()).hexdigest()[:24]
+                    if tid in present_ids:continue
+                    available.append({'id':tid,'authorId':'admin','authorName':sess.get('name') or 'Админ','subject':subject,'subjectName':_SUBJECT_NAMES[subject],'topic':title+(' · '+str(offset//500+1)+' бөлім' if len(questions)>500 else ''),'questions':questions[offset:offset+500],'status':'private','isPublic':False})
+                    present_ids.add(tid)
             catalog=_catalog_sync(state)
             grouped={}
             known={(t.get("subject"),str(t.get("topic") or "").strip()) for t in available}
@@ -2550,10 +2687,26 @@ def _publication_request(state,sess,typ,d):
                 grouped.setdefault(key,[]).append(q)
             existing_ids={t["id"] for t in available}
             for (subject,title),questions in grouped.items():
+                if (subject,title) in known:continue
                 for start in range(0,len(questions),500):
                     tid="pubbank_"+hashlib.sha256(_jdump([subject,title,start//500]).encode()).hexdigest()[:24]
                     if tid in existing_ids:continue
                     available.append({"id":tid,"authorId":"admin","authorName":sess.get("name") or "Админ","subject":subject,"subjectName":_SUBJECT_NAMES[subject],"topic":title+(" · "+str(start//500+1)+" бөлім" if len(questions)>500 else ""),"questions":questions[start:start+500],"status":"private","isPublic":False,"adminApproved":False})
+            if typ=='owner_bulk_publication':
+                subject=d.get('subject');limit=d.get('limit');ids=d.get('testIds')
+                if subject not in _SUBJECT_NAMES or type(limit)is not int or not 1<=limit<=100:return {'ok':False,'msg':'Пәнді және 1–100 аралығындағы лимитті таңдаңыз'}
+                if ids is not None and (not isinstance(ids,list) or not ids or len(ids)>2000 or any(not isinstance(x,str) for x in ids)):return {'ok':False,'msg':'Тесттерді таңдаңыз'}
+                chosen=[t for t in available if t.get('subject')==subject and (ids is None or t.get('id') in ids)]
+                if not chosen:return {'ok':False,'msg':'Бұл пәнде жариялайтын тест жоқ'}
+                if ids is not None and set(ids)!={t['id'] for t in chosen}:return {'ok':False,'msg':'Таңдалған тесттердің пәні сәйкес емес'}
+                merged={t.get('id'):t for t in tests if isinstance(t,dict)}
+                for source in chosen:
+                    row=dict(source,status='approved',isPublic=True,publicListing=True,approvedListing=True,adminApproved=True,limit=limit,subjectName=_SUBJECT_NAMES[subject])
+                    row.pop('accessCode',None);merged[row['id']]=row
+                raw=_jdump(list(merged.values()))
+                if len(raw)>7_800_000:return {'ok':False,'msg':'Тесттер көлемі тым үлкен; аз тест таңдаңыз'}
+                _put(state,'ubt_tests',raw);_commit(state)
+                return {'ok':True,'count':len(chosen)}
             if typ=="owner_publication_list":
                 return {"ok":True,"subjects":_SUBJECT_NAMES,"items":[{"id":t["id"],"subjectId":t.get("subject"),"title":t.get("topic") or "Тест","subject":t.get("subjectName") or _SUBJECT_NAMES.get(t.get("subject"),"Пәні таңдалмаған"),"count":len(t["questions"]),"limit":_approved_limit(t),"public":_approved_test(t) and t.get("publicListing") is not False,"approved":_approved_test(t) and t.get("approvedListing") is not False} for t in available]}
             tid=d.get("testId");targets=d.get("targets");limit=d.get("limit")
@@ -2614,6 +2767,10 @@ def _publication_request(state,sess,typ,d):
                     continue
                 rows.append({"id":test["id"],"title":test.get("topic") or "Тест","subject":test.get("subjectName") or test.get("subject") or "",
                     "count":len(test["questions"]),"limit":_approved_limit(test),"used":_published_used(state,test["id"],sess["uid"]),"timerMin":test.get("timerMin") or 0})
+            stars=_jload(state['db'].get('ubt_server_access_featured_tests','{}'),dict,{})
+            search=str(d.get('search') or '').strip().casefold()[:120]
+            rows=[dict(r,starred=bool(stars.get(r['id']))) for r in rows if not search or search in (r['title']+' '+r['subject']).casefold()]
+            rows.sort(key=lambda r:(not r['starred'],r['title'].casefold(),r['id']))
             offset=d.get("offset",0)
             offset=offset if type(offset) is int and 0 <= offset <= 100000 else 0
             return {"ok":True,"items":rows[offset:offset+50],"total":len(rows)}
@@ -2921,7 +3078,7 @@ def _handle_req(state, sid, rq):
         return _prize_request(state,sess,typ,d)
     if not isinstance(typ, str) or len(_jdump(d)) > 8_000_000:
         return {"ok": False, "msg": "Сұраныс тым үлкен немесе жарамсыз"}
-    if sess and sess.get("juniorAdmin") and typ not in ('login', 'resume', 'login_remembered', 'logout', 'remember_account', 'forget_account', 'start_exam', 'start_personal_practice', 'growth', 'path', 'economy', 'subscription_status', 'subscription_trial', 'subscription_request', 'premium_dashboard', 'daily_five', 'exam_question', 'send_personal_test', 'review_open', 'review_close', 'resume_exam', 'finish_exam', 'cancel_exam', 'start_assigned_test', 'start_public_mix', 'exam_check_answer', 'explain_review', 'approved_test_list', 'notifications_list', 'save_public_test', 'remove_saved_public_test', 'public_profile', 'content_security_event', 'visit_record', 'support_open', 'support_read', 'support_send', 'messenger_contacts', 'messenger_thread', 'messenger_send', 'profile_animation_get', 'chat_claim', 'book_open'):
+    if sess and sess.get("juniorAdmin") and typ not in ('login', 'resume', 'login_remembered', 'logout', 'remember_account', 'forget_account', 'start_exam', 'start_personal_practice', 'growth', 'path', 'economy', 'subscription_status', 'subscription_trial', 'subscription_request', 'premium_dashboard', 'daily_five', 'exam_question', 'send_personal_test', 'review_open', 'review_close', 'resume_exam', 'finish_exam', 'cancel_exam', 'start_assigned_test', 'start_public_mix', 'exam_check_answer', 'explain_review', 'approved_test_list', 'notifications_list', 'save_public_test', 'remove_saved_public_test', 'public_profile', 'content_security_event', 'visit_record', 'support_open', 'support_read', 'support_send', 'messenger_contacts', 'messenger_thread', 'messenger_send', 'profile_animation_get', 'chat_claim', 'book_open', 'export_test_json', 'teacher_tools'):
         return {"ok":False,"msg":"Кіші админде басқару құқығы жоқ. Тест тапсыру және өз тестін жүктеу ғана қолжетімді."}
     with state["lock"]:
         now = time.time()
@@ -2954,6 +3111,7 @@ def _handle_req(state, sid, rq):
             stats=_jload(state["db"].get("ubt_user_stats","{}"),dict,{}).get(uid,{})
             avatar=_jload(state["db"].get("ubt_avatar_"+uid,"null"),str,"")
             return {"ok":True,"profile":{"id":uid,"name":profile.get("name") or "Қолданушы","role":profile.get("role") or "student","avatar":avatar if isinstance(avatar,str) and re.fullmatch(r"data:image/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+",avatar) else "","points":stats.get("points",0),"stars":stats.get("stars",0),"title":stats.get("title", ""),"verified":stats.get("verified") is True}}
+    if typ=='teacher_tools':return _teacher_tools(state,sess,d)
     if typ=="content_security_event":
         return _security_request(state,sess,d)
     if typ in ("owner_unassigned_subjects","owner_assign_subject"):
@@ -3039,7 +3197,7 @@ def _handle_req(state, sid, rq):
     if typ=="owner_content_import":
         return _owner_content_request(state,sess,d)
 
-    if typ in ("admin_publish_test", "approved_test_list", "notifications_list", "save_public_test", "remove_saved_public_test", "owner_publication_list", "owner_set_publication"):
+    if typ in ("admin_publish_test", "approved_test_list", "notifications_list", "save_public_test", "remove_saved_public_test", "owner_publication_list", "owner_set_publication", "owner_bulk_publication", "owner_history_bulk"):
         return _publication_request(state,sess,typ,d)
 
     if typ in ("messenger_contacts","messenger_thread","messenger_send","messenger_send_test"):
@@ -3114,13 +3272,12 @@ def _handle_req(state, sid, rq):
             if not test or not isinstance(test.get("questions"), list) or not test["questions"]:
                 return {"ok": False, "msg": "Тест табылмады"}
             owner = test.get("authorId") == sess["uid"]
-            permission = bool(sess["admin"] or controls.get("jsonAll") or
-                              (isinstance(controls.get("jsonUsers"), dict) and controls["jsonUsers"].get(sess["uid"])))
-            teacher_owner = owner and _is_teacher(state, sess["uid"])
-            published = (test.get("isPublic") is True and test.get("status") == "approved"
-                         and not test.get("accessCode") and not test.get("classId") and not test.get("assignmentId"))
-            if not sess["admin"] or sess["uid"]!="admin":
-                return {"ok": False, "msg": "Файл жүктеу тек басты админге қолжетімді"}
+            if not _can_upload_tests(state,sess):
+                _owner_notice(state,sess['uid'],'JSON экспортын рұқсатсыз сұрау');_commit(state)
+                return {'ok':False,'msg':'JSON үшін басты админнің рұқсаты қажет'}
+            if sess['uid']!='admin' and not owner:
+                _owner_notice(state,sess['uid'],'Бөтен тестті JSON арқылы алуға талпыныс: '+tid);_commit(state)
+                return {'ok':False,'msg':'Тек өз тестіңізді JSON түрінде жүктей аласыз'}
             payload = {"title": test.get("topic") or "Тест", "topic": test.get("topic") or "Тест",
                        "subject": test.get("subjectName") or test.get("subject") or "",
                        "questions": [{"text": q.get("text"), "options": q.get("options"), "correct": q.get("correct")}
@@ -3519,6 +3676,7 @@ def _handle_req(state, sid, rq):
             state["fails"].pop(lk, None)
             if _closed(state):
                 return {"ok":False,"msg":"Сайт уақытша жабық. Тек басты админ кіре алады"}
+            if not _device_account(state,str(d.get('device') or ''),prof.get('id')):return {'ok':False,'msg':'Бұл браузер басқа аккаунтқа бекітілген. Басты админге хабарласыңыз.'}
             tok = _new_session(state, prof.get("id"), prof.get("name") or name, False,str(d.get("device") or "")[:160])
             if not tok:
                 return {"ok":False,"msg":"Аккаунт бұғатталған. Себебі: "+str((_blocked(state,prof.get("id")) or {}).get("reason") or _jload(state["db"].get("ubt_server_access_blocked_devices","{}"),dict,{}).get(hashlib.sha256(str(d.get("device") or "").encode()).hexdigest(),{}).get("reason") or "Қауіпсіздік ережесі")+". Басты админге хабарласыңыз"}
@@ -3545,6 +3703,7 @@ def _handle_req(state, sid, rq):
             if len(lst) >= 10:
                 return {"ok": False, "msg": "Тым көп тіркелу әрекеті. Кейінірек қайталаңыз."}
             profs = _profiles(state)
+            if not _device_account(state,device):return {'ok':False,'msg':'Бұл браузерде бір аккаунт тіркелген. Сол аккаунтқа кіріңіз немесе басты админге хабарласыңыз.'}
             if key in _ADMIN_NAMES or key in profs:
                 return {"ok": False, "msg": "Бұл ат тіркелген. Басқа ат таңдаңыз"}
             if len(profs) >= 20000:
@@ -3552,7 +3711,7 @@ def _handle_req(state, sid, rq):
             ph_new = _hash_pw(pw)
             uid = _new_uid(state, key)
             prof = {"name": name, "id": uid, "isAdmin": False, "ph": ph_new,
-                    "accessApproved": False, "registeredAt": int(now)}
+                    "accessApproved": not bool(d.get("teacher")), "registeredAt": int(now)}
             prof["role"]="student"
             if not d.get("teacher"):
                 if not _set_profile_pair(state,uid,d.get("profilePair")):
@@ -3566,16 +3725,21 @@ def _handle_req(state, sid, rq):
                 prof["teacherInfo"] = str(d.get("info") or "")[:200]
                 prof["teacherSubject"] = subject
             profs[key] = prof
+            _device_account(state,device,uid)
+            if d.get('teacher'):_owner_notice(state,uid,'Мұғалім болуға жаңа өтініш: '+name+' · '+str(prof.get('teacherSubject')))
             _put(state, "ubt_profiles", _jdump(profs))
             stats = _jload(state["db"].get("ubt_user_stats", "{}"), dict, {})
             stats[uid] = {"points": 0, "title": "", "stars": 0, "verified": False}
             _put(state, "ubt_user_stats", _jdump(stats))
             lst.append(now)
             _commit(state)
-        return {"ok": True}
+        if not d.get('teacher'):
+            tok=_new_session(state,uid,name,False,device)
+            return {'ok':True,'token':tok,'user':_client_user(state,prof)}
+        return {'ok':True,'pending':True}
 
     if typ == "admin_approve_registration":
-        if not (sess and sess["admin"]):
+        if not (sess and sess["admin"] and sess["uid"]=="admin"):
             return {"ok": False, "msg": "Рұқсат жоқ"}
         uid = str(d.get("uid") or "")
         with state["lock"]:
@@ -3669,7 +3833,7 @@ def _handle_req(state, sid, rq):
         return {"ok": True}
 
     if typ == "admin_deluser":
-        if not (sess and sess["admin"]):
+        if not (sess and sess["admin"] and sess["uid"]=="admin"):
             return {"ok": False, "msg": "Рұқсат жоқ"}
         uid = str(d.get("uid") or "")
         if not uid or uid == "admin":
@@ -3938,6 +4102,13 @@ def _merge_tests(state, sess, v):
         return None
     existing_rows = _jload(state["db"].get("ubt_tests","[]"),list,[])
     existing_by_id = {t.get("id"):t for t in existing_rows if isinstance(t,dict)}
+    if sess['uid']!='admin':
+        def signature(row):
+            return _jdump([{'text':q.get('text'),'options':q.get('options'),'correct':q.get('correct')} for q in row.get('questions',[]) if isinstance(q,dict)])
+        protected={signature(t) for t in existing_rows if isinstance(t,dict) and t.get('authorId')!=sess['uid'] and len(t.get('questions',[]))>=3}
+        for row in inc:
+            if row['id'] not in existing_by_id and (row.get('copiedFromId') or (len(row.get('questions',[]))>=3 and signature(row) in protected)):
+                _owner_notice(state,sess['uid'],'Бөтен тесттің көшірмесін жеке базаға енгізуге талпыныс');_commit(state);return None
     if not _can_upload_tests(state,sess):
         # Imported payloads cannot bypass permissions through the sync channel.
         if any(t.get('id') not in existing_by_id or
@@ -5288,7 +5459,7 @@ body:not(.primary-owner) input,body:not(.primary-owner) textarea,body:not(.prima
       <button class="btn btn-s" style="width:100%;margin-bottom:8px" onclick="showRegister()">Тіркелу</button>
       <button class="btn btn-s btn-sm" style="width:100%" onclick="showContactAdmin()">Админге хабарласу</button>
     </div>
-    <div class="card" id="register-box" style="display:none">
+    <div class="card" id="register-box" style="display:none"><p class="sub" style="margin:12px 0">Тіркелу тегін. Бір браузерде бір аккаунт. Аккаунт тек профильдегі «Осы құрылғыда сақтау» батырмасын басқанда есте қалады.</p>
       <h3 style="margin-bottom:12px">Тіркелу</h3>
       <div class="name-warn"><span class="nw-t">⚠️ Назар аударыңыз!</span>Атыңызды <b>толық және дұрыс</b> жазыңыз (мыс: «Айгүл Серікова»). Жалған, қысқартылған немесе бөтен ат жазсаңыз, <b>админ аккаунтыңызды өшіріп тастауы мүмкін.</b></div>
       <div class="fg"><label>Аты-жөніңіз (толық, нақты) *</label><input id="reg-name" placeholder="Мыс: Айгүл Серікова" maxlength="30"></div>
@@ -5298,9 +5469,9 @@ body:not(.primary-owner) input,body:not(.primary-owner) textarea,body:not(.prima
       <button class="btn btn-s btn-sm" style="width:100%;margin-bottom:10px" onclick="showTeacherReg()">👨‍🏫 Мұғалім ретінде тіркелу</button>
       <button class="btn btn-s" style="width:100%" onclick="showLoginBox()">Артқа</button>
     </div>
-    <div class="card" id="teacher-reg-box" style="display:none">
+    <div class="card" id="teacher-reg-box" style="display:none"><p class="sub" style="margin:12px 0">Тіркелу тегін. Бір браузерде бір аккаунт. Аккаунт тек профильдегі «Осы құрылғыда сақтау» батырмасын басқанда есте қалады.</p>
       <h3 style="margin-bottom:6px">👨‍🏫 Мұғалім болуға өтініш</h3>
-      <p class="sub" style="margin-bottom:12px">Өтініш админге түседі. Админ мақұлдағанға дейін мұғалім болу және сынып ашу мүмкін емес.</p>
+      <p class="sub" style="margin-bottom:12px"><a href="https://wa.me/77056360080" target="_blank" rel="noopener">Басты админ: +7 705 636 00 80</a><br>Өтініш тек басты админге түседі. Админ мақұлдағанға дейін мұғалім болу және сынып ашу мүмкін емес.</p>
       <div class="name-warn"><span class="nw-t">⚠️ Назар аударыңыз!</span>Атыңызды <b>толық және дұрыс</b> жазыңыз (мыс: «Айгүл Серікова»). Жалған, қысқартылған немесе бөтен ат жазсаңыз, <b>админ аккаунтыңызды өшіріп тастауы мүмкін.</b></div>
 
       <div class="fg"><label>Аты-жөніңіз (логин) *</label><input id="tr-name" placeholder="Мыс: Айгүл Серікқызы" maxlength="30"></div>
@@ -6671,7 +6842,7 @@ async function guarded(fn){
 async function startSession(r){
   window.__chatToken='';chatLogin=null;
   window.__token=r.token;user=r.user;
-  LS.set('ubt_current',Object.assign({},r.user,{token:r.token}));
+  LS.set('ubt_current',null);
   try{await window.__bridge.refresh()}catch(e){}
   enterApp();
 }
@@ -6745,7 +6916,7 @@ function doRegister(){return guarded(async()=>{
   const r=await authCall('register',{name:name,pass:pass,profilePair,parent});
   if(!r.ok){alert(r.msg||'Қате');return}
   ['reg-name','reg-pass','reg-pass2'].forEach(i=>{const e=document.getElementById(i);if(e)e.value=''});
-  alert('✅ Тіркелу өтініші админге жіберілді. Админ рұқсат бергеннен кейін сайтқа кіре аласыз.');
+  if(r.token){await startSession(r);return}alert('Тіркелу аяқталды. Кіруге болады.');
   showLoginBox();
   document.getElementById('login-name').value=name;
 })}
@@ -7028,7 +7199,7 @@ async function changeOwnerName(){
     passField.value='';
     if(!result.ok){alert(result.msg||'Ат өзгертілмеді');return}
     user=result.user;
-    LS.set('ubt_current',Object.assign({},user,{token:window.__token}));
+    LS.set('ubt_current',null);
     refreshProfileBar();showMyProfile();
     alert('Атыңыз сақталды');
   }finally{button.disabled=false;passField.value=''}
@@ -7150,10 +7321,7 @@ function renderAdminUsers(){
 }
 function siteControls(){return LS.get('ubt_site_controls',{})}
 function canUploadTestFiles(){const c=siteControls();return !!(user&&(user.isJuniorAdmin||user.isAdmin||isTeacherUser()||c.jsonAll===true||c.jsonUsers?.[user.id]===true))}
-function canDownloadJson(){
-  if(!user)return false;
-  return !!(user.isAdmin&&user.id==='admin');
-}
+function canDownloadJson(){return canUploadTestFiles()}
 function syncMaintenance(){
   const overlay=document.getElementById('maintenance-overlay');if(!overlay)return;
   overlay.style.display=siteControls().maintenance&&!(user&&user.isAdmin)?'flex':'none';
@@ -7564,7 +7732,7 @@ function showMyTests(more=false){
       `<details class="ubt-subject-folder" ${i===0?'open':''} style="border:1px solid var(--bd,#334155);border-radius:16px;margin:12px 0;padding:12px;background:var(--card,#171e32)">
        <summary style="cursor:pointer;font-weight:800;padding:8px">📁 ${esc(name)} <span style="opacity:.7;font-size:13px">(${items.length} тест)</span></summary>
        <div style="padding-top:10px">${items.map(t=>`<div class="item"><div class="info"><h4>${esc(t.topic)}</h4><p>${t.questions.length} сұрақ · ${t.isPublic?'🌐 Жария':'🔒 Жеке'}</p></div>
-       <div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest(${jsq(t.id)})">Бастау</button>${isTeacherUser()?`<button class="btn btn-ok btn-sm" onclick="schoolClassSendDialog('',${jsq(t.id)})">Сыныпқа жіберу</button>`:''}<button class="btn btn-s btn-sm" onclick="previewTest(${jsq(t.id)})">👁</button><button class="btn btn-s btn-sm" onclick="editTest(${jsq(t.id)})">+ Сұрақ қосу</button>${user.isAdmin?`<button class="btn btn-s btn-sm" onclick="exportTest(${jsq(t.id)})">⬇ TXT</button><button class="btn btn-s btn-sm" onclick="exportJsonTest(${jsq(t.id)})">⬇ JSON</button>`:''}${user.id==='admin'?`<button class="btn btn-d btn-sm" onclick="delTest(${jsq(t.id)})">✕</button>`:''}</div></div>`).join('')}</div></details>`).join('');
+       <div class="acts"><button class="btn btn-p btn-sm" onclick="startUserTest(${jsq(t.id)})">Бастау</button>${isTeacherUser()?`<button class="btn btn-ok btn-sm" onclick="schoolClassSendDialog('',${jsq(t.id)})">Сыныпқа жіберу</button>`:''}<button class="btn btn-s btn-sm" onclick="previewTest(${jsq(t.id)})">👁</button><button class="btn btn-s btn-sm" onclick="editTest(${jsq(t.id)})">+ Сұрақ қосу</button>${user.isAdmin?`<button class="btn btn-s btn-sm" onclick="exportTest(${jsq(t.id)})">⬇ TXT</button>`:''}${canDownloadJson()?`<button class="btn btn-s btn-sm" onclick="exportJsonTest(${jsq(t.id)})">⬇ JSON</button>`:''}${user.id==='admin'?`<button class="btn btn-d btn-sm" onclick="delTest(${jsq(t.id)})">✕</button>`:''}</div></div>`).join('')}</div></details>`).join('');
   }
   if(all.length>schoolOwnedTestsShown)list.insertAdjacentHTML('beforeend','<button class="btn btn-s" onclick="showMyTests(true)">Тағы 50 тест</button>');
   showScr('s-mytests');
@@ -8848,6 +9016,16 @@ function histPreview(i){
   o.innerHTML='<div class="box" style="max-width:1000px"><div class="row" style="justify-content:flex-end;margin-bottom:8px">'+(user?'<button class="btn btn-p btn-sm" onclick="histCopyMine('+i+',true)">＋ Өзіме қосып, мәлімет жазу</button>':'')+'<button class="btn btn-s btn-sm" onclick="document.getElementById(\'ovl-prev\').remove()">✕ Жабу</button></div>'+schRender(histBuild(i))+'</div>';
   document.body.appendChild(o);
 }
+async function histBulk(action,button){
+ if(!user?.isAdmin||user.id!=='admin')return;
+ const labels={restore:'Барлық тарих тақырыбын базаға қайтару',publish:'Барлық тарих схемасын жариялау',to_bank:'Схемалардағы мәліметтерден тесттерді сұрақтар базасына қосу'};
+ if(!confirm(labels[action]+' керек пе?'))return;
+ const previous=button.textContent;button.disabled=true;button.textContent='Орындалуда…';
+ try{const old=new Map(allSchemes().map(t=>[t.id,t]));const schemes=HIST.map((h,i)=>old.get(histId(i))||{...histBuild(i),id:histId(i),authorId:'admin',authorName:user.name,isPublic:false,status:'private'});
+ const r=await authCall('owner_history_bulk',{action,schemes});if(!r.ok)return alert(r.msg);
+ await window.__bridge.refresh();renderHist();alert(action==='to_bank'?r.tests+' тест · '+r.questions+' сұрақ базаға қосылды':r.schemes+' схема өңделді');
+ }catch(e){alert('Сақталмады. Қайта көріңіз.')}finally{button.disabled=false;button.textContent=previous}
+}
 function histAddAll(){
   if(!user||!user.isAdmin)return;
   const all=allSchemes(),have=new Set(all.map(x=>x.id));let n=0;
@@ -8890,7 +9068,7 @@ function renderHist(){
   const have=new Map(allSchemes().map(x=>[x.id,x]));
   let added=0;HIST.forEach((h,i)=>{if(!hidden.has(i)&&have.has(histId(i)))added++});
   let out='<p class="sub" style="margin-bottom:10px">Барлығы: <b>'+(HIST.length-hidden.size)+'</b> тақырып · схема ретінде қосылған: <b>'+added+'</b> · 🆕 жаңадан қосылған: '+HIST.filter((h,i)=>h[3]&&!hidden.has(i)).length+'</p>'
-    +'<div class="row" style="margin-bottom:12px;justify-content:flex-start"><button class="btn btn-p btn-sm" onclick="histAddAll()">➕ Барлық тақырыпты схема ретінде қосу</button><button class="btn btn-s btn-sm" onclick="histRefreshBuiltins()">↺ Дайын схемаларды жаңарту</button>'+(HIST.length>hidden.size||HIST.some((_,i)=>have.has(histId(i)))?'<button class="btn btn-d btn-sm" onclick="histDeleteAll()">🗑 Бәрін бірден өшіру</button>':'')+(hidden.size?'<button class="btn btn-s btn-sm" onclick="histRestoreTopics()">↶ Өшірілген тақырыптарды қайтару ('+hidden.size+')</button>':'')+'</div>';
+    +'<div class="row" style="margin-bottom:12px;justify-content:flex-start"><button class="btn btn-p btn-sm" onclick="histBulk(&quot;restore&quot;,this)">↶ Барлығын базаға қайтару</button><button class="btn btn-ok btn-sm" onclick="histBulk(&quot;publish&quot;,this)">🌐 Барлық схеманы жариялау</button><button class="btn btn-s btn-sm" onclick="histBulk(&quot;to_bank&quot;,this)">📚 Барлығын сұрақтар базама қосу</button><button class="btn btn-s btn-sm" onclick="histRefreshBuiltins()">↺ Дайын схемаларды жаңарту</button>'+(HIST.length>hidden.size||HIST.some((_,i)=>have.has(histId(i)))?'<button class="btn btn-d btn-sm" onclick="histDeleteAll()">🗑 Бәрін бірден өшіру</button>':'')+(hidden.size?'<button class="btn btn-s btn-sm" onclick="histRestoreTopics()">↶ Өшірілген тақырыптарды қайтару ('+hidden.size+')</button>':'')+'</div>';
   let cur='';
   histOrder().forEach(i=>{
     if(hidden.has(i))return;
@@ -12257,6 +12435,7 @@ function schoolRenderPerson(){
   const oldSource=document.getElementById('school-profile-test'),previous=oldSource?oldSource.value:'';
   document.getElementById('school-person-body').innerHTML=`<div class="school-person-head"><div class="school-mark">${esc(String(p.name||'?')[0])}</div><div><span class="school-tag">${teacher?'МҰҒАЛІМ':'ОҚУШЫ'}</span><h2>${esc(p.name)}</h2><p class="sub">${teacher?esc(subjName(p.teacherSubject||'other')):'Сынып: '+esc(classes.map(c=>c.name).join(', ')||'Тағайындалмаған')}</p></div></div><div class="school-actions">${user.isAdmin?`<button class="btn btn-s btn-sm" onclick="adminViewUser(${jsq(p.id)})">Профильді басқару</button>`:''}${teacher&&user.id===p.id?`<button class="btn btn-p btn-sm" onclick="showMyTests()">Өз тесттерім</button><button class="btn btn-s btn-sm" onclick="showFileTest()">Файлдан тест құру</button>`:''}${!teacher&&user.isAdmin?`<label class="json-permission"><input type="checkbox" ${siteControls().jsonUsers?.[p.id]===true?'checked':''} onchange="adminSetJsonPermission(${jsq(p.id)},this.checked)"> Тест файлын жүктеуге рұқсат</label><button class="btn btn-p btn-sm" onclick="schoolMoveDialog(${jsq(p.id)})">Сыныпқа тағайындау / ауыстыру</button>`:''}</div><h3 class="school-subhead">СЫНЫПТАР</h3>${classes.length?classes.map(c=>`<button class="btn btn-s btn-sm" style="margin:0 8px 8px 0" onclick="schoolOpenClass(${jsq(c.id)})">${esc(c.name)} ↗</button>`).join(''):'<p class="sub">Сынып әлі тағайындалмаған.</p>'}${teacher&&user.isAdmin?`<section class="card school-person-compose" style="margin-top:22px"><h3>Мұғалімге тест файлын жіберу</h3><p class="sub" style="margin:8px 0 14px">Жіберілген тест мұғалімнің «Өз тесттерім» бөліміне сақталады. Мұғалім оны сыныбына тарата алады.</p><div class="grid2"><div class="fg"><label>Дайын тестті таңдау</label><select id="school-profile-test" onchange="schoolClearImported()"><option value="">Тестті таңдаңыз</option>${allTests().filter(t=>!t.assignmentId&&t.questions&&t.questions.length).map(t=>`<option value="${esc(t.id)}">${esc(t.topic||'Тест')} · ${t.questions.length} сұрақ</option>`).join('')}</select></div><div class="fg"><label>Немесе тест файлын таңдау</label><input type="file" accept=".json,.txt,.docx,.csv,.tsv" onchange="schoolReadTestFile(this)"></div></div><div id="school-file-status" class="school-status" role="status">${schoolState.imported?esc(schoolState.fileName)+' · '+schoolState.imported.length+' тест дайын.':'JSON, TXT, DOCX, CSV · 5 МБ дейін. 500-ден көп сұрақ бөлек тесттерге бөлінеді.'}</div><button class="btn btn-p" style="margin-top:14px" onclick="schoolSendTeacher(this)">Мұғалімге жіберу →</button></section>`:''}${teacher&&(user.isAdmin||user.id===p.id)?`<section class="card" style="margin-top:22px"><h3>Админнен келген тесттер</h3><p class="sub" style="margin:6px 0 14px">Тесттер мұғалімнің жеке базасында да сақталған.</p>${deliveries.length?deliveries.slice(0,50).map(x=>`<div class="item"><div class="info"><h4>${esc(x.title)}</h4><p>${esc(x.fileName||'Дайын тест')} · ${new Date(x.created*1000).toLocaleDateString(uiLocale())}</p></div><div class="acts"><button class="btn btn-s btn-sm" onclick="exportJsonTest(${jsq(x.testId)})">JSON жүктеу</button>${user.id===p.id?`<button class="btn btn-p btn-sm" onclick="schoolClassSendDialog('',${jsq(x.testId)})">Сыныбыма жіберу</button>`:''}</div></div>`).join(''):'<p class="sub">Келген тест жоқ.</p>'}</section>`:''}`;
   const next=document.getElementById('school-profile-test');if(next&&Array.from(next.options).some(o=>o.value===previous))next.value=previous;
+  if(teacher&&user?.id==='admin')loadOwnerTeacherTests(p.id);
 }
 function schoolClearImported(){if(document.getElementById('school-profile-test').value){schoolState.imported=null;schoolState.fileName='';document.getElementById('school-file-status').textContent='Дайын тест таңдалды.'}}
 async function schoolReadTestFile(input){
@@ -12772,18 +12951,27 @@ async function schoolDeleteClass(cid,button){
  if(e.ctrlKey||e.metaKey||e.altKey||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(key)){e.preventDefault();e.stopImmediatePropagation();return}},true);
  window.addEventListener('blur',()=>{if(Date.now()-entered<1500)return;setTimeout(()=>{if(active()&&!document.hasFocus()&&!document.querySelector('dialog[open]'))exitForSystemKey()},150)});
  document.addEventListener('visibilitychange',()=>{if(document.hidden&&Date.now()-entered>=1500)exitForSystemKey()});
- const show=showScr;showScr=function(id){if(id==='s-test')entered=Date.now();const r=show.apply(this,arguments);document.body.classList.toggle('primary-owner',owner());if(!owner())document.querySelectorAll('[onclick]').forEach(el=>{if(/^(exportTest|exportJsonTest|exportWordTest|exportPdfTest|adminCopyTest|importPublicTestToBank)\(/.test(el.getAttribute('onclick')||''))el.hidden=true});return r};
- ['copy','cut','contextmenu','dragstart','selectstart'].forEach(kind=>window.addEventListener(kind,e=>{if(!user||owner()||inField(e.target))return;e.preventDefault();e.stopImmediatePropagation();e.clipboardData?.setData('text/plain','');window.getSelection()?.removeAllRanges()},true));
- ['exportTest','exportJsonTest','exportWordTest','exportPdfTest','adminCopyTest','importPublicTestToBank'].forEach(name=>{const fn=window[name];if(typeof fn==='function')window[name]=function(){if(!owner())return alert('Тек басты админге қолжетімді');return fn.apply(this,arguments)}});
+ const show=showScr;showScr=function(id){if(id==='s-test')entered=Date.now();const r=show.apply(this,arguments);document.body.classList.toggle('primary-owner',owner());document.querySelectorAll('[onclick^="exportJsonTest("]').forEach(el=>{el.hidden=!canDownloadJson()});if(!owner())document.querySelectorAll('[onclick]').forEach(el=>{if(/^(exportTest|exportWordTest|exportPdfTest|adminCopyTest|importPublicTestToBank)\(/.test(el.getAttribute('onclick')||''))el.hidden=true});return r};
+ ['copy','cut','contextmenu','dragstart','selectstart'].forEach(kind=>window.addEventListener(kind,e=>{if(!user||owner()||inField(e.target))return;if(['copy','cut'].includes(e.type))authCall('content_security_event',{event:'copy',eventId:'copy_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,14)}).catch(()=>{});e.preventDefault();e.stopImmediatePropagation();e.clipboardData?.setData('text/plain','');window.getSelection()?.removeAllRanges()},true));
+ ['exportTest','exportWordTest','exportPdfTest','adminCopyTest','importPublicTestToBank'].forEach(name=>{const fn=window[name];if(typeof fn==='function')window[name]=function(){if(!owner())return alert('Тек басты админге қолжетімді');return fn.apply(this,arguments)}});
 })();
 
 (function(){
  const owner=()=>!!(user?.isAdmin&&user.id==='admin');let busy=false,job=0;
- async function panel(){if(!owner()||busy)return;busy=true;const task=++job;try{const r=await authCall('owner_publication_list',{});if(!owner()||task!==job||!r.ok)return;let host=document.getElementById('owner-publication-panel');if(!host){host=document.createElement('section');host.id='owner-publication-panel';host.className='card';document.getElementById('s-admin').querySelector('.wrap').prepend(host)}host.innerHTML='<h3>🌐 Жарияға тест қою</h3><p class="sub" style="margin-top:8px">Тестті таңдаңыз және барлық қолданушыға көрінетін бөлімдерін белгілеңіз.</p><div class="fg" style="margin-top:16px"><label>Базамдағы тестті іздеу</label><input id="owner-publication-search" placeholder="Атауы немесе пәні"><label>Тест</label><select id="owner-publication-test"><option value="">Тестті таңдаңыз</option></select></div><div class="fg"><label>Қай пәнге жариялайсыз? *</label><select id="owner-publication-subject" required><option value="">Пәнді міндетті түрде таңдаңыз</option></select></div><div class="publication-tools"><label><input type="checkbox" id="owner-publish-public" checked> Жария тесттер</label><label><input type="checkbox" id="owner-publish-approved" checked> Админ мақұлдаған тесттер</label><label>Тапсыру лимиті <input type="number" id="owner-publication-limit" min="1" max="100" value="1" style="max-width:80px"></label></div><div class="publication-tools"><button class="btn btn-p" id="owner-publication-save">＋ Жарияға қою</button><button class="btn btn-s" id="owner-publication-refresh">Жаңарту</button></div><p id="owner-publication-status" class="sub" role="status"></p><div class="publication-table" id="owner-publication-rows"></div>';
+ async function panel(){if(!owner()||busy)return;busy=true;const task=++job;try{const r=await authCall('owner_publication_list',{});if(!owner()||task!==job||!r.ok)return;let host=document.getElementById('owner-publication-panel');if(!host){host=document.createElement('section');host.id='owner-publication-panel';host.className='card';document.getElementById('s-admin').querySelector('.wrap').prepend(host)}host.innerHTML='<h3>🌐 Жарияға тест қою</h3><p class="sub" style="margin-top:8px">Тестті таңдаңыз және барлық қолданушыға көрінетін бөлімдерін белгілеңіз.</p><div class="fg" style="margin-top:16px"><label>Базамдағы тестті іздеу</label><input id="owner-publication-search" placeholder="Атауы немесе пәні"><label>Тест</label><select id="owner-publication-test"><option value="">Тестті таңдаңыз</option></select></div><div class="fg"><label>Қай пәнге жариялайсыз? *</label><select id="owner-publication-subject" required><option value="">Пәнді міндетті түрде таңдаңыз</option></select></div><div class="publication-tools"><label><input type="checkbox" id="owner-publish-public" checked> Жария тесттер</label><label><input type="checkbox" id="owner-publish-approved" checked> Админ мақұлдаған тесттер</label><label>Тапсыру лимиті <input type="number" id="owner-publication-limit" min="1" max="100" value="1" style="max-width:80px"></label></div><div class="publication-tools"><button class="btn btn-p" id="owner-publication-save">＋ Жарияға қою</button><button class="btn btn-ok" id="owner-publication-bulk">Осы пәннің барлық тестін жариялау</button><button class="btn btn-s" id="owner-publication-refresh">Жаңарту</button></div><p id="owner-publication-status" class="sub" role="status"></p><div class="publication-table" id="owner-publication-rows"></div>';
  const select=host.querySelector('#owner-publication-test'),subjectSelect=host.querySelector('#owner-publication-subject');for(const [id,name] of Object.entries(r.subjects||{}))subjectSelect.add(new Option(name,id));
  const fill=()=>{const previous=select.value,q=host.querySelector('#owner-publication-search').value.trim().toLocaleLowerCase();select.replaceChildren(new Option('Тестті таңдаңыз',''));for(const t of r.items.filter(t=>(t.title+' '+t.subject).toLocaleLowerCase().includes(q)))select.add(new Option(t.title+' · '+t.subject+' · '+t.count+' сұрақ',t.id));select.value=previous;subjectSelect.value=''};fill();host.querySelector('#owner-publication-search').oninput=fill;
 select.onchange=()=>{subjectSelect.value='';const t=r.items.find(x=>x.id===select.value);if(!t)return;host.querySelector('#owner-publication-limit').value=t.limit;const published=t.public||t.approved;host.querySelector('#owner-publish-public').checked=published?t.public:true;host.querySelector('#owner-publish-approved').checked=published?t.approved:true};
  host.querySelector('#owner-publication-refresh').onclick=panel;
+ host.querySelector('#owner-publication-bulk').onclick=async function(){
+  const subject=subjectSelect.value,limit=Number(host.querySelector('#owner-publication-limit').value);
+  if(!subject)return alert('Алдымен пәнді таңдаңыз. Информатика тесттері үшін «Информатика» таңдаңыз.');
+  const items=r.items.filter(t=>t.subjectId===subject);if(!items.length)return alert('Бұл пәнде тест жоқ');
+  if(!Number.isInteger(limit)||limit<1||limit>100)return alert('Лимит 1–100 болсын');
+  if(!confirm((r.subjects[subject]||subject)+' пәніндегі '+items.length+' тестті жариялайсыз ба? Әр тестке лимит: '+limit))return;
+  this.disabled=true;try{const result=await authCall('owner_bulk_publication',{subject,limit,testIds:items.map(t=>t.id)});if(!result.ok)return alert(result.msg);await window.__bridge.refresh();alert(result.count+' тест жарияланды');await panel()}catch(e){alert('Жариялау орындалмады. Қайта көріңіз.')}finally{this.disabled=false}
+ };
+
  host.querySelector('#owner-publication-save').onclick=async function(){if(!select.value)return alert('Алдымен тестті таңдаңыз');if(!subjectSelect.value)return alert('Қай пән екенін міндетті түрде таңдаңыз');const targets=[];if(host.querySelector('#owner-publish-public').checked)targets.push('public');if(host.querySelector('#owner-publish-approved').checked)targets.push('approved');if(!targets.length)return alert('Кемінде бір бөлімді белгілеңіз');this.disabled=true;const result=await authCall('owner_set_publication',{testId:select.value,subject:subjectSelect.value,targets,limit:Number(host.querySelector('#owner-publication-limit').value)});if(!result.ok){this.disabled=false;host.querySelector('#owner-publication-status').textContent=result.msg;return}await window.__bridge.refresh();panel()};
  const list=host.querySelector('#owner-publication-rows');const published=r.items.filter(t=>t.public||t.approved);if(!published.length)list.textContent='Әзірге жарияланған тест жоқ.';for(const t of published){const row=document.createElement('div');row.className='publication-row';const info=document.createElement('div');const title=document.createElement('strong');title.textContent=t.title;const sub=document.createElement('p');sub.textContent=[t.public?'Жария тесттер':'',t.approved?'Админ мақұлдаған тесттер':''].filter(Boolean).join(' · ')+' · '+t.subject+' · Лимит: '+t.limit;info.append(title,sub);const button=document.createElement('button');button.className='btn btn-d btn-sm';button.textContent='Жариядан алып тастау';button.onclick=async()=>{if(!confirm('Тест екі жария бөлімнен алынады. Базадағы түпнұсқа мен нәтижелер сақталады. Жалғастыру керек пе?'))return;button.disabled=true;const result=await authCall('owner_set_publication',{testId:t.id,targets:[]});if(!result.ok){button.disabled=false;return alert(result.msg)}await window.__bridge.refresh();panel()};row.append(info,button);list.append(row)}
  }finally{busy=false}}
@@ -13414,6 +13602,59 @@ html_code += r"""
   const r=show.apply(this,arguments);cleanMenu();return r;
  };
  cleanMenu();
+})();
+</script>
+"""
+
+html_code += r"""
+<script>
+async function loadOwnerTeacherTests(uid){
+ if(user?.id!=='admin')return;const body=document.getElementById('school-person-body');
+ body.querySelector('#owner-teacher-tests')?.remove();const box=document.createElement('section');box.id='owner-teacher-tests';box.className='card';box.style.marginTop='20px';box.innerHTML='<h3>Мұғалімнің тесттері · тек басты админ</h3><div class="row" style="margin:12px 0"><button class="btn btn-ok btn-sm" onclick="manageTeacherAccount(\''+uid+'\',\'approve\')">Мұғалім етіп бекіту</button><button class="btn btn-w btn-sm" onclick="manageTeacherAccount(\''+uid+'\',\'revoke\')">Қолжетімділікті тоқтату</button><button class="btn btn-s btn-sm" onclick="manageTeacherAccount(\''+uid+'\',\'subject\')">Пәнін өзгерту</button><button class="btn btn-s btn-sm" onclick="manageTeacherAccount(\''+uid+'\',\'password\')">Парольді өзгерту</button><button class="btn btn-d btn-sm" onclick="manageTeacherAccount(\''+uid+'\',\'delete\')">Аккаунтты өшіру</button></div><input class="teacher-test-search" placeholder="Мұғалімнің тестін іздеу" aria-label="Тестті іздеу"><div class="teacher-test-results">Жүктелуде…</div>';body.appendChild(box);
+ const r=await authCall('teacher_tools',{action:'teacher_tests',uid});if(!box.isConnected||schoolState.person!==uid)return;
+ const list=box.querySelector('.teacher-test-results');if(!r.ok){list.textContent=r.msg;return}
+ function render(){const q=box.querySelector('input').value.trim().toLocaleLowerCase();list.replaceChildren();for(const t of r.items.filter(t=>(t.title+' '+t.subject).toLocaleLowerCase().includes(q))){const row=document.createElement('div');row.className='item';const info=document.createElement('div');info.textContent=(t.starred?'⭐ ':'')+t.title+' · '+t.count+' сұрақ';const acts=document.createElement('div');acts.className='acts';for(const [label,action] of [['Қарау','inspect'],['Базама қосу','copy'],[t.starred?'Жұлдызды алу':'⭐ Жұлдыз беру','star']]){const b=document.createElement('button');b.className='btn btn-s btn-sm';b.textContent=label;b.onclick=()=>ownerTeacherTestAction(action,t.id,!t.starred,uid);acts.appendChild(b)}row.append(info,acts);list.appendChild(row)}if(!list.children.length)list.textContent='Тест табылмады.'}
+ box.querySelector('input').oninput=render;render();
+}
+async function ownerTeacherTestAction(action,testId,value,uid){
+ const r=await authCall('teacher_tools',{action,testId,value});if(!r.ok)return alert(r.msg);
+ if(action==='inspect'){const dialog=document.createElement('dialog');dialog.className='school-dialog';const title=document.createElement('h3');title.textContent=r.test.topic;dialog.appendChild(title);for(const [i,q] of (r.test.questions||[]).entries()){const block=document.createElement('section');block.style.margin='16px 0';const text=document.createElement('p');text.textContent=(i+1)+'. '+q.text;block.appendChild(text);for(const [j,option] of (q.options||[]).entries()){const line=document.createElement('p');line.textContent=(j===q.correct?'✓ ':'• ')+option;block.appendChild(line)}dialog.appendChild(block)}const close=document.createElement('button');close.className='btn btn-s';close.textContent='Жабу';close.onclick=()=>dialog.close();dialog.appendChild(close);dialog.addEventListener('close',()=>dialog.remove());document.body.appendChild(dialog);dialog.showModal();return}
+ await window.__bridge.refresh();if(action==='copy')alert(r.existing?'Бұл тест базаңызда бар':'Тест базаңызға қосылды');if(uid)loadOwnerTeacherTests(uid);
+}
+function chooseTeacherSubject(){return new Promise(resolve=>{const dialog=document.createElement('dialog');dialog.className='school-dialog';dialog.innerHTML='<h3>Мұғалім пәні</h3><select style="margin:16px 0">'+schoolSubjectOptions()+'</select><div class="row"><button class="btn btn-p">Сақтау</button><button class="btn btn-s">Болдырмау</button></div>';let value=null;dialog.querySelector('.btn-p').onclick=()=>{value=dialog.querySelector('select').value;dialog.close()};dialog.querySelector('.btn-s').onclick=()=>dialog.close();dialog.addEventListener('close',()=>{dialog.remove();resolve(value)},{once:true});document.body.appendChild(dialog);dialog.showModal()})}
+async function manageTeacherAccount(uid,change){
+ const data={action:'manage_teacher',uid,change};if(change==='subject'){data.subject=await chooseTeacherSubject();if(!data.subject)return}if(change==='password'){data.password=prompt('Жаңа пароль, кемінде 10 таңба:');if(!data.password)return}
+ if(!confirm('Осы мұғалім аккаунтына өзгерісті қолданасыз ба?'))return;
+ const r=await authCall('teacher_tools',data);if(!r.ok)return alert(r.msg);await window.__bridge.refresh();if(change==='delete')showSchoolPeople('teachers');else schoolRenderPerson();
+}
+let publicCatalogJob=0;
+async function showSearchableTestBank(){
+ if(!user)return;closeAppMenu();let screen=document.getElementById('s-test-catalog');
+ if(!screen){screen=document.createElement('section');screen.id='s-test-catalog';screen.className='screen';screen.innerHTML='<div class="wrap wide"><button class="btn btn-s" onclick="goHome()">← Артқа</button><h2 style="margin:20px 0">Тесттерді іздеу</h2><p class="sub">Жұлдыз берілген тесттер бірінші көрсетіледі. Тесттер сайт ішінде тапсырылады.</p><form id="catalog-search-form" class="row" style="margin:16px 0"><input id="catalog-query" placeholder="Тест атауы, авторы немесе пәні" aria-label="Тест іздеу"><select id="catalog-subject"><option value="">Барлық қолжетімді пәндер</option></select><button class="btn btn-p" type="submit">Іздеу</button></form><div id="catalog-results"></div><button id="catalog-more" class="btn btn-s" hidden>Тағы көрсету</button></div>';document.body.appendChild(screen);screen.querySelector('form').onsubmit=e=>{e.preventDefault();loadTestCatalog(0)}}
+ showScr('s-test-catalog');await loadTestCatalog(0);
+}
+async function loadTestCatalog(offset){
+ const job=++publicCatalogJob,host=document.getElementById('catalog-results'),subject=document.getElementById('catalog-subject');if(!offset)host.textContent='Жүктелуде…';
+ const r=await authCall('teacher_tools',{action:'catalog',search:document.getElementById('catalog-query').value,subject:subject.value,offset});if(job!==publicCatalogJob)return;if(!r.ok){host.textContent=r.msg;return}
+ if(subject.options.length===1)for(const [key,value] of Object.entries(r.subjects))subject.add(new Option(value,key));if(!offset)host.replaceChildren();
+ for(const t of r.items){const row=document.createElement('div');row.className='item';const info=document.createElement('div');const title=document.createElement('h4');title.textContent=(t.starred?'⭐ ':'')+t.title;const sub=document.createElement('p');sub.textContent=t.subject+' · '+t.author+' · '+t.count+' сұрақ';info.append(title,sub);const b=document.createElement('button');b.className='btn btn-p btn-sm';b.textContent='Тапсыру';b.onclick=()=>startUserTest(t.id);row.append(info,b);if(user.id==='admin'){const star=document.createElement('button');star.className='btn btn-s btn-sm';star.textContent=t.starred?'Жұлдызды алу':'⭐ Жұлдыз беру';star.onclick=async()=>{await ownerTeacherTestAction('star',t.id,!t.starred);loadTestCatalog(0)};row.appendChild(star)}host.appendChild(row)}
+ if(!r.total)host.textContent='Тест табылмады.';const more=document.getElementById('catalog-more');more.hidden=offset+r.items.length>=r.total;more.onclick=()=>loadTestCatalog(offset+r.items.length);
+}
+async function loadOwnerNotices(){
+ if(user?.id!=='admin')return;let host=document.getElementById('owner-security-notices');if(!host){host=document.createElement('section');host.id='owner-security-notices';host.className='card';document.querySelector('#s-admin>.wrap')?.prepend(host)}
+ const r=await authCall('teacher_tools',{action:'notices'});if(!r.ok||!host.isConnected)return;host.replaceChildren();const title=document.createElement('h3');title.textContent='Өтініштер және қауіпсіздік ескертулері';host.appendChild(title);if(!r.items.length){const p=document.createElement('p');p.textContent='Жаңа ескерту жоқ.';host.appendChild(p)}
+ for(const n of r.items.slice(0,50)){const p=document.createElement('p');p.style.margin='12px 0';p.textContent=new Date(n.at*1000).toLocaleString()+' · '+n.name+' · '+n.text;host.appendChild(p)}
+}
+(function(){
+ const school=showAdmin;showAdmin=function(){const r=school.apply(this,arguments);loadOwnerNotices();return r};
+ const bank=showQuestionBank;showQuestionBank=async function(){const r=await bank.apply(this,arguments);const host=document.querySelector('#s-question-bank>.wrap');if(host&&!document.getElementById('catalog-bank-entry')){const b=document.createElement('button');b.id='catalog-bank-entry';b.className='btn btn-p';b.style.margin='12px 0';b.textContent='🔎 Барлық жария тесттерді іздеу';b.onclick=showSearchableTestBank;host.querySelector('.hdr')?.after(b)}return r};
+ const open=openAppMenu;openAppMenu=function(){const nav=document.querySelector('#app-menu nav');if(nav&&!document.getElementById('catalog-menu-entry')){const b=document.createElement('button');b.id='catalog-menu-entry';b.className='app-menu-home';b.textContent='🔎 Тесттерді іздеу';b.onclick=showSearchableTestBank;nav.appendChild(b)}return open.apply(this,arguments)};
+ let ownerNoticeId='',ownerNoticeBusy=false,ownerNoticeAt=0;
+ async function notifyOwner(){if(user?.id!=='admin'||document.hidden||ownerNoticeBusy||realExamActive()||Date.now()-ownerNoticeAt<30000)return;ownerNoticeBusy=true;ownerNoticeAt=Date.now();try{const r=await authCall('teacher_tools',{action:'notices'});if(!r.ok||user?.id!=='admin'||!r.items.length)return;const latest=r.items[0];if(latest.id===ownerNoticeId)return;ownerNoticeId=latest.id;let banner=document.getElementById('owner-notice-banner');if(!banner){banner=document.createElement('button');banner.id='owner-notice-banner';banner.className='btn btn-w';banner.style.cssText='position:fixed;top:12px;right:12px;z-index:9998;max-width:min(85vw,420px);white-space:normal;text-align:left;box-shadow:0 4px 18px #0003';document.body.appendChild(banner)}banner.textContent='🔔 '+latest.name+': '+latest.text;banner.onclick=()=>{banner.remove();showAdmin()}}finally{ownerNoticeBusy=false}}
+ const syncOwner=syncRefresh;syncRefresh=function(){const r=syncOwner.apply(this,arguments);if(user?.id==='admin')notifyOwner();else document.getElementById('owner-notice-banner')?.remove();return r};
+ setInterval(notifyOwner,30000);notifyOwner();
+ let last=0;function report(event){if(!user||user.id==='admin'||Date.now()-last<3000||!document.querySelector('.screen.active')?.id.match(/test|bank|school|review/))return;last=Date.now();authCall('content_security_event',{event,eventId:'evt_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,14)}).catch(()=>{})}
+ document.addEventListener('copy',()=>report('copy'),true);window.addEventListener('beforeprint',()=>report('print'));
 })();
 </script>
 """
