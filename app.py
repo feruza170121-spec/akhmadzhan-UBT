@@ -1132,6 +1132,66 @@ def _econ_request(state,sess,d):
             item['active']=d.get('active') is True;_put(state,'ubt_server_access_shop',_jdump(items));_commit(state);return {'ok':True}
         return {'ok':False,'msg':'Әрекет табылмады'}
 
+def _automatic_rankings(state,sess,d):
+    if not sess or sess.get('parentView') or sess.get('codeGuest'):return {'ok':False,'msg':'Бұл бөлім оқушыларға арналған'}
+    with state['lock']:
+        people=[p for p in _profiles(state).values() if p.get('accessApproved') is True and p.get('role')!='teacher' and p.get('id') not in (_admin_uids(state)|{'admin'})]
+        mode=d.get('mode','all');stats=_jload(state['db'].get('ubt_user_stats','{}'),dict,{})
+        season={}
+        if mode in ('w','m'):
+            now=datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5)))
+            tag='w_'+now.strftime('%G-W%V') if mode=='w' else 'm_'+now.strftime('%Y-%m')
+            season=_jload(state['db'].get('ubt_season_'+tag,'{}'),dict,{})
+        def points(uid):
+            n=season.get(uid,0) if mode in ('w','m') else stats.get(uid,{}).get('points',0)
+            return max(0,n) if type(n) in (int,float) and math.isfinite(n) else 0
+        rows=[{'id':p['id'],'name':p.get('name','Оқушы'),'points':points(p['id'])} for p in people]
+        rows.sort(key=lambda r:(-r['points'],r['name'].casefold(),r['id']))
+        last=None;place=0
+        for i,r in enumerate(rows):
+            if last!=r['points']:place=i+1
+            r['rank']=place;last=r['points']
+        index={r['id']:r for r in rows};classes=[]
+        for c in _jload(state['db'].get('ubt_classes','[]'),list,[]):
+            roster=list(dict.fromkeys(uid for uid in c.get('students',[]) if uid in index))
+            if not roster:continue
+            total=sum(index[uid]['points'] for uid in roster)
+            classes.append({'id':c['id'],'name':c.get('name','Сынып'),'students':len(roster),'points':total/len(roster),'totalPoints':total,'mine':sess['uid'] in roster})
+        classes.sort(key=lambda r:(-r['points'],r['name'].casefold(),r['id']))
+        last=None;place=0
+        for i,r in enumerate(classes):
+            if last!=r['points']:place=i+1
+            r['rank']=place;last=r['points'];r['average']=round(r['points'],2)
+        top=rows[0]['points'] if rows else 0;best=classes[0]['points'] if classes else 0
+        mine=index.get(sess['uid']);myclasses=[r for r in classes if r['mine']]
+        offset=d.get('offset',0);offset=offset if type(offset)is int and 0<=offset<=100000 else 0
+        return {'ok':True,'people':rows[offset:offset+50],'total':len(rows),'me':mine,'classes':classes[offset:offset+50],'classesTotal':len(classes),'myClasses':myclasses,'bestPeople':[r for r in rows if r['points']==top and top>0][:50],'bestClasses':[r for r in classes if r['points']==best and best>0][:50],'method':'Сынып ұпайы — сыныптағы барлық оқушының жинаған ұпайының орташа мәні. Ұпайы жоқ оқушы 0 болып есептеледі. Ұпай тең болса, орын ортақ. Үздіктер автоматты анықталады.'}
+
+def _parent_access(state,sess,typ,d,sid):
+    with state['lock']:
+        if typ=='parent_login':
+            name=_clean_name(d.get('login'));password=str(d.get('password') or '')[:200]
+            key='parent:'+str(name).casefold();client='parent_client:'+sid
+            if _locked(state,key) or _locked(state,client):return {'ok':False,'msg':_MSG_LOCK}
+            child=_profiles(state).get(str(name).casefold()) if name else None
+            ph=child.get('ph') if isinstance(child,dict) else None
+            valid=_check_pw(password,ph) if isinstance(ph,dict) else False
+            if not ph and child and isinstance(child.get('password'),str):valid=hmac.compare_digest(password.encode(),child['password'].encode())
+            if not valid or not child or child.get('accessApproved') is not True or child.get('role')=='teacher' or child.get('id') in (_admin_uids(state)|{'admin'}) or _blocked(state,child.get('id')):
+                _fail(state,key,client);return {'ok':False,'msg':'Баланың логині немесе паролі қате, не аккаунт қолжетімсіз'}
+            state['fails'].pop(key,None);token=secrets.token_urlsafe(32);now=time.time();uid='parent_'+child['id']
+            state['sessions'][token]={'uid':uid,'name':'Ата-ана · '+child['name'],'admin':False,'parentView':True,'childUid':child['id'],'childStamp':_remember_stamp(state,child['id']),'exp':now+8*3600,'lastSeen':now}
+            return {'ok':True,'token':token,'user':{'id':uid,'name':'Ата-ана · '+child['name'],'role':'parent','isParent':True,'isAdmin':False}}
+        if not sess or not sess.get('parentView'):return {'ok':False,'msg':'Ата-ана кабинетіне кіріңіз'}
+        uid=sess['childUid'];child=_person_profile(state,uid)
+        if typ=='parent_dashboard':
+            rows=_path_events(state,uid);rows=sorted(rows,key=lambda r:r.get('at',0),reverse=True)
+            clean=[{k:r.get(k) for k in ('at','score','max','questions','answered','topic','subjects')} for r in rows]
+            offset=d.get('offset',0);offset=offset if type(offset)is int and 0<=offset<=100000 else 0
+            percentages=[100*r['score']/r['max'] for r in rows if isinstance(r.get('max'),(int,float)) and r['max']>0 and isinstance(r.get('score'),(int,float))]
+            return {'ok':True,'child':{'name':child.get('name')},'items':clean[offset:offset+50],'total':len(clean),'average':round(sum(percentages)/len(percentages),1) if percentages else None}
+        return {'ok':False,'msg':'Ата-ана тек баласының нәтижелерін бақылай алады'}
+
 def _device_account(state,device,uid=None):
     if not device:return False
     key='ubt_server_access_device_accounts';binding=hashlib.sha256(str(device).encode()).hexdigest()
@@ -1251,6 +1311,11 @@ def _session(state, tok):
         state["sessions"].pop(tok, None)
         return None
     s["lastSeen"]=time.time()
+    if s.get('parentView'):
+        child=_person_profile(state,s.get('childUid'))
+        if not child or child.get('accessApproved') is not True or child.get('role')=='teacher' or s.get('childUid') in (_admin_uids(state)|{'admin'}) or _blocked(state,s.get('childUid')) or not hmac.compare_digest(str(s.get('childStamp')),_remember_stamp(state,s.get('childUid'))):
+            state['sessions'].pop(tok,None);return None
+        return s
     if s.get("codeGuest"):
         if not _access_live(state,s.get("codeId")):
             state["sessions"].pop(tok,None)
@@ -3074,11 +3139,15 @@ def _handle_req(state, sid, rq):
     typ = rq.get("type")
     d = rq.get("data") if isinstance(rq.get("data"), dict) else {}
     sess = _session(state, rq.get("tok"))
+    if sess and sess.get('parentView'):
+        if typ=='logout':state['sessions'].pop(rq.get('tok'),None);return {'ok':True}
+        if typ=='resume':return {'ok':True,'token':rq.get('tok'),'user':{'id':sess['uid'],'name':sess['name'],'role':'parent','isParent':True,'isAdmin':False}}
+        if typ!='parent_dashboard':return {'ok':False,'msg':'Ата-ана кабинетінде тест тапсыру және басқа аккаунттарды қарау мүмкін емес'}
     if typ in ("prize_board","owner_award_cash","owner_award_class"):
         return _prize_request(state,sess,typ,d)
     if not isinstance(typ, str) or len(_jdump(d)) > 8_000_000:
         return {"ok": False, "msg": "Сұраныс тым үлкен немесе жарамсыз"}
-    if sess and sess.get("juniorAdmin") and typ not in ('login', 'resume', 'login_remembered', 'logout', 'remember_account', 'forget_account', 'start_exam', 'start_personal_practice', 'growth', 'path', 'economy', 'subscription_status', 'subscription_trial', 'subscription_request', 'premium_dashboard', 'daily_five', 'exam_question', 'send_personal_test', 'review_open', 'review_close', 'resume_exam', 'finish_exam', 'cancel_exam', 'start_assigned_test', 'start_public_mix', 'exam_check_answer', 'explain_review', 'approved_test_list', 'notifications_list', 'save_public_test', 'remove_saved_public_test', 'public_profile', 'content_security_event', 'visit_record', 'support_open', 'support_read', 'support_send', 'messenger_contacts', 'messenger_thread', 'messenger_send', 'profile_animation_get', 'chat_claim', 'book_open', 'export_test_json', 'teacher_tools'):
+    if sess and sess.get("juniorAdmin") and typ not in ('login', 'resume', 'login_remembered', 'logout', 'remember_account', 'forget_account', 'start_exam', 'start_personal_practice', 'growth', 'path', 'economy', 'subscription_status', 'subscription_trial', 'subscription_request', 'premium_dashboard', 'daily_five', 'exam_question', 'send_personal_test', 'review_open', 'review_close', 'resume_exam', 'finish_exam', 'cancel_exam', 'start_assigned_test', 'start_public_mix', 'exam_check_answer', 'explain_review', 'approved_test_list', 'notifications_list', 'save_public_test', 'remove_saved_public_test', 'public_profile', 'content_security_event', 'visit_record', 'support_open', 'support_read', 'support_send', 'messenger_contacts', 'messenger_thread', 'messenger_send', 'profile_animation_get', 'chat_claim', 'book_open', 'export_test_json', 'teacher_tools', 'automatic_rankings'):
         return {"ok":False,"msg":"Кіші админде басқару құқығы жоқ. Тест тапсыру және өз тестін жүктеу ғана қолжетімді."}
     with state["lock"]:
         now = time.time()
@@ -3111,6 +3180,8 @@ def _handle_req(state, sid, rq):
             stats=_jload(state["db"].get("ubt_user_stats","{}"),dict,{}).get(uid,{})
             avatar=_jload(state["db"].get("ubt_avatar_"+uid,"null"),str,"")
             return {"ok":True,"profile":{"id":uid,"name":profile.get("name") or "Қолданушы","role":profile.get("role") or "student","avatar":avatar if isinstance(avatar,str) and re.fullmatch(r"data:image/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+",avatar) else "","points":stats.get("points",0),"stars":stats.get("stars",0),"title":stats.get("title", ""),"verified":stats.get("verified") is True}}
+    if typ in ('parent_login','parent_dashboard'):return _parent_access(state,sess,typ,d,sid)
+    if typ=='automatic_rankings':return _automatic_rankings(state,sess,d)
     if typ=='teacher_tools':return _teacher_tools(state,sess,d)
     if typ=="content_security_event":
         return _security_request(state,sess,d)
@@ -4356,6 +4427,7 @@ def _merge_schemes(state, sess, v):
     return res if len(res) < _SCH_MAX_ALL else None
 
 def _authorize(state, sess, k, v, chat_token=""):
+    if sess and sess.get("parentView"):return None
     if sess and sess.get("juniorAdmin"):
         personal = any(k == prefix+sess["uid"] for prefix in _USER_PREFIXES)
         if not personal and k not in ("ubt_tests",):
@@ -4644,6 +4716,7 @@ def _snapshot(tok="", claim=""):
         _catalog_sync(state)
         db = dict(state["db"])
         sess = _session(state, tok)
+        if sess and sess.get('parentView'):return {}
         profs = _profiles(state) if sess else {}
         teacher = bool(sess and not sess["admin"] and _is_teacher(state, sess["uid"]))
     for k in list(db):
@@ -12819,7 +12892,7 @@ async function schoolDeleteClass(cid,button){
 
 (function(){
  let device='';try{device=localStorage.getItem('login_device_key')||'';if(!device){device=(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2));localStorage.setItem('login_device_key',device)}}catch(e){device=Math.random().toString(36).slice(2)}
- const originalAuth=authCall;authCall=function(type,data){if(['login','register','remember_account','login_remembered','forget_account'].includes(type))data={...(data||{}),device};return originalAuth.call(this,type,data)};
+ const originalAuth=authCall;authCall=function(type,data){if(['login','register','parent_login','remember_account','login_remembered','forget_account'].includes(type))data={...(data||{}),device};return originalAuth.call(this,type,data)};
  const owner=()=>!!user&&user.id==='admin'&&user.isAdmin;
  const previousMaintenance=syncMaintenance;
  syncMaintenance=function(){const overlay=document.getElementById('maintenance-overlay'),closed=!!siteControls().maintenance;const login=document.querySelector('.screen.active')?.id==='s-login';if(overlay){overlay.innerHTML='<div class="card" style="max-width:440px;padding:30px"><h2>Сайт уақытша жабық</h2><p class="sub" style="margin:16px 0">Қазір тек басты админ кіре алады. Кейінірек қайта көріңіз.</p><button class="btn btn-p" type="button" onclick="doLogout()">Басты админ ретінде кіру</button></div>';overlay.style.display=closed&&!owner()&&!login?'flex':'none'}let note=document.getElementById('closed-login-note');if(!note){note=document.createElement('div');note.id='closed-login-note';note.textContent='Сайт уақытша жабық. Қазір тек басты админ кіре алады.';document.querySelector('#s-login>.wrap').prepend(note)}note.hidden=!closed;const toggle=document.getElementById('registered-maintenance');if(toggle){toggle.disabled=!owner();toggle.closest('label').hidden=!owner()}};
@@ -13655,6 +13728,48 @@ async function loadOwnerNotices(){
  setInterval(notifyOwner,30000);notifyOwner();
  let last=0;function report(event){if(!user||user.id==='admin'||Date.now()-last<3000||!document.querySelector('.screen.active')?.id.match(/test|bank|school|review/))return;last=Date.now();authCall('content_security_event',{event,eventId:'evt_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,14)}).catch(()=>{})}
  document.addEventListener('copy',()=>report('copy'),true);window.addEventListener('beforeprint',()=>report('print'));
+})();
+</script>
+"""
+
+html_code += r"""
+<style>
+body.parent-view #ubt-icon-rail,body.parent-view #app-menu,body.parent-view #app-menu-backdrop,body.parent-view .profile-bar,body.parent-view #owner-notice-banner{display:none!important}
+body.parent-view{padding-left:0!important}body.parent-view .screen:not(#s-parent-view){display:none!important}
+.parent-results{display:grid;gap:12px;margin-top:18px}.parent-result{padding:16px;border:1px solid var(--b);border-radius:14px}.parent-result p{margin:7px 0;color:var(--m)}
+.auto-rank-summary{padding:18px;border:1px solid var(--b);border-radius:16px;margin:14px 0;background:var(--c)}
+</style>
+<script>
+function showParentLogin(){
+ showLoginBox();let dialog=document.getElementById('parent-login-dialog');if(!dialog){dialog=document.createElement('dialog');dialog.id='parent-login-dialog';dialog.className='school-dialog';dialog.innerHTML='<form id="parent-login-form"><h2>Ата-ана кабинеті</h2><p class="sub" style="margin:12px 0">Баланың логині мен паролі тексеріледі. Бұл кабинет тек сол баланың нәтижелерін көрсетеді. Пароль сақталмайды.</p><label>Баланың логині<input id="parent-child-login" autocomplete="off" required maxlength="40"></label><label>Баланың паролі<input id="parent-child-pass" type="password" autocomplete="off" required maxlength="200"></label><p id="parent-login-status" role="status" class="sub"></p><div class="row" style="margin-top:16px"><button class="btn btn-p" type="submit">Нәтижелерді бақылау</button><button class="btn btn-s" type="button" id="parent-login-cancel">Болдырмау</button></div></form>';document.body.appendChild(dialog);dialog.querySelector('#parent-login-cancel').onclick=()=>dialog.close();dialog.querySelector('form').onsubmit=async e=>{e.preventDefault();const button=dialog.querySelector('[type=submit]');button.disabled=true;const password=dialog.querySelector('#parent-child-pass');try{const r=await authCall('parent_login',{login:dialog.querySelector('#parent-child-login').value.trim(),password:password.value});password.value='';if(!r.ok){dialog.querySelector('#parent-login-status').textContent=r.msg;return}dialog.close();window.__token=r.token;user=r.user;LS.set('ubt_current',null);document.body.classList.add('parent-view');closeAppMenu();await showParentResults(0)}catch(error){dialog.querySelector('#parent-login-status').textContent='Байланысты тексеріп, қайта көріңіз.'}finally{password.value='';button.disabled=false}};dialog.addEventListener('close',()=>{dialog.querySelector('#parent-child-pass').value=''})}
+ dialog.querySelector('#parent-login-status').textContent='';dialog.showModal();
+}
+let parentResultJob=0;
+async function showParentResults(offset=0){
+ if(!user?.isParent)return;let screen=document.getElementById('s-parent-view');if(!screen){screen=document.createElement('section');screen.id='s-parent-view';screen.className='screen';screen.innerHTML='<div class="wrap wide"><div class="row"><h2>Балаңыздың нәтижелері</h2><button class="btn btn-s" id="parent-refresh">Жаңарту</button><button class="btn btn-s" id="parent-exit">Шығу</button></div><div id="parent-summary" class="auto-rank-summary"></div><div id="parent-results" class="parent-results"></div><button id="parent-more" class="btn btn-s" hidden>Тағы көрсету</button></div>';document.body.appendChild(screen);screen.querySelector('#parent-refresh').onclick=()=>showParentResults(0);screen.querySelector('#parent-exit').onclick=async()=>{try{await authCall('logout',{})}finally{window.__token='';user=null;document.body.classList.remove('parent-view');showLoginBox();showScr('s-login')}}}
+ showScr('s-parent-view');const job=++parentResultJob,r=await authCall('parent_dashboard',{offset});if(job!==parentResultJob||!user?.isParent)return;const list=screen.querySelector('#parent-results');if(!r.ok){list.textContent=r.msg;return}
+ screen.querySelector('#parent-summary').textContent=r.child.name+' · '+r.total+' тест · Орташа нәтиже: '+(r.average===null?'—':r.average+'%');if(!offset)list.replaceChildren();
+ for(const result of r.items){const row=document.createElement('section');row.className='parent-result';const title=document.createElement('h3');title.textContent=result.topic||'Тест';const date=document.createElement('p');date.textContent=result.at?new Date(result.at*1000).toLocaleString():'Күні белгісіз';const score=document.createElement('strong');score.textContent='Нәтиже: '+result.score+' / '+result.max+(result.max>0?' · '+Math.round(result.score/result.max*100)+'%':'');const answers=document.createElement('p');answers.textContent='Жауап берілген сұрақ: '+(result.answered||0)+' / '+(result.questions||0);row.append(title,date,score,answers);list.appendChild(row)}
+ if(!r.total)list.textContent='Балаңыз әлі тест тапсырмаған.';const more=screen.querySelector('#parent-more');more.hidden=offset+r.items.length>=r.total;more.onclick=()=>showParentResults(offset+r.items.length);
+}
+let autoRankingJob=0;
+showRanking=async function(mode,offset=0){
+ if(user?.isParent)return;rankMode=mode||rankMode||'all';const current=rankMode,job=++autoRankingJob;
+ document.getElementById('rank-tabs').innerHTML=[['all','Қатысушылар'],['cls','Сыныптар'],['w','Апталық'],['m','Айлық']].map(([key,title])=>`<button class="btn ${rankMode===key?'btn-p':'btn-s'} btn-sm" onclick="showRanking('${key}')">${title}</button>`).join('');
+ document.getElementById('rank-sub').textContent='Ұпай бойынша автоматты рейтинг';document.getElementById('rank-podium').replaceChildren();document.getElementById('rank-hall').replaceChildren();const list=document.getElementById('rank-list');if(!offset)list.textContent='Жүктелуде…';showScr('s-ranking');
+ const r=await authCall('automatic_rankings',{mode:current,offset});if(job!==autoRankingJob)return;if(!r.ok){list.textContent=r.msg;return}if(!offset)list.replaceChildren();
+ if(!offset){const summary=document.createElement('section');summary.className='auto-rank-summary';const me=document.createElement('h3');me.textContent=r.me?r.total+' адамның ішінен '+r.me.rank+'-орындасыз · '+r.me.points+' ұпай':'Рейтингке '+r.total+' оқушы қатысады';summary.appendChild(me);for(const c of r.myClasses){const p=document.createElement('p');p.textContent=c.name+': '+r.classesTotal+' сыныптың ішінен '+c.rank+'-орын · орташа '+c.average+' ұпай';summary.appendChild(p)}const best=document.createElement('p');best.textContent='🏆 Үздік қатысушы: '+(r.bestPeople.map(p=>p.name).join(', ')||'Әзірге анықталған жоқ')+' · Үздік сынып: '+(r.bestClasses.map(c=>c.name).join(', ')||'Әзірге анықталған жоқ');summary.appendChild(best);const method=document.createElement('p');method.className='sub';method.textContent=r.method;summary.appendChild(method);list.appendChild(summary)}
+ list.querySelector('.auto-rank-more')?.remove();const rows=current==='cls'?r.classes:r.people;
+ for(const row of rows){const item=document.createElement('div');item.className='item'+((current==='cls'?row.mine:row.id===user.id)?' me':'');const text=document.createElement('strong');text.textContent=row.rank+'. '+row.name;const value=document.createElement('span');value.textContent=current==='cls'?'Орташа '+row.average+' ұпай · '+row.students+' оқушы':row.points+' ұпай';item.append(text,value);list.appendChild(item)}
+ if(!rows.length&&!offset){const empty=document.createElement('p');empty.textContent='Әзірге қатысушылар жоқ.';list.appendChild(empty)}const total=current==='cls'?r.classesTotal:r.total;if(offset+rows.length<total){const more=document.createElement('button');more.className='btn btn-s auto-rank-more';more.textContent='Тағы көрсету';more.onclick=()=>showRanking(current,offset+rows.length);list.appendChild(more)}
+};
+showClassRanking=function(){return showRanking('cls')};
+(function(){
+ const login=document.getElementById('login-box');if(login&&!document.getElementById('parent-login-entry')){const b=document.createElement('button');b.id='parent-login-entry';b.className='btn btn-s';b.style.cssText='width:100%;margin:12px 0';b.textContent='Ата-ана ретінде кіру';b.onclick=showParentLogin;login.appendChild(b)}
+ const show=showScr;showScr=function(id){if(user?.isParent&&id!=='s-parent-view'&&id!=='s-login')return;return show.apply(this,arguments)};
+ let rankingAt=0,rankingBusy=false,rankingCache=null;
+ async function rankSummary(){if(!user||user.isParent||realExamActive()||rankingBusy)return;const host=document.getElementById('ubd-home');if(!host||!document.getElementById('s-home')?.classList.contains('active'))return;rankingBusy=true;try{const cached=rankingCache&&rankingCache.me?.id===user.id&&Date.now()-rankingAt<30000;const r=rankingCache&&rankingCache.me?.id===user.id&&Date.now()-rankingAt<30000?rankingCache:await authCall('automatic_rankings',{mode:'all'});if(!r.ok||!r.me||user?.id!==r.me.id)return;rankingCache=r;if(!cached)rankingAt=Date.now();let box=document.getElementById('my-automatic-rank');if(!box){box=document.createElement('button');box.id='my-automatic-rank';box.className='btn btn-s';box.style.cssText='margin:12px 0;width:100%;min-height:48px';box.onclick=()=>showRanking();const profile=host.querySelector('.ubd-profile-card');if(profile)profile.after(box);else host.prepend(box)}box.textContent='🏆 '+r.total+' адамның ішінен '+r.me.rank+'-орындасыз'}finally{rankingBusy=false}}
+ const sync=syncRefresh;syncRefresh=function(){const r=sync.apply(this,arguments);rankSummary();return r};const display=showScr;showScr=function(id){const r=display.apply(this,arguments);if(id==='s-home')setTimeout(rankSummary,50);return r};
 })();
 </script>
 """
