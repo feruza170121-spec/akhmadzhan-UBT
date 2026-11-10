@@ -6143,7 +6143,7 @@ body:not(.primary-owner) input,body:not(.primary-owner) textarea,body:not(.prima
 <div id="s-file" class="screen">
   <div class="wrap">
     <div class="hdr"><h2>📂 Файлдан тест жүктеу</h2><p class="sub">JSON, TXT, DOCX, CSV немесе TSV файлын жүктеп, өз тестіңіз ретінде сақтаңыз.</p></div>
-    <div class="card"><div class="fg" style="margin-bottom:0"><label>Пән (міндетті емес)</label><select id="f-question-subject"></select></div></div>
+    <div class="card"><div class="fg" style="margin-bottom:0"><label>Пән *</label><select id="f-question-subject"></select></div></div>
     <div id="f-bulk-host"></div>
     <div id="f-topic-list"></div>
     <div class="row" style="margin-top:16px"><button class="btn btn-s" onclick="goHome()">Артқа</button></div>
@@ -7935,7 +7935,7 @@ function practicePoints(q){return Number.isFinite(q.points)&&q.points>0&&q.point
 function bankSubjectMode(){return (document.querySelector('input[name="bs-mode"]:checked')||{}).value||'manual'}
 function startQuickSubject(subject){
   const sel=document.getElementById('bs-subject');
-  if(!sel.options.length)sel.innerHTML=Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value).map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('');
+  if(!Array.from(sel.options).some(o=>o.value))sel.innerHTML=Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value).map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('');
   const available=ubtQuestionBank(false);
   [...new Set(available.map(q=>q.subject))].filter(Boolean).forEach(key=>{if(!Array.from(sel.options).some(o=>o.value===key))sel.add(new Option(subjName(key),key))});
   if(subject&&Array.from(sel.options).some(o=>o.value===subject))sel.value=subject;
@@ -9913,6 +9913,28 @@ function takeBulkQs(ctx){
   const base='q_'+Date.now().toString(36);
   return{qs:r.questions.map((q,i)=>({id:base+'_'+i,text:q.text,options:q.options.slice(),correct:q.correct,points:1})),meta:r.meta||{}};
 }
+function subjectCatalogEntries(){return Object.entries({"history": "Қазақстан тарихы", "reading": "Оқу сауаттылығы", "mathlit": "Математикалық сауаттылық", "math": "Математика", "physics": "Физика", "chemistry": "Химия", "biology": "Биология", "geography": "География", "informatics": "Информатика", "english": "Ағылшын тілі", "kazakh": "Қазақ тілі", "worldhistory": "Дүниежүзі тарихы", "law": "Құқық негіздері", "russian": "Орыс тілі", "kazakh_literature": "Қазақ әдебиеті", "russian_literature": "Орыс әдебиеті", "german": "Неміс тілі", "french": "Француз тілі"})}
+function ensureSubjectSelect(id,profileOnly=false){
+ const select=document.getElementById(id);if(!select)return;
+ const previous=select.value;const seen=new Set(Array.from(select.options).map(o=>o.value));
+ for(const [key,label] of subjectCatalogEntries()){
+  if(profileOnly&&['history','reading','mathlit'].includes(key))continue;
+  if(!seen.has(key)){select.add(new Option(label,key));seen.add(key)}
+ }
+ select.disabled=false;
+ const pupil=!!user&&typeof learnerAccount==='function'&&learnerAccount();
+ const allowed=pupil&&typeof allowedClientSubjects==='function'?allowedClientSubjects():null;
+ for(const option of Array.from(select.options)){
+  if(!subjectCatalogEntries().some(([key])=>key===option.value))continue;
+  option.hidden=!!allowed&&!allowed.includes(option.value);option.disabled=option.hidden;
+ }
+ if(Array.from(select.options).some(o=>o.value===previous&&!o.disabled))select.value=previous;
+ else select.value=Array.from(select.options).find(o=>o.value&&!o.disabled)?.value||'';
+}
+function ensureAllSubjectSelects(){
+ for(const id of ['c-subject','f-question-subject','aq-subject','bs-subject','u-bank-subject','library-subject','library-filter','sch-f-subj','les-f-subj','le-subj','fl-subject','fl-filter','bank-import-subject','owner-publication-subject','owner-json-subject','catalog-subject','school-new-person-subject'])ensureSubjectSelect(id);
+ for(const id of ['u-p1','u-p2','real-full-p1','real-full-p2'])ensureSubjectSelect(id,true);
+}
 function matchSubject(sub){
   const el=document.getElementById('c-subject');
   if(!sub||!el)return null;
@@ -9922,8 +9944,8 @@ function matchSubject(sub){
 function showFileTest(){
   if(!canUploadTestFiles()){alert('Тест файлын жүктеуге рұқсат жоқ');return}
   if(!fileTopicTests.length)clearBulk('f');
+  ensureSubjectSelect('f-question-subject');
   const sel=document.getElementById('f-question-subject');
-  if(!sel.options.length)sel.innerHTML=Array.from(document.querySelectorAll('#c-subject option')).map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('');
   if(!fileTopicTests.length)sel.value='';showScr('s-file');renderFileTopics();
 }
 function startFromFile(){
@@ -11455,7 +11477,7 @@ function isTeacherPending(){
 function showTeacherReg(){
   ['login-box','register-box','forgot-box','contact-box'].forEach(i=>document.getElementById(i).style.display='none');
   const sel=document.getElementById('tr-subject');
-  if(!sel.options.length)sel.innerHTML='<option value="">Пәнді таңдаңыз</option>'+Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value).map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('');
+  if(!Array.from(sel.options).some(o=>o.value))sel.innerHTML='<option value="">Пәнді таңдаңыз</option>'+Array.from(document.querySelectorAll('#c-subject option')).filter(o=>o.value).map(o=>`<option value="${esc(o.value)}">${esc(o.textContent)}</option>`).join('');
   document.getElementById('teacher-reg-box').style.display='block';
 }
 function doRegisterTeacher(){return guarded(async()=>{
@@ -13153,6 +13175,7 @@ function requirePairDialog(){
  dialog.addEventListener('cancel',e=>e.preventDefault());dialog.querySelector('#choose-pair-save').onclick=async function(){const pair=readPair('choose-profile-pair');if(!pair){dialog.querySelector('#choose-pair-status').textContent='Пән жұбын таңдаңыз';return}this.disabled=true;const r=await authCall('choose_profile_pair',{pair});this.disabled=false;if(!r.ok){dialog.querySelector('#choose-pair-status').textContent=r.msg;return}user.profilePair=r.pair;dialog.close();dialog.remove();choosingPair=false;LS.set('ubt_current',user);securitySubjectUI();window.__bridge.refresh().catch(()=>{})};document.body.appendChild(dialog);dialog.showModal();
 }
 function securitySubjectUI(){
+ ensureAllSubjectSelects();
  document.querySelectorAll('#s-res [onclick^="reviewAns"]').forEach(b=>{b.hidden=!st.verifiedExam?.reviewAvailable});
  document.querySelectorAll('[onclick^="openHistoryAttempt("]').forEach(b=>{const i=Number((b.getAttribute('onclick').match(/openHistoryAttempt\((\d+)\)/)||[])[1]);const row=LS.get('ubt_hist_'+user?.id,[])[i];if(row)b.hidden=!row.reviewAvailable});
  const c=document.getElementById('c-subject');if(c)for(const [key,label] of Object.entries(PROFILE_SUBJECTS)){if(!Array.from(c.options).some(o=>o.value===key))c.add(new Option(label,key))}
