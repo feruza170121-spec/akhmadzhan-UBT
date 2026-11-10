@@ -12127,14 +12127,7 @@ function ubtQuickOpen(id){
 }
 
 
-function renderCleanHome(){
- const host=document.getElementById('ubd-home');if(!host||!user)return;
- const role=user.isAdmin?'Басты админ':user.isJuniorAdmin?'Кіші админ':isTeacherUser()?'Мұғалім':'Оқушы';
- host.innerHTML=`<header class="hdr"><h1>Сәлем, ${esc(user.name)}!</h1><p class="sub">${role}</p></header><div class="simple-home"><button class="card simple-home-card" onclick="showMyProfile()"><span aria-hidden="true">👤</span><h2>Профиль</h2><p>Жеке мәліметтер мен нәтижелер</p></button><button class="card simple-home-card" onclick="showEconomy('shop')"><span aria-hidden="true">🛍</span><h2>Магазин</h2><p>Тесттер мен монетаға алынатын заттар</p></button></div>`;
-}
-
 function ubdRender(home){
-  if(home){renderCleanHome();return}
   const host=document.getElementById(home?'ubd-home':'ubd-detail');if(!host||!user)return;
   const all=ubdRows(),subject=home?'':document.getElementById('ubd-subject').value,period=home?'all':document.getElementById('ubd-period').value;
   const signature=[user.id,ubdCache.histRaw,ubdCache.progRaw,subject,period,ubdPage,Math.floor(Date.now()/60000)];
@@ -13383,17 +13376,9 @@ const uiSubscriptionUI=subscriptionUI;subscriptionUI=function(){uiSubscriptionUI
 
 html_code += r"""
 <style>
-.simple-home{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;max-width:760px;margin:30px auto}
-.simple-home-card{display:flex;flex-direction:column;align-items:flex-start;gap:12px;text-align:left;width:100%;color:var(--t);cursor:pointer;min-height:190px;border:1px solid var(--b)}
-.simple-home-card>span{font-size:36px}.simple-home-card h2{font-size:22px}.simple-home-card p{color:var(--m);font-size:14px}
-#s-home>.wrap>*:not(#ubd-home){display:none!important}
-#ubt-icon-rail .ubt-rail-link{display:none!important}
-#ubt-icon-rail [data-rail-group=home],#ubt-icon-rail [data-rail-group=profile],#ubt-icon-rail [data-rail-group=shop],#ubt-icon-rail [data-rail-group=more]{display:flex!important}
-#ubt-icon-rail .ubt-rail-footer,#ubt-icon-rail .ubt-rail-rule,#ubt-rail-preview{display:none!important}
 #app-menu [data-duplicate-link]{display:none!important}
 .json-permission{display:flex;align-items:center;gap:8px;font-size:14px}.json-permission input{width:auto;min-height:24px}
 @media(max-width:700px){
- .simple-home{gap:12px;margin:20px 0}.simple-home-card{padding:20px 14px!important;min-height:175px}.simple-home-card h2{font-size:19px}.simple-home-card p{font-size:12px;line-height:1.6}
  body.ubt-has-rail #ubt-icon-rail .ubt-rail-link{flex:1;max-width:none;min-height:52px;width:auto}
  input,select,textarea{font-size:16px!important;max-width:100%;box-sizing:border-box}
  button,.btn,[role=button]{touch-action:manipulation}.btn{min-height:44px}
@@ -13402,7 +13387,6 @@ html_code += r"""
  #app-menu .mode,#app-menu .app-menu-home{min-height:46px!important}
  body{overflow-x:hidden}img,video,canvas{max-width:100%}
 }
-@media(max-width:340px){.simple-home{grid-template-columns:1fr}.simple-home-card{min-height:140px}}
 </style>
 <script>
 (function(){
