@@ -189,12 +189,256 @@ def _store():
              "flushing": False, "flush_again": False, "syncing": False,
              "sessions": {}, "chat_claims": {}, "fails": {}, "reg": {}, "exams": {}, "rev": 1}
     _remote_sync(state)
+    for _key, _raw in list(state["db"].items()):
+        _clean = _purge_filter_raw(state, _key, _raw)
+        if _clean != _raw: _put(state, _key, _clean)
     _restore_exams(state)
     _seed_real_bank_demo(state)
     _migrate_start(state)
     return state
 
+# Permanent question removal. The guard stores hashes only, never question content.
+_PURGE_POLICY = 'ubt_server_exam_purge_policy'
+_PURGE_REMOVE = object()
+
+def _purge_digest(value):
+    return hashlib.sha256(' '.join(str(value or '').split()).casefold().encode('utf-8')).hexdigest()
+
+def _purge_policy(state):
+    raw = state['db'].get(_PURGE_POLICY, '{}')
+    cached = state.get('purge_policy_cache')
+    if cached and cached[0] == raw:
+        return cached[1]
+    policy = _jload(raw, dict, {})
+    policy['_texts'] = set(policy.get('texts', []))
+    policy['_ids'] = set(policy.get('ids', []))
+    state['purge_policy_cache'] = (raw, policy)
+    return policy
+
+def _purge_scrub(value, policy):
+    texts, ids = policy.get('_texts', set()), policy.get('_ids', set())
+    if not texts and not ids:
+        return value
+    if isinstance(value, str):
+        if _purge_digest(value) in texts or _purge_digest(value) in ids:
+            return _PURGE_REMOVE
+        # Legacy hidden lists contain JSON-encoded [author, subject, question].
+        if value[:1] in ('[', '{'):
+            try:
+                decoded = json.loads(value)
+            except (ValueError, TypeError):
+                return value
+            cleaned = _purge_scrub(decoded, policy)
+            if cleaned is _PURGE_REMOVE:
+                return _PURGE_REMOVE
+            if cleaned != decoded:
+                return _jdump(cleaned)
+        if '|' in value and _purge_digest(value.split('|', 1)[-1]) in texts:
+            return _PURGE_REMOVE
+        return value
+    if isinstance(value, list):
+        # Old catalogue identities must disappear as a whole, without keeping text.
+        if len(value) == 3 and all(isinstance(x, str) for x in value) and _purge_digest(value[-1]) in texts:
+            return _PURGE_REMOVE
+        out = []
+        for item in value:
+            cleaned = _purge_scrub(item, policy)
+            if cleaned is not _PURGE_REMOVE:
+                out.append(cleaned)
+        return out
+    if isinstance(value, dict):
+        if any(isinstance(value.get(field), str) and _purge_digest(value[field]) in texts for field in ('text','question','front','questionText')):
+            return _PURGE_REMOVE
+        if isinstance(value.get('id'), str) and _purge_digest(value['id']) in ids:
+            return _PURGE_REMOVE
+        out = {}
+        for key, item in value.items():
+            if _purge_digest(key) in ids or _purge_digest(key) in texts:
+                continue
+            cleaned = _purge_scrub(item, policy)
+            if cleaned is not _PURGE_REMOVE:
+                out[key] = cleaned
+        if isinstance(value.get('questions'), list) and out.get('questions') != value['questions']:
+            if not out.get('questions'):
+                return _PURGE_REMOVE
+            # Positional answer/review caches cannot be reused after question removal.
+            for key in ('answers', 'review', 'checked', 'flags', 'correctAnswers', 'questionOrder'):
+                out.pop(key, None)
+        return out
+    return value
+
+def _purge_filter_raw(state, key, raw):
+    if key in (_PURGE_POLICY, 'ubt_purge_generation'):
+        return raw
+    policy = _purge_policy(state)
+    if not policy.get('_texts') and not policy.get('_ids'):
+        return raw
+    try:
+        value = json.loads(raw)
+    except (ValueError, TypeError):
+        return raw
+    clean = _purge_scrub(value, policy)
+    if clean is _PURGE_REMOVE:
+        return '{}' if isinstance(value, dict) else '[]'
+    return raw if clean == value else _jdump(clean)
+
+def _purge_builtins(state):
+    policy = _purge_policy(state)
+    if policy.get('disableBuiltins'):
+        return []
+    clean = _purge_scrub(globals().get('_BUILTIN_BANK_TESTS', []), policy)
+    return clean if isinstance(clean, list) else []
+
+def _purge_inventory(state):
+    groups = {}
+    def visit(value, subject='', source=''):
+        if isinstance(value, dict):
+            subject = str(value.get('subject') or subject or 'other')
+            source = str(value.get('source') or value.get('origin') or value.get('topic') or source or 'База')
+            text = value.get('text', value.get('question'))
+            if isinstance(text, str) and isinstance(value.get('options'), list):
+                token = _purge_digest(text)
+                row = groups.setdefault(token, {'id':'purge:'+token, 'text':text, 'subject':subject, 'source':source})
+                if value.get('id'):
+                    row.setdefault('_ids', set()).add(str(value['id']))
+            for item in value.values():
+                if isinstance(item, (list, dict)):
+                    visit(item, subject, source)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item, subject, source)
+        elif isinstance(value, str) and value[:1] in ('[', '{'):
+            try: visit(json.loads(value), subject, source)
+            except (ValueError, TypeError): pass
+    for key, raw in state['db'].items():
+        if key == _PURGE_POLICY:
+            continue
+        try:
+            value = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        visit(value)
+    visit(_purge_builtins(state), '', 'Дайын тесттер')
+    return groups
+
+def _purge_request(state, sess, data):
+    if not sess or not sess.get('admin') or sess.get('uid') != 'admin' or sess.get('codeGuest') or sess.get('juniorAdmin'):
+        return {'ok':False, 'msg':'Тек басты админге қолжетімді'}
+    action = data.get('action')
+    if action == 'list':
+        with state['lock']:
+            rows = list(_purge_inventory(state).values())
+            subject, query = str(data.get('subject') or ''), str(data.get('query') or '').casefold()
+            filtered = [r for r in rows if (not subject or r['subject'] == subject) and (not query or query in r['text'].casefold() or query in r['source'].casefold())]
+            offset = data.get('offset', 0)
+            if type(offset) is not int or offset < 0:
+                offset = 0
+            counts = {}
+            for row in rows:
+                counts[row['subject']] = counts.get(row['subject'], 0) + 1
+            return {'ok':True, 'items':[{k:v for k,v in r.items() if k!='_ids'} for r in filtered[offset:offset+50]],
+                    'total':len(filtered), 'allTotal':len(rows), 'counts':counts, 'generation':_purge_policy(state).get('generation', '')}
+    if action not in ('selected', 'all') or data.get('confirm') != 'DELETE':
+        return {'ok':False, 'msg':'Жоюды растаңыз'}
+    # A failed remote write must never be reported as a completed server deletion.
+    conf = state.get('sb')
+    if not conf:
+        return {'ok':False, 'msg':'Сервер бапталмаған. SUPABASE_URL және серверлік SUPABASE_KEY қажет.'}
+    with state['flush_lock']:
+        with state['lock']:
+            try:
+                remote = _sb_load_all(conf)
+            except Exception:
+                return {'ok':False, 'msg':'Серверге қосылу мүмкін болмады. Ештеңе жойылған жоқ.'}
+            # Include remote-only rows and local writes waiting to be synchronized.
+            for key, raw in remote.items():
+                if key not in state['dirty'] and key not in state['deleted']:
+                    state['db'][key] = raw
+            inventory = _purge_inventory(state)
+            targets = set(inventory) if action == 'all' else set()
+            if action == 'selected':
+                wanted = data.get('ids')
+                if not isinstance(wanted, list) or not 1 <= len(wanted) <= 20000 or any(not isinstance(x, str) for x in wanted):
+                    return {'ok':False, 'msg':'Сұрақтарды таңдаңыз'}
+                wanted = set(wanted)
+                for token, row in inventory.items():
+                    local = 'local:' + json.dumps(['', row['subject'], row['text'].strip().lower()], ensure_ascii=False, separators=(',', ':'))
+                    if row['id'] in wanted or row.get('_ids', set()) & wanted or local in wanted:
+                        targets.add(token)
+                # Legacy catalogue IDs and author-scoped local IDs.
+                for q in _jload(state['db'].get('ubt_question_catalog','[]'),list,[]):
+                    if not isinstance(q,dict):continue
+                    local = 'local:' + json.dumps([q.get('authorId') or '',q.get('subject') or 'other',str(q.get('text') or '').strip().lower()],ensure_ascii=False,separators=(',',':'))
+                    if q.get('id') in wanted or local in wanted:targets.add(_purge_digest(q.get('text')))
+                if not targets:
+                    return {'ok':False, 'msg':'Сұрақ табылмады. Тізімді жаңартыңыз.'}
+            previous = _purge_policy(state)
+            text_hashes = set(previous.get('texts', [])) | targets
+            id_hashes = set(previous.get('ids', []))
+            for token in targets:
+                for ident in inventory.get(token, {}).get('_ids', set()):
+                    id_hashes.add(_purge_digest(ident))
+            policy = {'texts':sorted(text_hashes), 'ids':sorted(id_hashes),
+                      'generation':secrets.token_hex(16), 'disableBuiltins':bool(action == 'all' or previous.get('disableBuiltins'))}
+            _put(state, _PURGE_POLICY, _jdump(policy))
+            _put(state, 'ubt_purge_generation', _jdump(policy['generation']))
+            parsed = _purge_policy(state)
+            for key, raw in list(state['db'].items()):
+                if key in (_PURGE_POLICY, 'ubt_purge_generation'):
+                    continue
+                clean = _purge_filter_raw(state, key, raw)
+                if clean != raw:
+                    # Active exam/review payloads have positional answers: cancel them.
+                    if key.startswith('ubt_server_exam_') and key != 'ubt_server_exam_real_bank':
+                        _drop(state, key)
+                    else:
+                        _put(state, key, clean)
+            for token, exam in list(state.get('exams', {}).items()):
+                clean = _purge_scrub(exam, parsed)
+                if clean is _PURGE_REMOVE or clean != exam:
+                    state['exams'].pop(token, None)
+                    _drop(state, 'ubt_server_exam_' + token)
+            if action == 'all':
+                # No hidden/archive question records remain after a full purge.
+                for key in list(state['db']):
+                    if key.startswith(('ubt_qbank_', 'ubt_ubt140_selection_', 'ubt_subject_selection_')) or key in ('ubt_question_catalog_deleted','ubt_question_catalog_files','ubt_hidden_source_tests'):
+                        _drop(state, key)
+                _put(state, 'ubt_tests', '[]')
+                _put(state, 'ubt_question_catalog', '[]')
+                _put(state, 'ubt_server_exam_real_bank', '{}')
+                _put(state, 'ubt_server_exam_real_demo_v1', 'true')
+            for key in list(state):
+                if 'cache' in key or key in ('approved_shared_ids','subject_migration_source'):
+                    state.pop(key, None)
+            state['rev'] = state.get('rev', 1) + 1
+            changed = [(k,state['db'][k]) for k in state['dirty'] if k in state['db']]
+            removed = list(state['deleted'])
+            try:
+                # Persist suppression first, so interrupted deletes cannot resurrect data.
+                _sb_upsert(conf, [(_PURGE_POLICY, state['db'][_PURGE_POLICY])])
+                _sb_upsert(conf, changed)
+                for key in removed:
+                    _sb_delete(conf, key)
+                actual = _sb_load_all(conf)
+                if any(actual.get(k) != v for k,v in changed) or any(k in actual for k in removed):
+                    raise RuntimeError('Deletion verification failed')
+                if any(_purge_filter_raw(state,k,v) != v for k,v in actual.items() if k != _PURGE_POLICY):
+                    raise RuntimeError('Question copy still exists')
+                _db_save(state['db'])
+            except Exception:
+                state['err'] = 'Тұрақты жою толық расталмады'
+                return {'ok':False, 'msg':'Жою толық аяқталғаны расталмады. Байланысты тексеріп, «Барлығын жою» әрекетін қайта орындаңыз.', 'pending':True}
+            for key, raw in changed:
+                if state['db'].get(key) == raw:
+                    state['dirty'].discard(key)
+            state['deleted'].difference_update(removed)
+            state['ok'], state['err'] = True, ''
+            return {'ok':True, 'count':len(targets), 'verified':True, 'generation':policy['generation']}
+
+
+
 def _put(state, k, v):
+    v = _purge_filter_raw(state, k, v)
     if k in state["db"] and state["db"][k] == v and k not in state["deleted"]:
         return
     state["db"][k] = v
@@ -216,6 +460,10 @@ def _commit(state):
     _flush_async(state)
 
 def _remote_sync(state):
+    with state["flush_lock"]:
+        return _remote_sync_locked(state)
+
+def _remote_sync_locked(state):
     """Supabase-тен барлық деректі алады (ол басым). Тек жергілікті бар кілттерді Supabase-ке жібереді."""
     conf = state.get("sb")
     state["retry_t"] = time.time()
@@ -232,7 +480,8 @@ def _remote_sync(state):
         for k, v in remote.items():
             if k not in state["dirty"] and k not in state["deleted"]:
                 if db.get(k) != v:
-                    db[k] = v
+                    db[k] = _purge_filter_raw(state, k, v)
+                    if db[k] != v: state["dirty"].add(k)
                     updated = True
         for k in list(db.keys()):
             if k not in remote:
@@ -1515,7 +1764,7 @@ def _start_exam(state, sess, d):
                 title, subject_name = "ҰБТ базасы · пәндік тест", _SUBJECT_NAMES[subject]
             test = {"id":tid,"authorId":"system","topic":title,"subjectName":subject_name,"questions":selected,"timerMin":minutes}
         if not test:
-            test=next((t for t in globals().get('_BUILTIN_BANK_TESTS',[]) if t.get('id')==tid),None)
+            test=next((t for t in _purge_builtins(state) if t.get('id')==tid),None)
         if not test:
             test=_recover_received_test(state,sess,tid)
         if not test:
@@ -2049,7 +2298,7 @@ def _catalog_sync(state):
             for q in _jload(raw, list, []):
                 if isinstance(q, dict) and str(q.get("subject")) + "|" + str(q.get("text", "")).strip().lower() not in hidden:
                     add(q, uid, q.get("subject", "other"), q.get("origin") or "Базаға қосылған")
-    for t in _jload(state["db"].get("ubt_tests", "[]"), list, []) + _BUILTIN_BANK_TESTS:
+    for t in _jload(state["db"].get("ubt_tests", "[]"), list, []) + _purge_builtins(state):
         if not isinstance(t, dict) or t.get("assignmentId") or t.get("receivedFromAdmin"):
             continue
         for q in t.get("questions", []):
@@ -2449,25 +2698,19 @@ def _real_source_tests(state):
 def _real_manage_request(state,sess,d):
     if not sess or sess.get("uid")!="admin" or not sess.get("admin") or sess.get("codeGuest"):
         return {"ok":False,"msg":"Тек басты админ басқара алады"}
+    if d.get("action") == "delete_all":
+        return _purge_request(state, sess, {"action":"all", "confirm":"DELETE"})
+    if d.get("action") == "delete":
+        with state["lock"]:
+            source = next((t for t in _real_source_tests(state) if t["id"]==d.get("sourceId")),None)
+            if not source: return {"ok":False,"msg":"Тест табылмады"}
+            ids = ["purge:"+_purge_digest(q.get("text")) for q in source.get("questions",[]) if isinstance(q,dict)]
+        return _purge_request(state, sess, {"action":"selected", "confirm":"DELETE", "ids":ids})
     with state["lock"]:
         action = d.get("action")
         if action == "list":
             named = {t["id"] for t in _real_named_tests(state)}
             return {"ok":True,"items":[{"id":t["id"],"title":str(t.get("topic") or "Тест"),"subject":t.get("subject"),"count":len(t.get("questions",[])),"added":"test_"+hashlib.sha256(t["id"].encode()).hexdigest()[:24] in named} for t in _real_source_tests(state)]}
-        if action == "delete_all":
-            sources = _real_source_tests(state)
-            hidden = set(_jload(state["db"].get("ubt_hidden_source_tests","[]"),list,[]))
-            hidden.update(t["id"] for t in sources)
-            hidden.update(t["id"] for t in globals().get("_BUILTIN_BANK_TESTS",[]) if isinstance(t,dict) and t.get("id"))
-            _put(state,"ubt_hidden_source_tests",_jdump(sorted(hidden)))
-            _put(state,"ubt_tests","[]")
-            catalog = _jload(state["db"].get("ubt_question_catalog","[]"),list,[])
-            for q in catalog:
-                if isinstance(q,dict): q["deleted"] = True
-            _put(state,"ubt_question_catalog",_jdump(catalog))
-            _put(state,"ubt_server_exam_real_bank","{}")
-            _commit(state)
-            return {"ok":True,"deleted":len(sources)}
         source = next((t for t in _real_source_tests(state) if t["id"]==d.get("sourceId")),None)
         ident = "test_"+hashlib.sha256(str(d.get("sourceId") or "").encode()).hexdigest()[:24]
         if action not in ("add","remove","delete"):return {"ok":False,"msg":"Әрекет қате"}
@@ -2490,20 +2733,6 @@ def _real_manage_request(state,sess,d):
             target = str(d.get("namedId") or ident)
             for key in banks:
                 banks[key]=[q for q in banks[key] if (q.get("sourceTestId") or "legacy_"+hashlib.sha256((key+"|"+str(q.get("source") or "ҰБТ жинағы")).encode()).hexdigest()[:24])!=target]
-        if action == "delete":
-            rows = _jload(state["db"].get("ubt_tests","[]"),list,[])
-            _put(state,"ubt_tests",_jdump([t for t in rows if t.get("id")!=source["id"]]))
-            hidden = _jload(state["db"].get("ubt_hidden_source_tests","[]"),list,[])
-            if source["id"] not in hidden:hidden.append(source["id"])
-            _put(state,"ubt_hidden_source_tests",_jdump(hidden))
-            texts = {q.get("text") for q in source.get("questions",[])}
-            other_texts = {q.get("text") for t in _available_send_tests(state) if t["id"]!=source["id"] and (t.get("authorId") or "admin")== (source.get("authorId") or "admin") and t.get("subject")==source.get("subject") for q in t.get("questions",[])}
-            texts -= other_texts
-            author = source.get("authorId") or "admin"
-            catalog = _jload(state["db"].get("ubt_question_catalog","[]"),list,[])
-            for q in catalog:
-                if q.get("authorId")==author and q.get("subject")==source.get("subject") and q.get("text") in texts:q["deleted"]=True
-            _put(state,"ubt_question_catalog",_jdump(catalog))
         _put(state,"ubt_server_exam_real_bank",_jdump(banks));_commit(state)
         return {"ok":True}
 
@@ -2926,7 +3155,7 @@ def _owner_security(state,sess,typ,d):
 
 def _available_send_tests(state):
     result={}
-    for test in _jload(state["db"].get("ubt_tests","[]"),list,[]) + globals().get("_BUILTIN_BANK_TESTS",[]):
+    for test in _jload(state["db"].get("ubt_tests","[]"),list,[]) + _purge_builtins(state):
         if isinstance(test,dict) and test.get("id") and test.get("questions"):
             result.setdefault(test["id"],test)
     hidden=set(_jload(state["db"].get("ubt_hidden_source_tests","[]"),list,[]))
@@ -3242,6 +3471,9 @@ def _handle_req(state, sid, rq):
     if typ=="exam_check_answer":
         return _check_exam_answer(state,sess,d)
 
+    if typ=="admin_question_purge":
+        return _purge_request(state,sess,d)
+
     if typ=="real_bank_manage":
         return _real_manage_request(state,sess,d)
 
@@ -3280,34 +3512,7 @@ def _handle_req(state, sid, rq):
         return _school_request(state, sess, typ, d)
 
     if typ in ("bank_delete_question", "bank_delete_file"):
-        if not sess or not sess["admin"] or sess["uid"]!="admin":
-            return {"ok": False, "msg": "Сұрақтарды тек басты админ өшіре алады"}
-        with state["lock"]:
-            catalog = _catalog_sync(state)
-            ids = d.get("ids") if typ == "bank_delete_file" else [d.get("id")]
-            if not isinstance(ids, list) or not 0 < len(ids) <= 20000 or any(not isinstance(i, str) for i in ids):
-                return {"ok": False, "msg": "Сұрақтар тізімі жарамсыз"}
-            wanted = set(ids)
-            targets = []
-            for q in catalog:
-                identity = "local:" + json.dumps([q.get("authorId") or "", q.get("subject") or "other", str(q.get("text") or "").strip().lower()], ensure_ascii=False, separators=(",", ":"))
-                if not q.get("deleted") and (q.get("id") in wanted or identity in wanted):
-                    targets.append(q)
-            if not targets:
-                return {"ok": False, "msg": "Сұрақ табылмады. Базаны жаңартыңыз"}
-            if typ == "bank_delete_file":
-                file_key = d.get("fileKey")
-                if not isinstance(file_key, str) or len(file_key) > 2000:
-                    return {"ok": False, "msg": "Файл жарамсыз"}
-                hidden = _jload(state["db"].get("ubt_question_catalog_files", "[]"), list, [])
-                if file_key not in hidden:
-                    hidden.append(file_key)
-                _put(state, "ubt_question_catalog_files", _jdump(hidden))
-            for q in targets:
-                q["deleted"] = True
-            _put(state, "ubt_question_catalog", _jdump(catalog))
-            _commit(state)
-        return {"ok": True, "count": len(targets)}
+        return _purge_request(state, sess, {"action":"selected", "confirm":"DELETE", "ids":d.get("ids") if typ=="bank_delete_file" else [d.get("id")]})
 
     controls = _jload(state["db"].get("ubt_site_controls", "{}"), dict, {})
     if typ == "admin_set_site_controls":
@@ -4023,6 +4228,11 @@ def _handle_req(state, sid, rq):
 def _process_reqs(state, sid, reqs):
     if not isinstance(reqs, list):
         return False
+    generation = _purge_policy(state).get("generation", "")
+    if st.session_state.get("_ubt_purge_seen") != generation:
+        st.session_state["_ubt_purge_seen"] = generation
+        for _key in ("_ubt_authres", "_ubt_snapshot", "_ubt_sent"):
+            st.session_state.pop(_key, None)
     done = st.session_state.setdefault("_ubt_reqdone", {})
     out = st.session_state.setdefault("_ubt_authres", {}).setdefault(sid, {})
     last = done.get(sid, 0)
@@ -4439,7 +4649,7 @@ def _authorize(state, sess, k, v, chat_token=""):
         return None
     if _closed(state) and not (sess and sess["uid"]=="admin"):
         return None
-    if k in _SERVER_ONLY or k.startswith(_SERVER_PREFIXES):
+    if k == "ubt_purge_generation" or k in _SERVER_ONLY or k.startswith(_SERVER_PREFIXES):
         return None
     if k == "ubt_chat":
         return _merge_chat(state, sess, v, chat_token)
@@ -4626,7 +4836,9 @@ def _apply_ops(res):
                 nv = _authorize(state, _session(state, op.get("tok")), k, v, op.get("chat_tok"))
                 if nv is None:
                     print("[ubt-sec] write rejected:", k[:60])
-                elif db.get(k) != nv:
+                else:
+                    nv = _purge_filter_raw(state, k, nv)
+                if nv is not None and db.get(k) != nv:
                     if res.get("mobile") is True and k.startswith(("ubt_hist_", "ubt_prog_")):
                         old_items = _jload(db.get(k, "[]"), list, [])
                         new_items = _jload(nv, list, [])
@@ -13462,6 +13674,88 @@ const uiOriginalAlert=window.alert.bind(window),uiOriginalConfirm=window.confirm
 new MutationObserver(uiQueueTranslate).observe(document.body,{childList:true,subtree:true,characterData:true});
 const uiSubscriptionUI=subscriptionUI;subscriptionUI=function(){uiSubscriptionUI();uiLanguageControl()};uiLanguageControl();
 
+// Only the primary administrator can open or use the permanent-delete panel.
+(function(){
+ let rows=[],selected=new Set(),offset=0,total=0,busy=false,job=0,queryTimer;
+ const owner=()=>!!(user?.isAdmin&&user.id==='admin'&&!user.isJuniorAdmin);
+ function panel(){
+  const old=document.getElementById('permanent-question-panel');
+  if(!owner()){old?.remove();return null}
+  if(old)return old;
+  const host=document.querySelector('#s-admin>.wrap');if(!host)return null;
+  const box=document.createElement('section');box.id='permanent-question-panel';box.className='card';box.style.cssText='margin:16px 0;border:1px solid #dc2626;padding:20px';
+  box.innerHTML='<h3>🗑 Сұрақтарды серверден біржола жою</h3><p class="sub" style="margin:10px 0">Таңдалған сұрақтар барлық тесттен, ҰБТ базасынан, сақталған сұрақтардан және қолданба архивтерінен алынады. Қалпына келтіру мүмкін емес. Сол сұрақтар бар ашық тесттер тоқтатылады.</p><div class="row"><select id="purge-subject"><option value="">Барлық пәндер</option></select><input id="purge-query" style="min-width:0;max-width:100%;flex:1" placeholder="Сұрақты немесе файл атауын іздеу" aria-label="Сұрақ іздеу"><button class="btn btn-s btn-sm" id="purge-refresh">Жаңарту</button></div><p id="purge-count" class="sub" style="margin:12px 0" role="status"></p><div class="row" style="justify-content:flex-start"><button class="btn btn-s btn-sm" id="purge-select-page">Осы беттегіні белгілеу</button><button class="btn btn-s btn-sm" id="purge-clear">Белгілерді алу</button></div><div id="purge-list" style="max-height:480px;overflow:auto;margin:12px 0"></div><div class="row"><button class="btn btn-s btn-sm" id="purge-prev">←</button><span id="purge-page"></span><button class="btn btn-s btn-sm" id="purge-next">→</button></div><div class="row" style="justify-content:flex-start;margin-top:15px"><button class="btn btn-d" id="purge-selected">Таңдалғандарын біржола жою</button><button class="btn btn-d" id="purge-all">БАРЛЫҚ СҰРАҚТЫ БІРЖОЛА ЖОЮ</button></div><p class="sub" id="purge-result" role="status" style="margin-top:12px"></p>';
+  host.querySelector('.hdr').after(box);
+  box.querySelector('#purge-refresh').onclick=()=>load(true);
+  box.querySelector('#purge-subject').onchange=()=>load(true);
+  box.querySelector('#purge-query').oninput=()=>{clearTimeout(queryTimer);queryTimer=setTimeout(()=>load(true),350)};
+  box.querySelector('#purge-select-page').onclick=()=>{rows.forEach(r=>selected.add(r.id));render()};
+  box.querySelector('#purge-clear').onclick=()=>{selected.clear();render()};
+  box.querySelector('#purge-prev').onclick=()=>{offset=Math.max(0,offset-50);load()};
+  box.querySelector('#purge-next').onclick=()=>{offset+=50;load()};
+  box.querySelector('#purge-selected').onclick=()=>erase('selected');
+  box.querySelector('#purge-all').onclick=()=>erase('all');
+  return box;
+ }
+ function render(){
+  const box=panel();if(!box)return;
+  const list=box.querySelector('#purge-list');list.replaceChildren();
+  for(const row of rows){
+   const label=document.createElement('label');label.style.cssText='display:flex;align-items:flex-start;gap:10px;padding:12px 0;border-bottom:1px solid #ddd;cursor:pointer';
+   const check=document.createElement('input');check.type='checkbox';check.checked=selected.has(row.id);check.disabled=busy;check.style.cssText='width:20px;height:20px;flex:none';check.onchange=()=>{if(check.checked)selected.add(row.id);else selected.delete(row.id);status()};
+   const span=document.createElement('span');span.style.cssText='min-width:0;overflow-wrap:anywhere';const title=document.createElement('strong');title.textContent=row.text;const sub=document.createElement('small');sub.style.display='block';sub.textContent=subjName(row.subject)+' · '+row.source;span.append(title,sub);label.append(check,span);list.appendChild(label);
+  }
+  if(!rows.length)list.textContent='Сұрақ табылмады.';
+  box.querySelector('#purge-page').textContent=(Math.floor(offset/50)+1)+' / '+Math.max(1,Math.ceil(total/50));
+  box.querySelector('#purge-prev').disabled=busy||offset===0;box.querySelector('#purge-next').disabled=busy||offset+50>=total;
+  status();
+ }
+ function status(){const box=panel();if(!box)return;box.querySelector('#purge-count').textContent='Сүзгі бойынша: '+total+' · Белгіленгені: '+selected.size;box.querySelector('#purge-selected').disabled=busy||!selected.size;box.querySelector('#purge-all').disabled=busy}
+ async function load(reset=false){
+  if(!owner()||busy)return;const box=panel();if(!box)return;if(reset)offset=0;const task=++job;
+  box.querySelector('#purge-result').textContent='Тізім жүктелуде…';
+  try{const r=await authCall('admin_question_purge',{action:'list',subject:box.querySelector('#purge-subject').value,query:box.querySelector('#purge-query').value,offset});if(task!==job||!owner())return;if(!r.ok)throw Error(r.msg);
+   rows=r.items;total=r.total;const select=box.querySelector('#purge-subject'),value=select.value;select.replaceChildren(new Option('Барлық пәндер',''));Object.keys(r.counts).sort().forEach(s=>select.add(new Option(subjName(s)+' · '+r.counts[s],s)));select.value=value;
+   box.querySelector('#purge-result').textContent='Барлық базада '+r.allTotal+' бірегей сұрақ бар.';render();
+  }catch(e){box.querySelector('#purge-result').textContent=e.message||'Серверге қосылу қатесі'}
+ }
+ async function erase(action,ids){
+  if(!owner()||busy)return;const box=panel();ids=ids||Array.from(selected);if(action==='selected'&&!ids.length)return;
+  const text=action==='all'?'Барлық пәндегі БАРЛЫҚ сұрақ серверден және тесттердің ішінен біржола жойылады.':'Таңдалған '+ids.length+' сұрақ және олардың барлық көшірмелері серверден біржола жойылады.';
+  if(prompt(text+' Қалпына келтіру мүмкін емес. Растау үшін ЖОЮ деп жазыңыз:')!=='ЖОЮ')return;
+  busy=true;status();box.querySelectorAll('input,select,button').forEach(el=>el.disabled=true);box.querySelector('#purge-result').textContent='Серверден жойылып, нәтиже тексерілуде…';
+  try{const r=await authCall('admin_question_purge',{action,ids,confirm:'DELETE'});if(!r.ok)throw Error(r.msg);await clearClientCopies(r.generation);selected.clear();rows=[];offset=0;busy=false;await window.__bridge.refresh();await load(true);box.querySelector('#purge-result').textContent=r.count+' бірегей сұрақ серверден біржола жойылды. Тексеру аяқталды.'}
+  catch(e){box.querySelector('#purge-result').textContent=e.message||'Жою расталмады. Қайта тексеріңіз.'}
+  finally{busy=false;box.querySelectorAll('input,select,button').forEach(el=>el.disabled=false);render()}
+ }
+ async function clearClientCopies(generation){
+  // Remove cached payloads directly: never enqueue old data as new writes.
+  for(const key of Object.keys(localStorage))if(/^ubt_(tests$|question_catalog|qbank_|hist_|mistakes_|bm_|prog_|ubt140_selection_|subject_selection_|flashcards_|att_|tres_|real_bank_|assigned_tests$|teacher_deliveries$|draft)/.test(key))localStorage.removeItem(key);
+  if(typeof ubtQuestionBank==='function')ubtQuestionBank.cache=null;
+  if(typeof draftQs!=='undefined')draftQs=[];
+  if(typeof aqQs!=='undefined')aqQs=[];
+  if(typeof realSourceRows!=='undefined'){realSourceRows=[];realSourceLoaded=0}
+  if(typeof questionBankFolders!=='undefined')questionBankFolders=[];
+  if(typeof st!=='undefined'&&st?.questions?.length){st=baseState();if(document.getElementById('s-test')?.classList.contains('active'))goHome()}
+  sessionStorage.setItem('ubt-purge-seen',generation||'');
+  window.__bridge?.clearLocal?.();
+ }
+ // Retire old deletion controls outside the admin panel.
+ window.deleteUbtBankQuestion=async function(){if(owner()){showAdmin();await load(true);panel()?.scrollIntoView({behavior:'smooth'})}};
+ window.deleteQuestionBankFile=window.deleteUbtBankQuestion;
+ window.deleteAllRealSourceTests=window.deleteUbtBankQuestion;
+ const oldManageReal=manageRealSource;manageRealSource=function(action){if(action==='delete')return window.deleteUbtBankQuestion();return oldManageReal.apply(this,arguments)};
+ const oldAdmin=showAdmin;showAdmin=function(){const r=oldAdmin.apply(this,arguments);if(owner())load(true);return r};
+ const oldShow=showScr;showScr=function(id){const r=oldShow.apply(this,arguments);if(!owner())document.getElementById('permanent-question-panel')?.remove();return r};
+ let clearing=false;
+ const oldSync=syncRefresh;syncRefresh=function(){
+  const generation=LS.get('ubt_purge_generation','');const seen=sessionStorage.getItem('ubt-purge-seen')||'';
+  if(generation&&generation!==seen&&!clearing){clearing=true;clearClientCopies(generation).then(()=>window.__bridge.refresh()).finally(()=>{clearing=false});return}
+  return oldSync.apply(this,arguments);
+ };
+ const style=document.createElement('style');style.textContent='[onclick^="deleteUbtBankQuestion("],[onclick^="deleteQuestionBankFile("],[onclick^="deleteAllRealSourceTests("],[onclick^="manageRealSource(\'delete\'"]{display:none!important}';document.head.appendChild(style);
+})();
+
 </script>
 <script>
 (function(){
@@ -13521,7 +13815,7 @@ const uiSubscriptionUI=subscriptionUI;subscriptionUI=function(){uiSubscriptionUI
     return new Promise(function(resolve){
       var id=++reqN,done=false;
       reqs.push({id:id,type:type,data:data||{},tok:window.__token||''});
-      var t=setTimeout(function(){if(done)return;done=true;delete waiters[id];reqs=reqs.filter(function(r){return r.id!==id});resolve({ok:false,msg:'Серверге қосылу мүмкін болмады. Қайталап көріңіз.'})},25000);
+      var t=setTimeout(function(){if(done)return;done=true;delete waiters[id];reqs=reqs.filter(function(r){return r.id!==id});resolve({ok:false,msg:'Серверге қосылу мүмкін болмады. Қайталап көріңіз.'})},type==='admin_question_purge'||type==='real_bank_manage'?180000:25000);
       waiters[id]=function(res){if(done)return;done=true;clearTimeout(t);reqs=reqs.filter(function(r){return r.id!==id});resolve(res)};
       send();
     });
