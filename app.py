@@ -1,3 +1,102 @@
+Загрузка более ранних сообщений…
+Приложение пользователя
+
+matsau_bir_zhinak.zip
+Файл
+
+matematika_bir_zhinak.zip
+Файл
+кателер болса тауып дурысташы сосын фотодагы форматта ыстеп бер файл ретынде
+📦 Дайын файлды жүктеу
+
+5 701 есеп A–D форматында, суреттері мен формулалары сақталған. Табылған қателер түзетілді; барлық жауап жеке шешіліп тексерілген жоқ.
+
+ZIP-ті ашып, *_AD.json файлдарын сайтқа кезекпен жүкте. Алдымен ішіндегі екі сұрақтық үлгіні тексер.
+
+1 718 күмәнді үзінді TEKSERU файлдарында бөлек сақталды — оларды әзірге базаға жүктеме.
+
+5 мб дан аспасын болек болек кылып бер
+Дайын. Әр файл 5 МБ-тан кіші. JSON файлдарын сайтқа кезекпен жүктей бер.
+
+Математика — 4 726 есеп:
+
+1
+ · 
+2
+ · 
+3
+ · 
+4
+ · 
+5
+
+6
+ · 
+7
+ · 
+8
+ · 
+9
+ · 
+10
+
+11
+ · 
+12
+ · 
+13
+ · 
+14
+ · 
+15
+
+16
+ · 
+17
+ · 
+18
+ · 
+19
+
+Математикалық сауаттылық — 975 есеп:
+
+1
+ · 
+2
+ · 
+3
+ · 
+4
+ · 
+5
+ · 
+6
+
+
+matematika_01_AD.json
+Код
+
+matematika_02_AD.json
+Код
+
+matematika_03_AD.json
+Код
+Показать еще 22
+
+Вставленный текст(1).txt
+Документ
+осы жерден адамдар тура берсын тыркелетын жердегылерды алып таста ата ана и мугалым соларды алып таста админ быреуак болсын и калгындары проста окушы болсын тек адамин адам коса алсын и  окушылар жсонда тесттер жукти алсын магазин рейтинг ана мнау жойып таста артык заттарды жой
+Вы остановили выполнение через 9 с
+Кодты қарап, тіркелудегі ата-ана мен мұғалім рөлдерін алып тастаймын. Бір админ қалады, қалғандары оқушы болады; адамды тек админ қосады. Оқушыларға JSON тест жүктеуді қалдырып, магазин мен рейтингті алып тастаймын.
+
+
+
+
+Вы исчерпали лимит использования Codex и режима «Работа»
+Вы достигли лимита использования рабочей области. Попробуйте снова спустя 15:13.
+
+
+
 
 import base64
 import binascii
@@ -5078,143 +5177,6 @@ html,body,.stApp,[data-testid="stAppViewContainer"],[data-testid="stMain"],secti
 [data-testid="stVerticalBlock"]{gap:0!important}
 iframe{border:none!important;display:block!important;width:100%!important}
 </style>""", unsafe_allow_html=True)
-
-# Simplified roles and streamed JSON bank. Uses only Python's standard library.
-import sqlite3
-import contextlib
-_SIMPLE_MAX_BYTES = 1024 * 1024 * 1024
-
-@contextlib.contextmanager
-def _simple_sql():
-    path = os.environ.get('UBT_IMPORT_DB') or os.path.join(os.path.dirname(DATA_FILE), 'ubt_imports.sqlite3')
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    conn = sqlite3.connect(path, timeout=30)
-    conn.execute('PRAGMA foreign_keys=ON')
-    conn.execute('PRAGMA journal_mode=WAL')
-    conn.execute('CREATE TABLE IF NOT EXISTS uploads (id TEXT PRIMARY KEY, uid TEXT NOT NULL, name TEXT, subject TEXT, declared INTEGER, received INTEGER DEFAULT 0, count INTEGER DEFAULT 0, seq INTEGER DEFAULT 0, digest TEXT, status TEXT, created REAL)')
-    conn.execute('CREATE TABLE IF NOT EXISTS questions (job TEXT NOT NULL REFERENCES uploads(id) ON DELETE CASCADE, ordinal INTEGER, payload TEXT NOT NULL, PRIMARY KEY(job,ordinal))')
-    conn.execute('CREATE INDEX IF NOT EXISTS upload_owner ON uploads(uid,status,created)')
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
-
-def _simple_upload(state, sess, typ, d):
-    if not sess or sess.get('codeGuest') or sess.get('parentView'):
-        return {'ok':False,'msg':'Алдымен аккаунтқа кіріңіз'}
-    uid = sess['uid']
-    try:
-        with _simple_sql() as conn:
-            if typ == 'simple_import_begin':
-                size=d.get('size');subject=d.get('subject')
-                if type(size) is not int or not 1<=size<=_SIMPLE_MAX_BYTES:
-                    return {'ok':False,'msg':'JSON файлы 1 ГБ-тан аспауы керек'}
-                if subject not in _SUBJECT_NAMES or subject=='other':
-                    return {'ok':False,'msg':'Пәнді таңдаңыз'}
-                # Abandoned staged uploads are never listed as ready banks.
-                conn.execute("DELETE FROM uploads WHERE status='uploading' AND created<?",(time.time()-86400,))
-                if conn.execute("SELECT count(*) FROM uploads WHERE uid=? AND status='uploading'",(uid,)).fetchone()[0]>=3:
-                    return {'ok':False,'msg':'Аяқталмаған жүктеуді тоқтатыңыз немесе кейін қайталаңыз'}
-                job=secrets.token_urlsafe(24)
-                conn.execute('INSERT INTO uploads(id,uid,name,subject,declared,status,created) VALUES(?,?,?,?,?,?,?)',(job,uid,str(d.get('name') or 'JSON')[:200],subject,size,'uploading',time.time()))
-                return {'ok':True,'job':job}
-            if typ == 'simple_import_list':
-                rows=conn.execute("SELECT id,name,subject,count FROM uploads WHERE uid=? AND status='ready' ORDER BY created DESC LIMIT 200",(uid,)).fetchall()
-                return {'ok':True,'items':[dict(zip(('id','name','subject','count'),row)) for row in rows]}
-            job=str(d.get('job') or '')
-            row=conn.execute('SELECT uid,name,subject,declared,received,count,seq,digest,status FROM uploads WHERE id=?',(job,)).fetchone()
-            if not row or row[0]!=uid:return {'ok':False,'msg':'Файлға рұқсат жоқ'}
-            _,name,subject,declared,received,count,seq,digest,status=row
-            if typ=='simple_import_abort':
-                if status=='uploading':conn.execute('DELETE FROM uploads WHERE id=?',(job,))
-                return {'ok':True}
-            if typ=='simple_import_batch':
-                qs=d.get('questions');incoming=d.get('seq')
-                if status!='uploading' or type(incoming) is not int or not isinstance(qs,list) or not 1<=len(qs)<=100:
-                    return {'ok':False,'msg':'Жүктеу бөлігі жарамсыз'}
-                raw=_jdump(qs)
-                if len(raw.encode('utf-8'))>2_000_000:return {'ok':False,'msg':'Жүктеу бөлігі тым үлкен'}
-                sha=hashlib.sha256(raw.encode()).hexdigest()
-                if incoming==seq and sha==digest:return {'ok':True,'count':count,'seq':seq}
-                if incoming!=seq+1:return {'ok':False,'msg':'Жүктеу кезегі бұзылды'}
-                clean=[]
-                for original in qs:
-                    chosen=original.get('subject') or subject if isinstance(original,dict) else subject
-                    part=_school_test_payload([{'subject':chosen,'questions':[original]}])[0]['questions'][0]
-                    part['subject']=chosen;clean.append(part)
-                rows=[];added_bytes=0
-                for i,q in enumerate(clean):
-                    if len(q['options'])!=4:raise ValueError('Әр сұрақта дәл A–D төрт жауап болуы керек')
-                    q.setdefault('subject',subject)
-                    payload=_jdump(q);added_bytes+=len(payload.encode('utf-8'));rows.append((job,count+i,payload))
-                if received+added_bytes>_SIMPLE_MAX_BYTES+16_000_000:
-                    return {'ok':False,'msg':'Сақталатын дерек 1 ГБ шегінен асты'}
-                conn.executemany('INSERT INTO questions(job,ordinal,payload) VALUES(?,?,?)',rows)
-                conn.execute('UPDATE uploads SET count=?,received=?,seq=?,digest=? WHERE id=?',(count+len(rows),received+added_bytes,incoming,sha,job))
-                return {'ok':True,'count':count+len(rows),'seq':incoming}
-            if typ=='simple_import_finish':
-                if status!='uploading' or not count or d.get('seq')!=seq:return {'ok':False,'msg':'Жүктеу толық аяқталмады'}
-                conn.execute("UPDATE uploads SET status='ready' WHERE id=?",(job,))
-                return {'ok':True,'count':count}
-            if typ=='simple_import_practice':
-                if status!='ready':return {'ok':False,'msg':'Файл әлі жүктелуде'}
-                offset=d.get('offset',0)
-                if type(offset) is not int or offset<0:return {'ok':False,'msg':'Қате бет'}
-                rows=conn.execute('SELECT payload FROM questions WHERE job=? AND ordinal>=? ORDER BY ordinal LIMIT 30',(job,offset)).fetchall()
-                qs=[json.loads(r[0]) for r in rows]
-                if not qs:return {'ok':False,'msg':'Сұрақтар аяқталды'}
-                return _start_personal_practice(state,sess,{'questions':qs,'topic':name,'minutes':30})
-    except (ValueError,TypeError,sqlite3.Error) as error:
-        return {'ok':False,'msg':str(error)[:220]}
-    return {'ok':False,'msg':'Белгісіз әрекет'}
-
-_simple_original_store = _store
-def _store():
-    state=_simple_original_store()
-    with state['lock']:
-        if not state.get('_simple_roles_v1'):
-            profiles=_jload(state['db'].get('ubt_profiles','{}'),dict,{})
-            for profile in profiles.values():
-                if not isinstance(profile,dict):continue
-                profile.update(role='student',isAdmin=False,isJuniorAdmin=False)
-                for key in ('teacherApproved','teacherInfo','teacherSubject','isParent'):
-                    profile.pop(key,None)
-            _put(state,'ubt_profiles',_jdump(profiles))
-            _put(state,'ubt_server_access_admins','[]')
-            controls=_jload(state['db'].get('ubt_site_controls','{}'),dict,{})
-            controls['jsonAll']=True;_put(state,'ubt_site_controls',_jdump(controls))
-            for token,sess in list(state.get('sessions',{}).items()):
-                if sess.get('parentView') or sess.get('codeGuest'):state['sessions'].pop(token,None)
-                else:sess.update(admin=sess.get('uid')=='admin',juniorAdmin=False)
-            state['_simple_roles_v1']=True
-            _commit(state)
-    return state
-
-def _admin_uids(state):return set()
-def _is_teacher(state,uid):return False
-def _can_upload_tests(state,sess):return bool(sess and not sess.get('codeGuest') and not sess.get('parentView'))
-_simple_original_client_user=_client_user
-def _client_user(state,profile):
-    result=_simple_original_client_user(state,profile)
-    result.update(role='student',isAdmin=False,isOwner=False,isJuniorAdmin=False,isParent=False,teacherApproved=False)
-    return result
-
-_simple_original_handle=_handle_req
-def _handle_req(state,sid,rq):
-    if not isinstance(rq,dict):return {'ok':False,'msg':'Сұраныс жарамсыз'}
-    typ=rq.get('type');d=rq.get('data') if isinstance(rq.get('data'),dict) else {}
-    sess=_session(state,rq.get('tok'))
-    disabled={'register','parent_login','parent_dashboard','code_login','code_start','admin_code_create','admin_code_delete','admin_assign_admin','admin_create_admin','automatic_rankings','economy','prize_board','owner_award_cash','owner_award_class','teacher_apply','teacher_approve','teacher_assign_class','support_open','support_read','support_send','support_list','messenger_contacts','messenger_thread','messenger_send','messenger_send_test','chat_claim','admin_send_letter','admin_reply_letter','admin_new_letter','admin_read_replies','admin_read_letters'}
-    if typ in disabled:return {'ok':False,'msg':'Бұл бөлім өшірілген. Аккаунтты тек басты админ қосады.'}
-    if isinstance(typ,str) and typ.startswith('simple_import_'):
-        if len(_jdump(d).encode('utf-8'))>2_100_000:return {'ok':False,'msg':'Бір жіберудің көлемі тым үлкен'}
-        return _simple_upload(state,sess,typ,d)
-    if typ=='school_create_person':
-        if not sess or sess['uid']!='admin' or not sess.get('admin'):return {'ok':False,'msg':'Адамды тек басты админ қосады'}
-        rq=dict(rq,data={**d,'role':'student'})
-    return _simple_original_handle(state,sid,rq)
-
 
 html_code = r"""
 <!DOCTYPE html>
@@ -14229,8 +14191,6 @@ showClassRanking=function(){return showRanking('cls')};
 """
 
 html_code = html_code.replace("__UBT_BANK_DATA__", "[]")
-html_code += '<script>\nconst SIMPLE_WORKER="// Incremental JSON question reader: bounded batches, backpressure and strict syntax.\\nlet ack=null;\\nconst processJSON=async e=>{\\n if(e.data.ack){if(ack){ack();ack=null}return}\\n const file=e.data.file;if(!file)return;\\n let batch=[],batchBytes=0,total=0,loaded=0;\\n const send=async()=>{if(!batch.length)return;const pending=new Promise(r=>ack=r);postMessage({batch,loaded,total});batch=[];batchBytes=0;await pending};\\n const emit=async q=>{if(!q||typeof q!==\'object\'||Array.isArray(q))throw Error(\'Сұрақ объект болуы керек\');const bytes=new TextEncoder().encode(JSON.stringify(q)).length;if(bytes>1000000)throw Error(\'Бір сұрақ 1 МБ-тан үлкен\');if(batch.length&&(batchBytes+bytes>220000||batch.length>=40))await send();batch.push(q);batchBytes+=bytes;total++};\\n // A grammar stack validates JSON while retaining only one question at a time.\\n let stack=[],root=\'value\',str=false,escape=false,unicode=0,token=\'\',kind=\'\',capture=null,capDepth=0,lastKey=\'\',stringIsKey=false;\\n const fail=()=>{throw Error(\'JSON синтаксисі қате: \'+loaded+\' байт маңында\')};\\n const valueDone=()=>{if(!stack.length){root=\'end\';return}const f=stack[stack.length-1];if(f.mode!==\'value\'&&f.mode!==\'valueOrEnd\')fail();f.mode=\'commaOrEnd\'};\\n const startValue=()=>{if(!stack.length){if(root!==\'value\')fail();return}const f=stack[stack.length-1];if(f.mode!==\'value\'&&f.mode!==\'valueOrEnd\')fail()};\\n const scalar=()=>{if(!token)return;if(kind===\'number\'&&!/^-?(0|[1-9]\\\\d*)(\\\\.\\\\d+)?([eE][+-]?\\\\d+)?$/.test(token))fail();if(kind===\'literal\'&&![\'true\',\'false\',\'null\'].includes(token))fail();token=\'\';kind=\'\';valueDone()};\\n try{\\n  const reader=file.stream().getReader(),decoder=new TextDecoder(\'utf-8\',{fatal:true});let first=true;\\n  const consume=async text=>{for(let pos=0;pos<text.length;pos++){\\n   let c=text[pos];if(first){first=false;if(c===\'\\\\uFEFF\')continue}\\n   if(capture!==null){capture+=c;if(capture.length>1000000)throw Error(\'Бір сұрақ тым үлкен\')}\\n   if(str){token+=c;if(token.length>1000000)throw Error(\'JSON өрісі тым үлкен\');if(unicode){if(!/[0-9a-fA-F]/.test(c))fail();unicode--;continue}if(escape){if(c===\'u\')unicode=4;else if(!/^[\\"\\\\\\\\/bfnrt]$/.test(c))fail();escape=false;continue}if(c===\'\\\\\\\\\'){escape=true;continue}if(c===\'\\"\'){str=false;const value=JSON.parse(token);token=\'\';if(stringIsKey){const f=stack[stack.length-1];f.key=value;f.mode=\'colon\'}else valueDone()}else if(c.charCodeAt(0)<32)fail();continue}\\n   if(kind){if(/[\\\\s,\\\\]}]/.test(c)){scalar()}else{token+=c;if(token.length>256)fail();continue}}\\n   if(/\\\\s/.test(c))continue;\\n   const f=stack[stack.length-1];\\n   if(f&&f.target&&[\'value\',\'valueOrEnd\'].includes(f.mode)&&c!==\']\'&&c!==\'{\')throw Error(\'Сұрақтар массивінде тек сұрақ объектілері болуы керек\');\\n   if(c===\'\\"\'){stringIsKey=!!f&&f.type===\'object\'&&(f.mode===\'key\'||f.mode===\'keyOrEnd\');if(!stringIsKey)startValue();str=true;token=\'\\"\';continue}\\n   if(c===\':\' ){if(!f||f.mode!==\'colon\')fail();f.mode=\'value\';continue}\\n   if(c===\',\'){if(!f||f.mode!==\'commaOrEnd\')fail();f.mode=f.type===\'object\'?\'key\':\'value\';continue}\\n   if(c===\'{\'||c===\'[\'){startValue();const target=c===\'[\'&&(!stack.length||(f.type===\'object\'&&f.key===\'questions\'));if(c===\'{\'&&f&&f.target&&capture===null){capture=\'{\';capDepth=stack.length+1}stack.push({type:c===\'{\'?\'object\':\'array\',mode:c===\'{\'?\'keyOrEnd\':\'valueOrEnd\',key:\'\',target});continue}\\n   if(c===\'}\'||c===\']\'){if(!f||f.type!==(c===\'}\'?\'object\':\'array\')||![\'commaOrEnd\',\'keyOrEnd\',\'valueOrEnd\'].includes(f.mode))fail();const completed=capture!==null&&stack.length===capDepth;stack.pop();valueDone();if(completed){const q=JSON.parse(capture);capture=null;await emit(q)}continue}\\n   if(c===\'-\'||/\\\\d/.test(c)){startValue();token=c;kind=\'number\';continue}\\n   if(/[tfn]/.test(c)){startValue();token=c;kind=\'literal\';continue}fail();\\n  }};\\n  while(true){const r=await reader.read();if(r.done)break;loaded+=r.value.byteLength;await consume(decoder.decode(r.value,{stream:true}))}\\n  await consume(decoder.decode());if(kind)scalar();if(str||stack.length||root!==\'end\')fail();if(!total)throw Error(\'JSON ішінде questions тізімі табылмады\');await send();postMessage({done:true,total,loaded});\\n }catch(error){postMessage({error:error.message||String(error)})}\\n};\\n// Read ZIP central directories and inflate one JSON entry at a time, without\\n// loading the archive or an expanded JSON document into memory.\\nconst nativePost=postMessage;\\nconst crcTable=Array.from({length:256},(_,i)=>{let n=i;for(let k=0;k<8;k++)n=n&1?0xedb88320^(n>>>1):n>>>1;return n>>>0});\\nasync function readZip(file){\\n const limit=1024**3,tailStart=Math.max(0,file.size-65557),tail=new Uint8Array(await file.slice(tailStart).arrayBuffer()),tv=new DataView(tail.buffer);\\n let end=-1;for(let i=tail.length-22;i>=0;i--)if(tv.getUint32(i,true)===0x06054b50&&i+22+tv.getUint16(i+20,true)===tail.length){end=i;break}\\n if(end<0)throw Error(\'ZIP құрылымы қате\');\\n const count=tv.getUint16(end+10,true),length=tv.getUint32(end+12,true),offset=tv.getUint32(end+16,true);\\n if(tv.getUint16(end+4,true)||tv.getUint16(end+6,true)||count===65535||length>16000000||offset+length>tailStart+end||count>10000)throw Error(\'ZIP түрі қолдау таппайды. JSON файлдарын жеке жүктеңіз.\');\\n const central=new DataView(await file.slice(offset,offset+length).arrayBuffer()),decoder=new TextDecoder(\'utf-8\');let at=0,totalBytes=0;const entries=[];\\n for(let i=0;i<count;i++){\\n  if(at+46>central.byteLength||central.getUint32(at,true)!==0x02014b50)throw Error(\'ZIP тізімі бүлінген\');\\n  const flags=central.getUint16(at+8,true),method=central.getUint16(at+10,true),crc=central.getUint32(at+16,true),packed=central.getUint32(at+20,true),size=central.getUint32(at+24,true),nl=central.getUint16(at+28,true),xl=central.getUint16(at+30,true),cl=central.getUint16(at+32,true),local=central.getUint32(at+42,true);\\n  if(at+46+nl+xl+cl>central.byteLength)throw Error(\'ZIP атауы бүлінген\');\\n  const name=decoder.decode(new Uint8Array(central.buffer,at+46,nl));at+=46+nl+xl+cl;\\n  if(!/\\\\.json$/i.test(name)||/(?:TEKSERU|review|summary|validation|corrections|audit|aldymen_tekseru)/i.test(name))continue;\\n  if(flags&1||![0,8].includes(method)||size===0xffffffff||local===0xffffffff)throw Error(\'ZIP ішіндегі файл түрі қолдау таппайды: \'+name);\\n  totalBytes+=size;if(totalBytes>limit)throw Error(\'ZIP ішіндегі JSON деректері 1 ГБ-тан асты\');\\n  entries.push({name,method,crc,packed,size,local});\\n }\\n if(!entries.length)throw Error(\'ZIP ішінде импортталатын JSON сұрақтары жоқ\');\\n return entries;\\n}\\nasync function zipStream(file,entry){\\n const head=new DataView(await file.slice(entry.local,entry.local+30).arrayBuffer());\\n if(head.byteLength!==30||head.getUint32(0,true)!==0x04034b50)throw Error(\'ZIP файл тақырыбы қате\');\\n const start=entry.local+30+head.getUint16(26,true)+head.getUint16(28,true);\\n if(start+entry.packed>file.size)throw Error(\'ZIP файл шекарасы қате\');\\n let stream=file.slice(start,start+entry.packed).stream();\\n if(entry.method===8){try{stream=stream.pipeThrough(new DecompressionStream(\'deflate-raw\'))}catch(e){throw Error(\'Браузер ZIP аша алмайды. ZIP-ті ашып, ішіндегі JSON файлдарын жүктеңіз.\')}}\\n let size=0,crc=0xffffffff;\\n return stream.pipeThrough(new TransformStream({transform(chunk,controller){size+=chunk.byteLength;if(size>entry.size)throw Error(\'ZIP ашылған көлемі сәйкес емес\');for(const b of chunk)crc=crcTable[(crc^b)&255]^(crc>>>8);controller.enqueue(chunk)},flush(){if(size!==entry.size||((crc^0xffffffff)>>>0)!==entry.crc)throw Error(\'ZIP файлы бүлінген: \'+entry.name)}}));\\n}\\nonmessage=async e=>{\\n if(e.data.ack){return processJSON(e)}\\n const file=e.data.file;if(!file)return;\\n if(!/\\\\.zip$/i.test(file.name||\'\'))return processJSON(e);\\n let total=0,packedDone=0,error=null,currentSubject=\'\';\\n try{\\n  const entries=await readZip(file);\\n  for(const entry of entries){\\n   currentSubject=/(?:matsau|mathlit)/i.test(entry.name)?\'mathlit\':/matematika/i.test(entry.name)?\'math\':\'\';\\n   self.postMessage=m=>{if(m.error){error=m.error;return}if(m.done){total+=m.total;return}if(m.batch){if(currentSubject)for(const q of m.batch)if(!q.subject)q.subject=currentSubject;m.loaded=Math.min(file.size,packedDone);nativePost(m)}};\\n   const stream=await zipStream(file,entry);\\n   await processJSON({data:{file:{stream:()=>stream}}});\\n   if(error)throw Error(entry.name+\': \'+error);\\n   packedDone+=entry.packed;\\n  }\\n  nativePost({done:true,total,loaded:file.size});\\n }catch(e){nativePost({error:e.message||String(e)})}\\n finally{self.postMessage=nativePost}\\n};\\n";\n(function(){\nconst style=document.createElement(\'style\');style.textContent=`\n#s-simple-home{display:none!important}#register-box,#teacher-reg-box,#parent-login-entry,#my-automatic-rank,#registered-btn,#teacher-btn,#shop-btn,#rank-btn,#econ-menu-entry{display:none!important}\n#app-menu nav>[data-simple-nav]{display:block!important}\n#ubt-icon-rail{display:none!important}body.ubt-has-rail{padding-left:0!important;padding-bottom:0!important}\n#s-home [onclick*="showRanking"],#s-home [onclick*="showEconomy"],#teacher-home-card,#s-home [onclick*="showTeacher"]{display:none!important}\n#contact-box,#forgot-box,#support-dialog,#chat-gate,#s-admin-messenger,#s-chat,#admin-chat,#parent-login-dialog{display:none!important}\n[href*="wa.me"],[href*="whatsapp"],[onclick*="showContactAdmin("],[onclick*="showSupport("],[onclick*="showChat("],[onclick*="showForgot("],[onclick*="showMessenger("],[onclick*="showAdminMessenger("]{display:none!important}\n#simple-sidebar,#simple-side-toggle,#simple-side-backdrop{display:none}\nbody.simple-authenticated{padding-left:240px!important}body.simple-authenticated #simple-sidebar{display:flex;position:fixed;left:0;top:0;bottom:0;width:220px;z-index:10005;background:#101827;color:#f8fafc;border-right:1px solid #ffffff20;padding:24px 14px;flex-direction:column;gap:8px;overflow-y:auto;box-sizing:border-box}\n#simple-sidebar h2{font-size:23px;margin:0 8px 26px}#simple-sidebar button{display:block;text-align:left;background:transparent;color:inherit;border:0;border-radius:10px;padding:14px 12px;font:inherit;cursor:pointer}#simple-sidebar button:hover,#simple-sidebar button[aria-current="page"]{background:#ffffff18}#simple-sidebar button:last-child{margin-top:auto}\n@media(max-width:800px){body.simple-authenticated{padding-left:0!important;padding-top:56px!important}body.simple-authenticated #simple-sidebar{width:240px;transform:translateX(-100%);transition:transform .15s ease}body.simple-authenticated.simple-menu-open #simple-sidebar{transform:translateX(0)}body.simple-authenticated #simple-side-toggle{display:block;position:fixed;top:9px;left:12px;z-index:10004;padding:8px 13px;border-radius:10px;border:1px solid #ffffff35;background:#101827;color:white;font-size:22px}body.simple-authenticated.simple-menu-open #simple-side-backdrop{display:block;position:fixed;inset:0;z-index:10004;border:0;background:#0008}}\n[onclick*="showRegister("],[onclick*="showTeacherReg("],[onclick*="showParentLogin("],[onclick*="showRanking("],[onclick*="showClassRanking("],[onclick*="showEconomy("],[onclick*="showJunior"]{display:none!important}\n.simple-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}.simple-row{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;border-bottom:1px solid #8883;padding:14px 0}.simple-note{white-space:pre-wrap;margin:14px 0}.simple-head{display:flex;align-items:center;justify-content:space-between;gap:15px;flex-wrap:wrap;margin-bottom:24px}#simple-progress{width:100%}\n`;document.head.append(style);\nconst screens=`<section id="s-simple-home" class="screen"><div class="wrap"><div class="simple-head"><h1>ҰБТ PLUS</h1><button class="btn btn-s" onclick="doLogout()">Шығу</button></div><h2 id="simple-welcome"></h2><p class="sub" style="margin:12px 0 24px">Тесттер мен жеке сұрақтар базасы</p><div class="simple-grid"><button class="mode" onclick="simpleShowImport()"><h3>JSON / ZIP тест жүктеу</h3><p>1 ГБ-қа дейін · суреттермен</p></button><button class="mode" onclick="showMyTests()"><h3>Менің тесттерім</h3><p>Сақталған тесттер</p></button><button class="mode" onclick="showUbt140()"><h3>Тест тапсыру</h3><p>Пәндер және сұрақтар</p></button><button class="mode" onclick="showHistory()"><h3>Нәтижелерім</h3><p>Өз тапсырған тесттерім</p></button><button class="mode" onclick="simplePeople()"><h3>Адамдар</h3><p id="simple-people-caption">Қолданушы аккаунттары</p></button></div></div></section>\n<section id="s-simple-people" class="screen"><div class="wrap"><button class="btn btn-s" onclick="showScr(\'s-home\')">← Басты бет</button><h1 style="margin:20px 0">Адамдар</h1><div class="card" id="simple-new-person"><h3>Қолданушы қосу</h3><div class="fg"><label>Аты-жөні / логин</label><input id="simple-person-name" maxlength="40" autocomplete="off"></div><div class="fg"><label>Пароль — кемінде 10 таңба</label><input id="simple-person-pass" type="password" autocomplete="new-password"></div><div class="fg"><label>Бейіндік пәндер</label><select id="simple-person-pair"></select></div><button id="simple-create-button" class="btn btn-p" onclick="simpleCreatePerson(this)">Қолданушы қосу</button><p id="simple-person-status" class="simple-note" role="status"></p></div><div class="fg" style="margin-top:20px"><label>Адамды іздеу</label><input id="simple-search" oninput="simpleRenderPeople()"></div><div id="simple-person-list"></div><button class="btn btn-s" id="simple-more-people" onclick="simplePeopleLimit+=50;simpleRenderPeople()">Тағы көрсету</button></div></section>\n<section id="s-simple-import" class="screen"><div class="wrap"><button class="btn btn-s" onclick="showScr(\'s-home\')">← Басты бет</button><h1 style="margin:20px 0">JSON / ZIP тесттері</h1><div class="card"><div class="fg"><label>Пән</label><select id="simple-import-subject"></select></div><div class="fg"><label>JSON немесе ZIP — 1 ГБ-қа дейін</label><input id="simple-import-file" type="file" accept=".json,.zip,application/json,application/zip"></div><p class="sub">Файл бөліктермен серверге сақталады. Жүктеу біткенше бетті жаппаңыз. Суреттер мен кестелер сақталады.</p><div class="row" style="margin-top:16px"><button id="simple-import-go" class="btn btn-p" onclick="simpleImport()">Жүктеу</button><button id="simple-import-cancel" class="btn btn-s" onclick="simpleCancelImport()" disabled>Тоқтату</button></div><progress id="simple-progress" value="0" max="100"></progress><p id="simple-import-status" role="status" class="simple-note"></p></div><h2 style="margin-top:24px">Мен жүктеген файлдар</h2><div id="simple-import-list"></div></div></section>`;\ndocument.body.insertAdjacentHTML(\'beforeend\',screens);\ndocument.body.insertAdjacentHTML(\'beforeend\',\'<button id="simple-side-toggle" type="button" aria-label="Мәзірді ашу" aria-controls="simple-sidebar" aria-expanded="false">☰</button><button id="simple-side-backdrop" type="button" aria-label="Мәзірді жабу"></button><aside id="simple-sidebar" aria-label="Негізгі мәзір"><h2>ҰБТ PLUS</h2></aside>\');\nconst side=document.getElementById(\'simple-sidebar\'),toggle=document.getElementById(\'simple-side-toggle\');\nfunction closeSimpleMenu(){document.body.classList.remove(\'simple-menu-open\');toggle.setAttribute(\'aria-expanded\',\'false\')}\ntoggle.onclick=()=>{const open=document.body.classList.toggle(\'simple-menu-open\');toggle.setAttribute(\'aria-expanded\',String(open))};document.getElementById(\'simple-side-backdrop\').onclick=closeSimpleMenu;\ndocument.addEventListener(\'keydown\',e=>{if(e.key===\'Escape\'){closeSimpleMenu();toggle.focus()}});\nfunction simpleChrome(){const active=document.querySelector(\'.screen.active\')?.id;document.body.classList.toggle(\'simple-authenticated\',!!user&&active!==\'s-login\'&&active!==\'s-test\');closeSimpleMenu();for(const b of side.querySelectorAll(\'button\')){if(b.dataset.screen===active)b.setAttribute(\'aria-current\',\'page\');else b.removeAttribute(\'aria-current\')}}\nconst blocked=new Set([\'s-economy\',\'s-ranking\',\'s-rank\',\'s-parent-view\',\'s-teacher\',\'s-school-classes\',\'s-school-class\',\'s-access-requests\',\'s-admin\',\'s-registered\',\'s-admin-messenger\',\'s-notifications\',\'s-chat\',\'s-letters\']);\nconst oldShow=showScr;\nshowScr=function(id){if(blocked.has(id)){id=\'s-home\'}const result=oldShow.call(this,id);simpleChrome();return result};\nfunction simpleHome(){if(!user)return;document.getElementById(\'simple-welcome\').textContent=user.name||\'\';document.getElementById(\'simple-people-caption\').textContent=user.id===\'admin\'?\'Қолданушыларды қосу және басқару\':\'Менің аккаунтым\'}\nshowContactAdmin=function(){showLoginBox()};\ncanUploadTestFiles=function(){return !!user&&!user.isParent&&!user.isCodeGuest};\nisTeacherUser=function(){return false};\nshowRegister=showTeacherReg=function(){alert(\'Аккаунтты тек басты админ қосады\')};\nshowSchoolPeople=function(){return simplePeople()};\nshowFileTest=function(){return simpleShowImport()};\n// Original enterApp, dashboard and animations are retained.\nwindow.simplePeopleLimit=50;\nwindow.simplePeople=async function(){if(!user)return;document.getElementById(\'simple-new-person\').hidden=user.id!==\'admin\';document.getElementById(\'simple-person-pair\').innerHTML=pairOptions([]);showScr(\'s-simple-people\');simpleRenderPeople();try{await window.__bridge.refresh();simpleRenderPeople()}catch(e){}};\nwindow.simpleRenderPeople=function(){const term=document.getElementById(\'simple-search\').value.toLocaleLowerCase();const people=schoolData().people.filter(p=>(user.id===\'admin\'||p.id===user.id)&&String(p.name||\'\').toLocaleLowerCase().includes(term));const host=document.getElementById(\'simple-person-list\');host.replaceChildren();for(const p of people.slice(0,simplePeopleLimit)){const row=document.createElement(\'div\');row.className=\'simple-row\';const title=document.createElement(\'span\');title.textContent=p.name+(p.accessApproved===true?\'\':\' · Кіру расталмаған\');row.append(title);if(user.id===\'admin\'){for(const [label,fn] of [[\'Парольді ауыстыру\',async()=>{const pw=prompt(\'Жаңа пароль (кемінде 10 таңба)\');if(!pw)return;const r=await authCall(\'admin_setpass\',{uid:p.id,pass:pw});alert(r.ok?\'Пароль өзгерді\':r.msg)}],...(p.accessApproved===true?[]:[[\'Кіруге рұқсат беру\',async()=>{const r=await authCall(\'admin_approve_registration\',{uid:p.id});if(!r.ok)alert(r.msg);await window.__bridge.refresh();simpleRenderPeople()}]])]){const b=document.createElement(\'button\');b.className=\'btn btn-s btn-sm\';b.textContent=label;b.onclick=fn;row.append(b)}}host.append(row)}document.getElementById(\'simple-more-people\').hidden=people.length<=simplePeopleLimit};\nwindow.simpleCreatePerson=async function(button){button.disabled=true;const msg=document.getElementById(\'simple-person-status\');try{const r=await authCall(\'school_create_person\',{name:document.getElementById(\'simple-person-name\').value,pass:document.getElementById(\'simple-person-pass\').value,role:\'student\',profilePair:readPair(\'simple-person-pair\')});if(!r.ok)throw Error(r.msg);document.getElementById(\'simple-person-name\').value=\'\';document.getElementById(\'simple-person-pass\').value=\'\';msg.textContent=\'Қолданушы қосылды\';await window.__bridge.refresh();simpleRenderPeople()}catch(e){msg.textContent=e.message}finally{button.disabled=false}};\nwindow.simpleShowImport=async function(){if(!user)return;const sel=document.getElementById(\'simple-import-subject\');if(!sel.options.length){const source=document.getElementById(\'bank-import-subject\')||document.getElementById(\'f-subject\');if(source)sel.innerHTML=source.innerHTML;if(!sel.options.length)sel.innerHTML=\'<option value="math">Математика</option><option value="mathlit">Математикалық сауаттылық</option><option value="history">Қазақстан тарихы</option>\'}showScr(\'s-simple-import\');await simpleListImports()};\nwindow.simpleListImports=async function(){const host=document.getElementById(\'simple-import-list\');try{const r=await authCall(\'simple_import_list\',{});if(!r.ok)throw Error(r.msg);host.replaceChildren();for(const item of r.items){const card=document.createElement(\'div\');card.className=\'card\';card.style.margin=\'14px 0\';const title=document.createElement(\'h3\');title.textContent=item.name+\' · \'+item.count+\' сұрақ\';const inp=document.createElement(\'input\');inp.type=\'number\';inp.min=1;inp.max=item.count;inp.value=\'1\';inp.setAttribute(\'aria-label\',\'Қай сұрақтан бастау\');const b=document.createElement(\'button\');b.className=\'btn btn-p\';b.textContent=\'30 сұрақтан тапсыру\';b.onclick=()=>simpleStartImport(item.id,Number(inp.value)-1,b);card.append(title,document.createTextNode(\'Қай сұрақтан бастау: \'),inp,b);host.append(card)}if(!r.items.length)host.textContent=\'Әзірге JSON файл жүктелмеген.\'}catch(e){host.textContent=e.message}};\nwindow.simpleStartImport=async function(job,offset,b){b.disabled=true;try{const r=await authCall(\'simple_import_practice\',{job,offset});if(!r.ok)throw Error(r.msg);st=baseState();st.secureExam=r.exam;st.questions=r.questions;st.subjectName=r.topic;st.timerSeconds=r.timer;st.allowInstantFeedback=false;beginTest()}catch(e){alert(e.message)}finally{b.disabled=false}};\nlet upload=null;\nwindow.simpleCancelImport=async function(){const old=upload;if(!old)return;upload=null;old.worker?.terminate();if(old.url)URL.revokeObjectURL(old.url);document.getElementById(\'simple-import-go\').disabled=false;document.getElementById(\'simple-import-cancel\').disabled=true;document.getElementById(\'simple-import-status\').textContent=\'Жүктеу тоқтатылды. Аяқталмаған файл базаға қосылған жоқ.\';if(old.job)try{await authCall(\'simple_import_abort\',{job:old.job})}catch(e){}};\nwindow.simpleImport=async function(){if(upload)return;const file=document.getElementById(\'simple-import-file\').files[0],subject=document.getElementById(\'simple-import-subject\').value,status=document.getElementById(\'simple-import-status\');if(!file||!/\\.(json|zip)$/i.test(file.name)||file.size>1024**3||!file.size){status.textContent=\'1 ГБ-тан аспайтын JSON немесе ZIP файлын таңдаңыз\';return}const jobState={job:null,worker:null,seq:0};upload=jobState;document.getElementById(\'simple-import-go\').disabled=true;document.getElementById(\'simple-import-cancel\').disabled=false;status.textContent=\'Сервер дайындалуда…\';try{const r=await authCall(\'simple_import_begin\',{name:file.name,size:file.size,subject});jobState.job=r.job;if(upload!==jobState){if(r.ok)await authCall(\'simple_import_abort\',{job:r.job});return}if(!r.ok)throw Error(r.msg);const url=URL.createObjectURL(new Blob([SIMPLE_WORKER],{type:\'application/javascript\'}));jobState.url=url;const worker=jobState.worker=new Worker(url);const finish=()=>{worker.terminate();URL.revokeObjectURL(url);if(upload===jobState)upload=null;document.getElementById(\'simple-import-go\').disabled=false;document.getElementById(\'simple-import-cancel\').disabled=true};const failed=async message=>{status.textContent=\'Жүктелмеді: \'+message;finish();try{await authCall(\'simple_import_abort\',{job:r.job})}catch(e){}};worker.onerror=e=>{failed(e.message||\'JSON өңдеу қатесі\')};worker.onmessage=async e=>{if(upload!==jobState)return;try{const m=e.data;if(m.error)throw Error(m.error);if(m.batch){const result=await authCall(\'simple_import_batch\',{job:r.job,seq:++jobState.seq,questions:m.batch});if(upload!==jobState)return;if(!result.ok)throw Error(result.msg);document.getElementById(\'simple-progress\').value=Math.min(99,100*m.loaded/file.size);status.textContent=result.count+\' сұрақ сақталды · \'+Math.min(99,Math.floor(100*m.loaded/file.size))+\'%\';worker.postMessage({ack:true})}else if(m.done){const result=await authCall(\'simple_import_finish\',{job:r.job,seq:jobState.seq});if(!result.ok)throw Error(result.msg);if(upload!==jobState)return;status.textContent=\'Дайын: \'+result.count+\' сұрақ жүктелді\';document.getElementById(\'simple-progress\').value=100;finish();await simpleListImports()}}catch(error){if(upload===jobState)await failed(error.message)}};worker.postMessage({file})}catch(error){if(upload===jobState){status.textContent=error.message;await simpleCancelImport();status.textContent=\'Жүктелмеді: \'+error.message}}};\nconst welcome=document.querySelector(\'.ubt-welcome .sub\');if(welcome)welcome.textContent=\'Жеке аккаунтқа кіру\';\n// Hide leftover navigation entries created by optional legacy dashboards.\nconst prune=()=>{for(const el of document.querySelectorAll(\'#login-box button,#login-box a,.dock button,.sidebar button,.side-nav button\')){const t=el.textContent||\'\';if(/Ата.ана|Мұғалім|Кіші админ|Тіркелу|Магазин|Дүкен|Рейтинг/.test(t))el.hidden=true}};prune();\nif(user)showScr(\'s-home\');\nfor(const [label,screen,action] of [[\'Басты бет\',\'s-home\',()=>showScr(\'s-home\')],[\'JSON / ZIP · 1 ГБ\',\'s-simple-import\',()=>simpleShowImport()],[\'Менің тесттерім\',\'s-mytests\',()=>showMyTests()],[\'Анимация сабақтар\',\'s-lessons\',()=>showLessons()],[\'Схемалар\',\'s-schemes\',()=>showSchemes()],[\'Тест тапсыру\',\'s-ubt140\',()=>showUbt140()],[\'Нәтижелерім\',\'s-hist\',()=>showHistory()],[\'Адамдар\',\'s-simple-people\',()=>simplePeople()],[\'Басқа бөлімдер\',\'\',()=>openAppMenu()],[\'Шығу\',\'s-login\',()=>doLogout()]]){const b=document.createElement(\'button\');b.type=\'button\';b.textContent=label;b.dataset.screen=screen;b.onclick=()=>{closeSimpleMenu();action()};side.append(b)}\nsimpleChrome();\n// Remove obsolete entry buttons after their original initialization has completed.\nfor(const el of document.querySelectorAll(\'button,a,#app-menu .mode\')){const text=(el.textContent||\'\').trim();if(/WhatsApp|[Вв]атсап|Админге (?:хабарласу|жазу)|Ата.ана|Мұғалім|Кіші админ/.test(text)){el.hidden=true;el.style.setProperty(\'display\',\'none\',\'important\');el.setAttribute(\'aria-hidden\',\'true\')}}\nconst nav=document.querySelector(\'#app-menu nav\');if(nav){for(const [label,fn] of [[\'Басты бет\',()=>showScr(\'s-home\')],[\'JSON / ZIP тест жүктеу\',simpleShowImport],[\'Менің тесттерім\',()=>showMyTests()],[\'Адамдар\',simplePeople],[\'Шығу\',()=>doLogout()]]){const b=document.createElement(\'button\');b.dataset.simpleNav=\'1\';b.className=\'app-menu-home\';b.textContent=label;b.onclick=()=>{closeAppMenu();fn()};nav.appendChild(b)}}\n})();\n\n</script>\n'
-
 
 @st.cache_resource
 def _write_frontend(digest):
@@ -14280,3 +14240,4 @@ _res = _ubt_comp(mobileSid=_sid, db=_db, dbDeleted=_db_deleted, dbDelta=_delta, 
                  store=_store_mode(_st), err=str(_st.get("err") or "")[:160], key="ubt_comp", default=None)
 if _apply_ops(_res):
     st.rerun()
+
