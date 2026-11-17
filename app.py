@@ -104,7 +104,7 @@ def _sb_call(conf, method, path, body=None, prefer=None, timeout=30):
 def _sb_load_all(conf):
     out, off, step = {}, 0, 200
     while True:
-        rows = _sb_call(conf, "GET", "%s?select=key,value&order=key.asc&limit=%d&offset=%d" % (_TABLE, step, off))
+        rows = _sb_call(conf, "GET", "%s?select=key,value&key=not.like.ubt_server_exam_large_blob_*&order=key.asc&limit=%d&offset=%d" % (_TABLE, step, off))
         for r in rows or []:
             if isinstance(r, dict) and isinstance(r.get("key"), str) and isinstance(r.get("value"), str):
                 out[r["key"]] = r["value"]
@@ -355,12 +355,13 @@ def _purge_request(state, sess, data):
                 if key not in state['dirty'] and key not in state['deleted']:
                     state['db'][key] = raw
             inventory = _purge_inventory(state)
-            targets = set(inventory) if action == 'all' else set()
+            targets = (set(inventory) | _lg_all_text_hashes(state)) if action == 'all' else set()
             if action == 'selected':
                 wanted = data.get('ids')
                 if not isinstance(wanted, list) or not 1 <= len(wanted) <= 20000 or any(not isinstance(x, str) for x in wanted):
                     return {'ok':False, 'msg':'Сұрақтарды таңдаңыз'}
                 wanted = set(wanted)
+                inventory.update(_lg_selected_inventory(state, wanted))
                 for token, row in inventory.items():
                     local = 'local:' + json.dumps(['', row['subject'], row['text'].strip().lower()], ensure_ascii=False, separators=(',', ':'))
                     if row['id'] in wanted or row.get('_ids', set()) & wanted or local in wanted:
@@ -383,6 +384,10 @@ def _purge_request(state, sess, data):
             _put(state, _PURGE_POLICY, _jdump(policy))
             _put(state, 'ubt_purge_generation', _jdump(policy['generation']))
             parsed = _purge_policy(state)
+            try:
+                _lg_purge_data(state, parsed, action == 'all')
+            except Exception:
+                return {'ok':False,'msg':'Үлкен база толық тазаланбады. Жоюды қайта орындаңыз.','pending':True}
             for key, raw in list(state['db'].items()):
                 if key in (_PURGE_POLICY, 'ubt_purge_generation'):
                     continue
@@ -869,7 +874,7 @@ def _start_creative_exam(state,sess):
         if not _exam_capacity(state,sess['uid']):return {'ok':False,'msg':'Алдымен белсенді тестті аяқтаңыз'}
         qs=[]
         for key,n in sections:
-            qs.extend(dict(q,subject=key,subjectName=_SUBJECT_NAMES[key],points=1) for q in secrets.SystemRandom().sample(banks[key],n))
+            qs.extend(dict(q,subject=key,subjectName=_SUBJECT_NAMES[key],points=1) for q in _lg_sample(banks[key],n,secrets.SystemRandom()))
         token=secrets.token_urlsafe(32);topic='Шығармашылық бағыт · 30 сұрақ'
         state['exams'][token]={'uid':sess['uid'],'testId':'real:creative','assignmentId':None,'classId':None,'owner':False,'reward':False,'publishedQuota':False,'questions':qs,'topic':topic,'selfAuthored':False,'reviewFamily':'creative','expires':time.time()+70*60+90}
         issue=_subscription_prepare(state,sess,state['exams'][token])
@@ -1747,7 +1752,7 @@ def _start_exam(state, sess, d):
                     return {"ok":False,"msg":"ҰБТ базасында толық тестке сұрақ жеткіліксіз: " + "; ".join(missing)}
                 selected = []
                 for key,n in sections:
-                    for i,q in enumerate(rng.sample(banks[key],n)):
+                    for i,q in enumerate(_lg_sample(banks[key],n,rng)):
                         selected.append({**q,"subject":key,"subjectName":_SUBJECT_NAMES[key],"points":2 if n==40 and i>=30 else 1})
                 minutes = 240
                 title, subject_name = "ҰБТ базасы · жалпы тест · 140 балл", "5 пән"
@@ -1760,7 +1765,7 @@ def _start_exam(state, sess, d):
                 pool = banks.get(subject,[])
                 if len(pool) < count:
                     return {"ok":False,"msg":"Бұл пәнде жеткілікті сұрақ жоқ. Қолжетімді: " + str(len(pool))}
-                selected = [dict(q,subjectName=_SUBJECT_NAMES[subject]) for q in rng.sample(pool,count)]
+                selected = [dict(q,subjectName=_SUBJECT_NAMES[subject]) for q in _lg_sample(pool,count,rng)]
                 title, subject_name = "ҰБТ базасы · пәндік тест", _SUBJECT_NAMES[subject]
             test = {"id":tid,"authorId":"system","topic":title,"subjectName":subject_name,"questions":selected,"timerMin":minutes}
         if not test:
@@ -2670,7 +2675,7 @@ def _real_named_tests(state):
     if cached and cached[0] is raw:
         return cached[1]
     groups = {}
-    for subject, rows in _real_bank_cached(state).items():
+    for subject, rows in _lg_legacy_bank(state).items():
         if subject not in _SUBJECT_NAMES: continue
         for q in rows:
             title = str(q.get("source") or "ҰБТ жинағы")
@@ -2715,7 +2720,7 @@ def _real_manage_request(state,sess,d):
         ident = "test_"+hashlib.sha256(str(d.get("sourceId") or "").encode()).hexdigest()[:24]
         if action not in ("add","remove","delete"):return {"ok":False,"msg":"Әрекет қате"}
         if action in ("add","delete") and not source:return {"ok":False,"msg":"Тест табылмады"}
-        banks = {k:list(v) for k,v in _real_bank_cached(state).items()}
+        banks = {k:list(v) for k,v in _lg_legacy_bank(state).items()}
         if action == "add":
             subject = source.get("subject")
             if subject not in _SUBJECT_NAMES:return {"ok":False,"msg":"Алдымен тесттің пәнін белгілеңіз"}
@@ -2966,6 +2971,7 @@ def _publication_request(state,sess,typ,d):
             present_ids={t['id'] for t in available}
             represented={(t.get('subject'),str(t.get('topic') or '').strip()) for t in available}
             for source in _real_named_tests(state):
+                if source.get("_large"): continue
                 subject=source.get('subject');title=str(source.get('title') or 'ҰБТ жинағы').strip();questions=source.get('questions',[])
                 if subject not in _SUBJECT_NAMES or (subject,title) in represented:continue
                 for offset in range(0,len(questions),500):
@@ -3366,6 +3372,479 @@ def _remember_request(state,sess,typ,d):
 def _prize_request(state,sess,typ,d):
     return {'ok':False,'msg':'Жүлде тарифтері алынып тасталды'}
 
+"""Bounded-memory, staged JSON question imports for UBT PLUS."""
+import bisect
+import collections
+import functools
+import shutil
+import sqlite3
+from collections.abc import Sequence
+
+_LG_MAX = 1024 ** 3
+_LG_CHUNK = 3 * 1024 ** 2
+_LG_PART = 2_000_000
+_LG_INDEX = 'ubt_server_exam_large_index'
+_LG_PREFIX = 'ubt_server_exam_large_blob_'
+
+def _lg_root():
+    p = os.environ.get('UBT_LARGE_DATA_DIR') or os.path.join(os.path.dirname(DATA_FILE), 'ubt_large_data')
+    os.makedirs(p, exist_ok=True)
+    return p
+
+def _lg_write(path, value):
+    temp = path + '.new'
+    with open(temp, 'w', encoding='utf-8') as f:
+        json.dump(value, f, ensure_ascii=False); f.flush(); os.fsync(f.fileno())
+    os.replace(temp, path)
+
+def _lg_index(state):
+    if not state.get('sb'):
+        try:
+            with open(os.path.join(_lg_root(), 'index.json'), encoding='utf-8') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            pass
+    return _jload(state['db'].get(_LG_INDEX,'[]'),list,[])
+
+def _lg_save_index(state, index, locked=False):
+    raw = _jdump(index)
+    def save():
+        if state.get('sb'):
+            _sb_upsert(state['sb'], [(_LG_INDEX, raw)])
+        else:
+            _lg_write(os.path.join(_lg_root(), 'index.json'), index)
+        with state['lock']:
+            _put(state, _LG_INDEX, raw)
+            state.pop('real_bank_cache', None); state.pop('real_named_cache', None)
+            _commit(state)
+    if locked: save()
+    else:
+        with state['flush_lock']: save()
+
+def _lg_blob(state, key, value=None, delete=False):
+    if not re.fullmatch(re.escape(_LG_PREFIX) + r'[a-f0-9]{32}_[0-9]+(?:_idx)?', key):
+        raise ValueError('Қойма кілті жарамсыз')
+    if state.get('sb'):
+        if delete:
+            _sb_delete(state['sb'], key); return
+        if value is not None:
+            _sb_upsert(state['sb'], [(key, _jdump(value))]); return
+        rows = _sb_call(state['sb'], 'GET', _TABLE + '?select=value&key=eq.' + key)
+        if not rows:
+            raise ValueError('Сұрақ бөлігінің дерегі табылмады')
+        return json.loads(rows[0]['value'])
+    path = os.path.join(_lg_root(), key + '.json')
+    if delete:
+        try: os.unlink(path)
+        except FileNotFoundError: pass
+    elif value is not None:
+        _lg_write(path, value)
+    else:
+        with open(path, encoding='utf-8') as f: return json.load(f)
+
+def _lg_identity(q):
+    value = [' '.join(q['text'].split()).casefold(), sorted(' '.join(x.split()).casefold() for x in q['options'])]
+    return hashlib.sha256(_jdump(value).encode()).hexdigest()
+
+def _lg_parts(state, subject=None):
+    return [p for p in _lg_index(state) if subject is None or p['subject'] == subject]
+
+def _lg_index_rows(state, parts):
+    for offset in range(0,len(parts),40):
+        batch=parts[offset:offset+40]
+        if state.get('sb'):
+            keys=[p['key']+'_idx'for p in batch]
+            rows=_sb_call(state['sb'],'GET',_TABLE+'?select=key,value&key=in.('+','.join(keys)+')')
+            values={r['key']:r['value']for r in rows or[]}
+            if set(values)!=set(keys):raise ValueError('Сұрақтар индексінің бір бөлігі серверден алынбады')
+            for p in batch:yield p,json.loads(values[p['key']+'_idx'])
+        else:
+            for p in batch:yield p,_lg_blob(state,p['key']+'_idx')
+
+def _lg_delete_keys(state, keys):
+    for off in range(0,len(keys),40):
+        batch=keys[off:off+40]
+        if state.get('sb'):
+            path=_TABLE+'?key=in.('+','.join(batch)+')'
+            _sb_call(state['sb'],'DELETE',path,prefer='return=minimal')
+            if _sb_call(state['sb'],'GET',path+'&select=key&limit=50'):
+                raise ValueError('Үлкен база бөлігінің жойылғаны расталмады')
+        else:
+            for key in batch: _lg_blob(state,key,delete=True)
+
+def _lg_all_text_hashes(state):
+    result=set()
+    for p,index in _lg_index_rows(state,_lg_parts(state)):result.update(v[1] for v in index)
+    return result
+
+def _lg_selected_inventory(state, wanted):
+    wanted={x for x in wanted if isinstance(x,str) and x.startswith('lg_')};out={}
+    if not wanted: return out
+    files={m[1]for x in wanted if(m:=re.match(r'lg_([a-f0-9]{32})_',x))}
+    for p,index in _lg_index_rows(state,[p for p in _lg_parts(state)if p['file']in files]):
+        if not any(v[2]in wanted for v in index): continue
+        for q in _lg_blob(state,p['key']):
+            if q.get('id')in wanted:
+                token=_purge_digest(q['text'])
+                out[token]={'id':'purge:'+token,'text':q['text'],'subject':p['subject'],'source':p['title'],'_ids':{q['id']}}
+    return out
+
+def _lg_purge_data(state, policy, all_questions=False):
+    retained=[];drop=[];texts=set(policy.get('texts',[]));ids=set(policy.get('ids',[]))
+    for p,idx in _lg_index_rows(state,_lg_parts(state)):
+        affected=all_questions or any(v[1]in texts or _purge_digest(v[2])in ids for v in idx)
+        if not affected: retained.append(p);continue
+        rows=[] if all_questions else [q for q in _lg_blob(state,p['key']) if _purge_scrub(q,policy)is not _PURGE_REMOVE]
+        if rows:
+            hashes=[[_lg_identity(q),_purge_digest(q['text']),q['id']]for q in rows]
+            _lg_blob(state,p['key'],rows);_lg_blob(state,p['key']+'_idx',hashes)
+            actual=_lg_blob(state,p['key'])
+            if any(_purge_scrub(q,policy)is _PURGE_REMOVE for q in actual):raise ValueError('Сұрақты жою расталмады')
+            retained.append({**p,'count':len(rows)})
+        else: drop.extend([p['key'],p['key']+'_idx'])
+    if drop: _lg_delete_keys(state,drop)
+    _lg_save_index(state,retained,locked=True)
+
+_lg_old_purge = _purge_request
+def _purge_request(state,sess,data):
+    deleting=data.get('action')in('all','selected')and data.get('confirm')=='DELETE'
+    owner=sess and sess.get('uid')=='admin'and sess.get('admin')and not sess.get('codeGuest')
+    if not deleting or not owner:return _lg_old_purge(state,sess,data)
+    state['large_json_blocked']=True
+    try:
+        # Stop unpublished imports before collecting the deletion inventory.
+        for name in os.listdir(_lg_root()):
+            if re.fullmatch(r'upload_[a-f0-9]{32}',name):
+                try:_lg_find(state,'admin',name[7:])
+                except (ValueError,OSError):pass
+        for job in list(_lg_jobs(state).values()):
+            if job.get('phase')in('processing','receiving','uploaded'):
+                job['cancel']=True
+                thread=job.get('thread')
+                if thread and thread.is_alive():thread.join(45)
+                if thread and thread.is_alive():return {'ok':False,'msg':'JSON өңдеуі тоқтатылып жатыр. Жоюды қайта басыңыз.'}
+            if job.get('staged')or job.get('phase')in('receiving','uploaded'):
+                with job['lock']:
+                    if not _lg_remove_staged(state,job):return {'ok':False,'msg':'Уақытша JSON бөліктері толық тазаланбады. Жоюды қайта орындаңыз.'}
+                    job['phase']='cancelled';_lg_jobmeta(job)
+        with state.setdefault('large_json_gate',threading.RLock()):
+            return _lg_old_purge(state,sess,data)
+    finally:state['large_json_blocked']=False
+
+class _LargeQuestions(Sequence):
+    def __init__(self, state, legacy=(), parts=()):
+        self.state, self.legacy, self.parts = state, legacy, list(parts)
+        self.ends = []; n = len(legacy)
+        for p in self.parts:
+            n += p['count']; self.ends.append(n)
+        self.count = n; self.cache = collections.OrderedDict()
+    def __len__(self): return self.count
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(self.count))]
+        if index < 0: index += self.count
+        if not 0 <= index < self.count: raise IndexError(index)
+        if index < len(self.legacy): return self.legacy[index]
+        j = bisect.bisect_right(self.ends, index); key = self.parts[j]['key']
+        if key not in self.cache:
+            self.cache[key] = _lg_blob(self.state, key)
+            if len(self.cache) > 2: self.cache.popitem(last=False)
+        self.cache.move_to_end(key)
+        start = len(self.legacy) if j == 0 else self.ends[j - 1]
+        return self.cache[key][index - start]
+    def __iter__(self):
+        yield from self.legacy
+        for p in self.parts: yield from _lg_blob(self.state, p['key'])
+    def take(self, indices):
+        out=[None]*len(indices);groups={}
+        for position,index in enumerate(indices):
+            if index<len(self.legacy):out[position]=self.legacy[index];continue
+            j=bisect.bisect_right(self.ends,index);start=len(self.legacy)if j==0 else self.ends[j-1]
+            groups.setdefault(j,[]).append((position,index-start))
+        wanted=list(groups)
+        for offset in range(0,len(wanted),4):
+            batch=wanted[offset:offset+4];keys=[self.parts[j]['key']for j in batch]
+            if self.state.get('sb'):
+                rows=_sb_call(self.state['sb'],'GET',_TABLE+'?select=key,value&key=in.('+','.join(keys)+')')
+                values={r['key']:r['value']for r in rows or[]}
+                if set(values)!=set(keys):raise ValueError('Базаның бір бөлігі серверден алынбады')
+            else:values={}
+            for j,key in zip(batch,keys):
+                rows=json.loads(values[key])if self.state.get('sb')else _lg_blob(self.state,key)
+                for position,index in groups[j]:out[position]=rows[index]
+        return out
+
+def _lg_sample(pool, count, rng):
+    return pool.take(rng.sample(range(len(pool)),count)) if isinstance(pool,_LargeQuestions) else rng.sample(pool,count)
+
+_lg_legacy_bank = _real_bank_cached
+_lg_legacy_named = _real_named_tests
+def _real_bank_cached(state):
+    legacy = _lg_legacy_bank(state); merged = dict(legacy)
+    parts = _lg_parts(state)
+    for subject in {p['subject'] for p in parts}:
+        merged[subject] = _LargeQuestions(state, legacy.get(subject, []), [p for p in parts if p['subject'] == subject])
+    state['real_bank_meta_cache'] = _jdump({k:len(v) for k,v in merged.items() if k in _SUBJECT_NAMES})
+    return merged
+
+def _real_named_tests(state):
+    result = list(_lg_legacy_named(state))
+    for p in _lg_parts(state):
+        result.append({'id':'large_' + p['key'][len(_LG_PREFIX):], 'title':p['title'], 'subject':p['subject'],
+                       'questions':_LargeQuestions(state, parts=[p]), '_large':True})
+    return result
+
+class _LargeJSONReader:
+    """Read JSON tokens with a 64KiB input window and <=2MiB captured values."""
+    def __init__(self, f): self.f=f; self.buf=''; self.pos=0; self.total=0
+    def peek(self):
+        if self.pos >= len(self.buf): self.buf=self.f.read(65536); self.pos=0
+        return self.buf[self.pos:self.pos+1]
+    def take(self):
+        c=self.peek()
+        if not c: raise ValueError('JSON аяқталмаған')
+        self.pos+=1; self.total+=1; return c
+    def ws(self):
+        while self.peek():
+            m=re.match(r'[ \t\r\n]*', self.buf[self.pos:]); n=m.end()
+            self.pos+=n; self.total+=n
+            if self.pos<len(self.buf): return
+    def expect(self, c):
+        self.ws()
+        if self.take()!=c: raise ValueError('JSON ішінде «'+c+'» күтілді')
+    def string(self, capture=True, limit=2_000_000):
+        if self.take()!='"': raise ValueError('JSON жолы күтілді')
+        raw=['"'] if capture else None; length=0
+        while True:
+            if not self.peek(): raise ValueError('JSON жолының тырнақшасы жабылмаған')
+            match=re.search(r'["\\\x00-\x1f]', self.buf[self.pos:])
+            end=self.pos+match.start() if match else len(self.buf)
+            span=self.buf[self.pos:end]; self.pos=end; self.total+=len(span); length+=len(span)
+            if capture:
+                if length>limit: raise ValueError('JSON ішіндегі бір жол тым үлкен')
+                raw.append(span)
+            if not match: continue
+            c=self.take()
+            if c=='"':
+                if capture: raw.append(c); return json.loads(''.join(raw))
+                return None
+            if ord(c)<32: raise ValueError('JSON жолындағы басқару таңбасы жарамсыз')
+            esc=self.take()
+            if esc not in '"\\/bfnrtu': raise ValueError('JSON escape таңбасы жарамсыз')
+            suffix=''
+            if esc=='u':
+                suffix=''.join(self.take() for _ in range(4))
+                if not re.fullmatch('[0-9a-fA-F]{4}', suffix): raise ValueError('JSON Unicode таңбасы жарамсыз')
+            if capture: raw.append('\\'+esc+suffix)
+    def value(self, capture=True, depth=0, end=None):
+        if depth>64: raise ValueError('JSON қабаттары тым көп')
+        if end is None and capture: end=self.total+2_000_000
+        self.ws(); c=self.peek()
+        if c=='"': return self.string(capture)
+        if c in ('[','{'):
+            obj={} if c=='{' and capture else [] if capture else None
+            close='}' if c=='{' else ']'; self.take(); self.ws()
+            if self.peek()==close: self.take(); return obj
+            while True:
+                if c=='{': self.ws(); key=self.string(True, 1024); self.expect(':')
+                v=self.value(capture, depth+1, end)
+                if capture:
+                    if self.total>end: raise ValueError('Бір сұрақтың JSON дерегі 2 МБ-тан үлкен')
+                    if c=='{': obj[key]=v
+                    else: obj.append(v)
+                self.ws(); sep=self.take()
+                if sep==close: return obj
+                if sep!=',': raise ValueError('JSON ішінде үтір күтілді')
+        token=[]
+        while self.peek() and self.peek() not in ',]} \t\r\n':
+            token.append(self.take())
+            if len(token)>512: raise ValueError('JSON саны тым ұзын')
+        if not token: raise ValueError('JSON мәні күтілді')
+        value=json.loads(''.join(token), parse_constant=lambda _: (_ for _ in ()).throw(ValueError('NaN/Infinity жарамсыз')))
+        return value if capture else None
+    def groups(self, depth=0):
+        if depth>64: raise ValueError('JSON қабаттары тым көп')
+        self.ws(); c=self.peek()
+        if c=='[':
+            self.take(); self.ws()
+            if self.peek()==']': self.take(); return
+            while True:
+                yield from self.groups(depth+1); self.ws(); sep=self.take()
+                if sep==']': return
+                if sep!=',': raise ValueError('JSON тізімінде үтір күтілді')
+        elif c=='{':
+            self.take(); row={}; container=False; self.ws()
+            if self.peek()=='}': self.take(); return
+            while True:
+                self.ws(); key=self.string(True,1024); self.expect(':')
+                if key in ('questions','tests','items'):
+                    container=True; yield from self.groups(depth+1)
+                elif key in ('text','question','options','correct','points','img','tbl','explanation','difficulty'):
+                    row[key]=self.value(True,depth+1)
+                    if len(_jdump(row))>2_000_000: raise ValueError('Бір сұрақ тым үлкен')
+                else: self.value(False,depth+1)
+                self.ws(); sep=self.take()
+                if sep=='}': break
+                if sep!=',': raise ValueError('JSON объектісінде үтір күтілді')
+            if not container: yield row
+        else: raise ValueError('JSON ішінде сұрақ не тест объектісі болуы керек')
+    def questions(self):
+        yield from self.groups()
+        self.ws()
+        if self.peek(): raise ValueError('JSON соңында артық дерек бар')
+
+def _lg_jobs(state): return state.setdefault('large_json_jobs', {})
+def _lg_jobdir(job): return os.path.join(_lg_root(), 'upload_' + job['id'])
+def _lg_jobmeta(job):
+    _lg_write(os.path.join(_lg_jobdir(job),'status.json'), {k:v for k,v in job.items() if k not in ('lock','thread')})
+def _lg_status(job):
+    return {k:job.get(k) for k in ('id','name','size','received','phase','scanned','added','duplicates','msg','error')}
+def _lg_find(state, uid, ident):
+    if not isinstance(ident,str) or not re.fullmatch('[a-f0-9]{32}',ident): raise ValueError('Жүктеу нөмірі жарамсыз')
+    job=_lg_jobs(state).get(ident)
+    if not job:
+        path=os.path.join(_lg_root(),'upload_'+ident,'status.json')
+        try:
+            with open(path,encoding='utf-8') as f: job=json.load(f)
+        except FileNotFoundError: raise ValueError('Жүктеу табылмады. Файлды қайта таңдаңыз')
+        if job.get('phase')=='processing': job.update(phase='uploaded',msg='Сервер қайта іске қосылды. Файлды өңдеуді қайта бастаңыз.')
+        job['lock']=threading.RLock(); _lg_jobs(state)[ident]=job
+    if job.get('uid')!=uid: raise ValueError('Бұл жүктеуге рұқсат жоқ')
+    return job
+
+def _lg_remove_staged(state, job):
+    failed=[];keys=job.get('staged',[])
+    try:_lg_delete_keys(state,[x for key in keys for x in (key,key+'_idx')])
+    except Exception:failed=list(keys)
+    job['staged']=failed
+    for name in ('input.json','seen.sqlite','seen.sqlite-journal'):
+        try: os.unlink(os.path.join(_lg_jobdir(job),name))
+        except FileNotFoundError: pass
+    return not failed
+
+def _lg_import_worker(state, job):
+    db=None
+    try:
+        # A disk-backed uniqueness index avoids keeping all texts or images in RAM.
+        p=os.path.join(_lg_jobdir(job),'seen.sqlite')
+        try: os.unlink(p)
+        except FileNotFoundError: pass
+        db=sqlite3.connect(p); db.execute('PRAGMA cache_size=-4096'); db.execute('CREATE TABLE seen (digest TEXT PRIMARY KEY) WITHOUT ROWID')
+        for rows in _lg_legacy_bank(state).values():
+            db.executemany('INSERT OR IGNORE INTO seen VALUES (?)',((_lg_identity(q),) for q in rows))
+        for part,hashes in _lg_index_rows(state,_lg_parts(state)):
+            if job.get('cancel'): raise ValueError('Жүктеу тоқтатылды')
+            db.executemany('INSERT OR IGNORE INTO seen VALUES (?)',((v[0],) for v in hashes))
+        db.commit(); batch=[]; hashes=[]; size=0; parts=[]; number=0
+        def flush():
+            nonlocal batch,hashes,size,number
+            if not batch: return
+            if job.get('cancel'): raise ValueError('Жүктеу тоқтатылды')
+            key=_LG_PREFIX+job['id']+'_'+str(number)
+            job['staged'].append(key); _lg_jobmeta(job)
+            _lg_blob(state,key,batch); _lg_blob(state,key+'_idx',hashes)
+            parts.append({'key':key,'count':len(batch),'subject':job['subject'], 'file':job['id'],
+                          'title':job['name'][:140]+' · '+str(number+1)+' бөлім'})
+            number+=1; batch=[];hashes=[];size=0; db.commit()
+        with open(os.path.join(_lg_jobdir(job),'input.json'),encoding='utf-8-sig') as f:
+            for raw in _LargeJSONReader(f).questions():
+                if job.get('cancel'): raise ValueError('Жүктеу тоқтатылды')
+                job['scanned']+=1
+                if 'text'not in raw and 'question'in raw: raw['text']=raw.pop('question')
+                try: q=_school_test_payload([{'subject':job['subject'],'questions':[raw]}])[0]['questions'][0]
+                except (ValueError,TypeError,KeyError) as e: raise ValueError(str(job['scanned'])+'-сұрақ: '+str(e))
+                if _purge_scrub(q,_purge_policy(state)) is _PURGE_REMOVE: continue
+                ident=_lg_identity(q)
+                if not db.execute('INSERT OR IGNORE INTO seen VALUES (?)',(ident,)).rowcount:
+                    job['duplicates']+=1; continue
+                q.update(id='lg_'+job['id']+'_'+str(job['scanned']),realBank=True,subject=job['subject'],source=job['name'][:140])
+                length=len(_jdump(q).encode('utf-8'))
+                if batch and (len(batch)>=300 or size+length>_LG_PART): flush()
+                batch.append(q); hashes.append([ident,_purge_digest(q['text']),q['id']]);size+=length;job['added']+=1
+        if not job['scanned']: raise ValueError('JSON ішінде сұрақ табылмады')
+        flush()
+        with state.setdefault('large_json_gate',threading.RLock()):
+            if job.get('cancel') or state.get('large_json_blocked'): raise ValueError('Жүктеу тоқтатылды')
+            _lg_save_index(state,_lg_index(state)+parts)
+            job['phase']='done';job['msg']='Қосылды: '+str(job['added'])+' · Қайталанғаны: '+str(job['duplicates']);job['staged']=[]
+    except Exception as e:
+        job['phase']='failed';job['error']=str(e)[:400];job['msg']='Файл базаға енгізілген жоқ.'
+    finally:
+        if db: db.close()
+        clean=_lg_remove_staged(state,job)
+        if not clean: job['error']=(job.get('error','')+' Уақытша бөліктерді тазалау аяқталмады.')[:500]
+        _lg_jobmeta(job)
+
+def _lg_request(state,sess,d):
+    if not sess or sess.get('uid')!='admin' or not sess.get('admin') or sess.get('codeGuest') or sess.get('parentView'):
+        return {'ok':False,'msg':'Тек басты админге қолжетімді'}
+    try:
+        action=d.get('action')
+        if action=='inventory':
+            subject=d.get('subject');offset=d.get('offset',0)
+            if type(offset)is not int or offset<0:raise ValueError('Бет нөмірі жарамсыз')
+            parts=_lg_parts(state,subject if subject in _SUBJECT_NAMES else None)
+            seq=_LargeQuestions(state,parts=parts);rows=seq[offset:offset+30]
+            return {'ok':True,'total':len(seq),'items':[{'id':q['id'],'text':q['text'],'subject':q['subject']}for q in rows]}
+        if action=='begin':
+            size=d.get('size'); subject=d.get('subject'); name=str(d.get('name')or'JSON')[:180]
+            if type(size)is not int or not 1<=size<=_LG_MAX: raise ValueError('JSON файлы 1 ГБ-тан (1024 МБ) аспасын')
+            if subject not in _SUBJECT_NAMES or subject=='other': raise ValueError('Нақты пәнді таңдаңыз')
+            if state.get('large_json_blocked'): raise ValueError('База тазартылып жатыр. Кейін қайталаңыз')
+            for folder in os.listdir(_lg_root()):
+                if re.fullmatch(r'upload_[a-f0-9]{32}',folder):
+                    try:_lg_find(state,'admin',folder[7:])
+                    except (ValueError,OSError):pass
+            for old in list(_lg_jobs(state).values()):
+                if old.get('phase')=='processing': raise ValueError('Алдыңғы JSON өңделіп жатыр. Аяқталуын күтіңіз не тоқтатыңыз')
+                if old.get('phase')in('receiving','uploaded'):
+                    with old['lock']:
+                        old['cancel']=True; _lg_remove_staged(state,old);old['phase']='cancelled';_lg_jobmeta(old)
+                if old.get('staged')and not _lg_remove_staged(state,old):raise ValueError('Алдыңғы жүктеудің уақытша бөліктері тазаланбады')
+            required=size*(1 if state.get('sb')else 2)+64*1024**2
+            if shutil.disk_usage(_lg_root()).free<required:raise ValueError('Сервер дискісінде файлға жеткілікті бос орын жоқ')
+            ident=secrets.token_hex(16);job={'id':ident,'uid':'admin','name':name,'subject':subject,'size':size,'received':0,
+                'phase':'receiving','scanned':0,'added':0,'duplicates':0,'staged':[],'created':time.time(),'msg':'Файл жүктеліп жатыр','lock':threading.RLock()}
+            os.makedirs(_lg_jobdir(job),exist_ok=True);_lg_jobs(state)[ident]=job;_lg_jobmeta(job)
+            return {'ok':True,'chunkBytes':_LG_CHUNK,**_lg_status(job)}
+        job=_lg_find(state,sess['uid'],d.get('id'))
+        if action=='status': return {'ok':True,**_lg_status(job)}
+        if action=='cancel':
+            with job['lock']:
+                job['cancel']=True
+                if job['phase']in('receiving','uploaded'):
+                    _lg_remove_staged(state,job);job['phase']='cancelled';_lg_jobmeta(job)
+            return {'ok':True,**_lg_status(job)}
+        if action=='chunk':
+            offset=d.get('offset');encoded=d.get('bytes')
+            if type(offset)is not int or offset<0 or not isinstance(encoded,str) or len(encoded)>4*1024**2+8: raise ValueError('Файл бөлігі жарамсыз')
+            data=base64.b64decode(encoded,validate=True)
+            if not 1<=len(data)<=_LG_CHUNK or offset+len(data)>job['size']: raise ValueError('Файл бөлігінің көлемі жарамсыз')
+            digest=hashlib.sha256(data).hexdigest()
+            if digest!=d.get('sha256'): raise ValueError('Файл бөлігінің бақылау сомасы сәйкес емес')
+            with job['lock']:
+                if job['phase']!='receiving'or job.get('cancel'): raise ValueError('Бұл жүктеу файл бөліктерін қабылдамайды')
+                p=os.path.join(_lg_jobdir(job),'input.json')
+                if offset<job['received']:
+                    with open(p,'rb') as f: f.seek(offset);old=f.read(len(data))
+                    if old!=data: raise ValueError('Қайта жіберілген файл бөлігі өзгерген')
+                    return {'ok':True,'received':job['received']}
+                if offset!=job['received']: raise ValueError('Файл бөліктерінің реті бұзылған')
+                with open(p,'ab') as f: f.write(data);f.flush();os.fsync(f.fileno())
+                job['received']+=len(data);_lg_jobmeta(job)
+            return {'ok':True,'received':job['received']}
+        if action=='finish':
+            with job['lock']:
+                if job['phase']in('processing','done'):return {'ok':True,**_lg_status(job)}
+                if job['phase']not in('receiving','uploaded')or job.get('cancel'): raise ValueError('Жүктеу тоқтатылған')
+                if job['received']!=job['size']: raise ValueError('Файл толық жүктелмеген')
+                job.update(phase='processing',msg='JSON тексеріліп, серверде сақталып жатыр');_lg_jobmeta(job)
+                thread=threading.Thread(target=_lg_import_worker,args=(state,job),daemon=True);job['thread']=thread;thread.start()
+            return {'ok':True,**_lg_status(job)}
+        raise ValueError('Жүктеу әрекеті жарамсыз')
+    except (ValueError,TypeError,OSError,binascii.Error) as e:return {'ok':False,'msg':str(e)[:300]}
+
+
 def _handle_req(state, sid, rq):
     typ = rq.get("type")
     d = rq.get("data") if isinstance(rq.get("data"), dict) else {}
@@ -3385,13 +3864,15 @@ def _handle_req(state, sid, rq):
         rates = state.setdefault("request_rates", {})
         identity = "user:" + sess["uid"] if sess else "anonymous:" + sid
         recent = [t for t in rates.get(identity, []) if now - t < 60]
-        if len(recent) >= (120 if sess else 30):
+        if len(recent) >= (600 if typ == "large_json_import" and sess and sess.get("uid") == "admin" else 120 if sess else 30):
             return {"ok": False, "msg": "Сұраныс тым көп. Бір минуттан кейін қайталаңыз"}
         recent.append(now)
         rates[identity] = recent
         if len(rates) > 5000:
             state["request_rates"] = {k: ts for k, ts in rates.items() if ts and now-ts[-1] < 60}
 
+    if typ == "large_json_import":
+        return _lg_request(state, sess, d)
     if sess and _is_teacher(state,sess['uid']) and typ in ('teacher_assign_class','messenger_send_test'):
         source=next((t for t in _available_send_tests(state) if t.get('id')==d.get('testId')),None)
         prof=next((p for p in _profiles(state).values() if p.get('id')==sess['uid']),{})
@@ -9814,6 +10295,8 @@ function letterIdx(ch,ru){
 function shortT(x){x=String(x||'').trim();return x.length>40?x.slice(0,40)+'…':x}
 function checkQ(q){
   if(!q.text||!String(q.text).trim())return 'сұрақ мәтіні жоқ';
+  if(q.img&&(typeof q.img!=='string'||q.img.length>150000||!/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(q.img)))return 'Сурет пішімі қате';
+  if(q.points!==undefined&&(!Number.isFinite(q.points)||q.points<=0||q.points>100))return 'Балл қате';
   if(!Array.isArray(q.options)||q.options.length!==4)return 'нұсқа саны 4 болуы керек (табылды: '+(Array.isArray(q.options)?q.options.length:0)+')';
   if(q.options.some(o=>!String(o).trim()))return 'бос нұсқа бар';
   if(!(q.correct>=0&&q.correct<4))return 'дұрыс жауап көрсетілмеген (мыс: «Жауап: B» немесе *B)';
@@ -9822,7 +10305,7 @@ function checkQ(q){
 function addParsed(res,q){
   const err=checkQ(q);
   if(err)res.errors.push({line:q.line||0,msg:'«'+shortT(q.text)+'» — '+err});
-  else res.questions.push({text:String(q.text).trim(),options:q.options.map(o=>String(o).trim()),correct:q.correct});
+  else res.questions.push({text:String(q.text).trim(),options:q.options.map(o=>String(o).trim()),correct:q.correct,...(q.img?{img:q.img}:{}),...(q.points!==undefined?{points:q.points}:{}),...(q.explanation?{explanation:q.explanation}:{})});
 }
 function parseQuestions(text,fname){
   text=String(text||'').replace(/^\uFEFF/,'').replace(/\r\n?/g,'\n');
@@ -9849,7 +10332,7 @@ function parseJSONQs(t){
     o=o||{};
     let opts=o.options||o.answers||o.variants||[];
     if(opts&&!Array.isArray(opts)&&typeof opts==='object')opts=Object.values(opts);
-    const q={text:o.text||o.question||o.q||o['сұрақ']||'',options:opts,correct:-1,line:i+1};
+    const q={text:o.text||o.question||o.q||o['сұрақ']||'',options:opts,correct:-1,line:i+1,...(o.img?{img:o.img}:{}),...(o.points!==undefined?{points:o.points}:{}),...(o.explanation?{explanation:o.explanation}:{})};
     const c=o.correct!==undefined?o.correct:(o.answer!==undefined?o.answer:o.correctAnswer);
     if(typeof c==='number')q.correct=c;
     else if(typeof c==='string'){
@@ -9924,6 +10407,8 @@ function parseTextQs(text){
       const mm=metaRe.exec(line);
       if(mm){const k=mm[1].toLowerCase();if(/тақырып|тема|topic/.test(k))res.meta.topic=mm[2];else res.meta.subject=mm[2];continue}
     }
+    const extra=/^(сурет|image|балл|ұпай|points|түсіндірме|explanation)\s*:\s*(.+)$/i.exec(line);
+    if(extra&&cur){if(/сурет|image/i.test(extra[1]))cur.img=extra[2];else if(/балл|ұпай|points/i.test(extra[1]))cur.points=Number(extra[2]);else cur.explanation=extra[2];blank=false;continue}
     const am=ansRe.exec(line);
     if(am&&cur&&cur.options.length){
       const v=am[1].trim();
@@ -9985,7 +10470,7 @@ function parsedFileTopic(i){
   const t=fileTopicTests[i];if(!t)return null;
   const r=parseQuestions(JSON.stringify(t),'topic.json');
   if(r.errors.length||!r.questions.length){alert('Тақырыптағы сұрақтарды тексеріңіз');return null}
-  return{topic:t.topic||t.title||'Тақырып',questions:r.questions.map((q,j)=>({id:'q_'+Date.now()+'_'+i+'_'+j,text:q.text,options:q.options,correct:q.correct,points:1}))};
+  return{topic:t.topic||t.title||'Тақырып',questions:r.questions.map((q,j)=>({...q,id:'q_'+Date.now()+'_'+i+'_'+j,options:q.options.slice(),points:q.points===undefined?1:q.points}))};
 }
 function startFileTopic(i){
   if(!canUploadTestFiles())return;
@@ -10108,7 +10593,7 @@ async function importFileScreen10000(){
     const identity=ubtBankIdentity(subject,q.text);
     if(known.has(identity)){duplicate++;continue}
     known.add(identity);
-    added.push({id:'q_'+Date.now().toString(36)+'_'+(old.length+added.length).toString(36),subject,text:q.text,options:q.options,correct:q.correct,origin:bulkName.f||'Файлдан'});
+    added.push({id:'q_'+Date.now().toString(36)+'_'+(old.length+added.length).toString(36),subject,text:q.text,options:q.options,correct:q.correct,...(q.img?{img:q.img}:{}),points:q.points===undefined?1:q.points,origin:bulkName.f||'Файлдан'});
   }
   if(!added.length){status.textContent='Жаңа сұрақ жоқ. Қайталанған: '+duplicate;return}
   const value=JSON.stringify(old.concat(added));
@@ -10123,7 +10608,7 @@ function takeBulkQs(ctx){
   if(!r||!r.questions.length){alert('Алдымен сұрақтарды қойыңыз немесе файл таңдаңыз');return null}
   if(r.errors.length&&!confirm(r.errors.length+' сұрақта қате бар, олар қосылмайды. Жалғастыру керек пе?'))return null;
   const base='q_'+Date.now().toString(36);
-  return{qs:r.questions.map((q,i)=>({id:base+'_'+i,text:q.text,options:q.options.slice(),correct:q.correct,points:1})),meta:r.meta||{}};
+  return{qs:r.questions.map((q,i)=>({...q,id:base+'_'+i,options:q.options.slice(),points:q.points===undefined?1:q.points})),meta:r.meta||{}};
 }
 function subjectCatalogEntries(){return Object.entries({"history": "Қазақстан тарихы", "reading": "Оқу сауаттылығы", "mathlit": "Математикалық сауаттылық", "math": "Математика", "physics": "Физика", "chemistry": "Химия", "biology": "Биология", "geography": "География", "informatics": "Информатика", "english": "Ағылшын тілі", "kazakh": "Қазақ тілі", "worldhistory": "Дүниежүзі тарихы", "law": "Құқық негіздері", "russian": "Орыс тілі", "kazakh_literature": "Қазақ әдебиеті", "russian_literature": "Орыс әдебиеті", "german": "Неміс тілі", "french": "Француз тілі"})}
 function ensureSubjectSelect(id,profileOnly=false){
@@ -10189,6 +10674,8 @@ function testToText(topic,subjectName,qs){
   let o='Тақырып: '+topic+'\n'+(subjectName?'Пән: '+subjectName+'\n':'')+'\n';
   qs.forEach((q,i)=>{
     o+=(i+1)+'. '+String(q.text).replace(/\s*\n\s*/g,' ')+'\n';
+    if(q.img)o+='Сурет: '+q.img+'\n';
+    if(q.points!==undefined&&q.points!==1)o+='Балл: '+q.points+'\n';
     q.options.forEach((x,j)=>{o+='ABCD'[j]+') '+String(x).replace(/\s*\n\s*/g,' ')+'\n'});
     o+='Жауап: '+'ABCD'[q.correct]+'\n\n';
   });
@@ -13293,7 +13780,7 @@ function mountContentPanel(){
  if(!isOwner()){document.getElementById('owner-json-panel')?.remove();return}
  if(document.getElementById('owner-json-panel'))return;
  const host=document.createElement('section');host.id='owner-json-panel';host.className='card owner-json-only';
- host.innerHTML='<h3>JSON файлдан материал енгізу</h3><p class="sub">Тест, глоссарий немесе формула қосыңыз. Дәл қайталанған жазбалар қосылмайды. «Нақты ҰБТ базасына қосу» — тек ҰБТ бөліміне сақтайды. Басқа тесттерге араласпайды. Сұрақтардың дереккөзін өзіңіз тексеріңіз.</p><div class="json-controls" style="margin-top:14px"><div class="fg"><label>Материал түрі</label><select id="owner-json-kind" style="border:2px solid #3977ee;color:#3977ee;font-weight:700"><option value="real_tests">🔵 Нақты ҰБТ базасына қосу</option><option value="tests">Жеке тесттер базасына қосу</option><option value="glossary">Глоссарий</option><option value="formulas">Формулалар</option></select></div><div class="fg"><label>Пән *</label><select id="owner-json-subject"><option value="">Пәнді таңдаңыз</option></select></div></div><div class="fg"><label>JSON файл (5 МБ дейін)</label><input id="owner-json-file" type="file" accept=".json,application/json"></div><p id="owner-json-preview" class="sub" role="status" aria-live="polite"></p><div class="row" style="margin-top:12px"><button type="button" class="btn btn-p" id="owner-json-save">Базаға енгізу</button><button type="button" class="btn btn-s" id="owner-json-example">JSON үлгісі</button><button type="button" class="btn btn-s" id="owner-json-clean">Қайталанғандарын тазалау</button></div><details style="margin-top:12px"><summary>JSON форматы</summary><p class="sub">Тест: questions ішіндегі text, options, correct (дұрыс жауап индексі 0-ден басталады). Глоссарий: term, definition. Формула: title, formula. Бір объектіні немесе объектілер тізімін енгізуге болады.</p></details>';
+ host.innerHTML='<h3>JSON файлдан материал енгізу</h3><p class="sub">Тест, глоссарий немесе формула қосыңыз. Дәл қайталанған жазбалар қосылмайды. «Нақты ҰБТ базасына қосу» — тек ҰБТ бөліміне сақтайды. Басқа тесттерге араласпайды. Сұрақтардың дереккөзін өзіңіз тексеріңіз.</p><div class="json-controls" style="margin-top:14px"><div class="fg"><label>Материал түрі</label><select id="owner-json-kind" style="border:2px solid #3977ee;color:#3977ee;font-weight:700"><option value="real_tests">🔵 Нақты ҰБТ базасына қосу</option><option value="tests">Жеке тесттер базасына қосу</option><option value="glossary">Глоссарий</option><option value="formulas">Формулалар</option></select></div><div class="fg"><label>Пән *</label><select id="owner-json-subject"><option value="">Пәнді таңдаңыз</option></select></div></div><div class="fg"><label>JSON файл (ҰБТ базасы — 1 ГБ дейін)</label><input id="owner-json-file" type="file" accept=".json,application/json"></div><p id="owner-json-preview" class="sub" role="status" aria-live="polite"></p><div class="row" style="margin-top:12px"><button type="button" class="btn btn-p" id="owner-json-save">Базаға енгізу</button><button type="button" class="btn btn-s" id="owner-json-example">JSON үлгісі</button><button type="button" class="btn btn-s" id="owner-json-clean">Қайталанғандарын тазалау</button></div><details style="margin-top:12px"><summary>JSON форматы</summary><p class="sub">Тест: questions ішіндегі text, options, correct (дұрыс жауап индексі 0-ден басталады). Глоссарий: term, definition. Формула: title, formula. Бір объектіні немесе объектілер тізімін енгізуге болады.</p></details>';
  document.querySelector('#s-admin .wrap').prepend(host);
  const subjects=['history','reading','mathlit','math','physics','chemistry','biology','geography','informatics','english','kazakh','worldhistory','law'];
  const sel=host.querySelector('#owner-json-subject');subjects.forEach(key=>sel.add(new Option(subjName(key),key)));
@@ -13815,7 +14302,7 @@ const uiSubscriptionUI=subscriptionUI;subscriptionUI=function(){uiSubscriptionUI
     return new Promise(function(resolve){
       var id=++reqN,done=false;
       reqs.push({id:id,type:type,data:data||{},tok:window.__token||''});
-      var t=setTimeout(function(){if(done)return;done=true;delete waiters[id];reqs=reqs.filter(function(r){return r.id!==id});resolve({ok:false,msg:'Серверге қосылу мүмкін болмады. Қайталап көріңіз.'})},type==='admin_question_purge'||type==='real_bank_manage'?180000:25000);
+      var t=setTimeout(function(){if(done)return;done=true;delete waiters[id];reqs=reqs.filter(function(r){return r.id!==id});resolve({ok:false,msg:'Серверге қосылу мүмкін болмады. Қайталап көріңіз.'})},type==='admin_question_purge'||type==='real_bank_manage'?300000:type==='large_json_import'?90000:25000);
       waiters[id]=function(res){if(done)return;done=true;clearTimeout(t);reqs=reqs.filter(function(r){return r.id!==id});resolve(res)};
       send();
     });
@@ -14092,6 +14579,8 @@ showClassRanking=function(){return showRanking('cls')};
 """
 
 html_code = html_code.replace("__UBT_BANK_DATA__", "[]")
+
+html_code += '<style>\n/* Restore the existing menu control at its original header position. */\nbody #app-menu-toggle,body.ubt-has-rail #app-menu-toggle{display:inline-flex!important;align-items:center;justify-content:center;min-width:44px;min-height:44px}\nbody #app-menu,body.ubt-has-rail #app-menu{left:0!important;top:0;bottom:0;height:100dvh;max-height:100dvh;width:min(320px,92vw);z-index:250}\nbody #app-menu-backdrop,body.ubt-has-rail #app-menu-backdrop{left:0!important;z-index:249}\n#app-menu nav{min-height:0;overflow-y:auto;overscroll-behavior:contain}\n#large-json-panel progress{width:100%;height:16px;margin:12px 0}\n#large-json-panel .large-question{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--b)}\n#large-json-panel .large-question input{width:auto;min-width:20px;margin-top:3px}\n#large-json-panel .large-question span{white-space:pre-wrap;overflow-wrap:anywhere}\n</style>\n<script>\nasync function ubtLargeTransfer(file,send,progress,isCancelled,onJob){\n if(!file||!Number.isSafeInteger(file.size)||file.size<1||file.size>1024**3)throw Error(\'JSON файлы 1 ГБ-тан (1024 МБ) аспасын\');\n if(!/\\.json$/i.test(file.name))throw Error(\'JSON файлды таңдаңыз\');\n const pause=ms=>new Promise(r=>setTimeout(r,ms));\n const begin=await send({action:\'begin\',name:file.name,size:file.size});\n if(!begin.ok)throw Error(begin.msg||\'Жүктеу басталмады\');\n const id=begin.id;onJob(id);let offset=0;\n try{\n  while(offset<file.size){\n   if(isCancelled())throw Error(\'Жүктеу тоқтатылды\');\n   const slice=file.slice(offset,Math.min(file.size,offset+begin.chunkBytes));\n   const buffer=await slice.arrayBuffer();\n   const digest=await crypto.subtle.digest(\'SHA-256\',buffer);\n   const sha256=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,\'0\')).join(\'\');\n   const bytes=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(\',\')[1]);reader.onerror=()=>reject(Error(\'Файл бөлігі оқылмады\'));reader.readAsDataURL(slice)});\n   let result;\n   for(let attempt=0;attempt<3;attempt++){\n    if(isCancelled())throw Error(\'Жүктеу тоқтатылды\');\n    result=await send({action:\'chunk\',id,offset,sha256,bytes});\n    if(result.ok)break;\n    if(attempt<2)await pause(1500*(attempt+1));\n   }\n   if(!result.ok)throw Error(result.msg||\'Файл бөлігі жіберілмеді\');\n   const expected=offset+buffer.byteLength;\n   if(result.received!==expected)throw Error(\'Файл бөлігінің реті сервермен сәйкес емес\');\n   offset=expected;progress({phase:\'receiving\',received:offset,size:file.size});\n  }\n  if(isCancelled())throw Error(\'Жүктеу тоқтатылды\');\n  let status=await send({action:\'finish\',id});\n  if(!status.ok)throw Error(status.msg||\'JSON өңдеуі басталмады\');\n  while(status.phase===\'processing\'){\n   progress(status);await pause(1200);\n   if(isCancelled()){await send({action:\'cancel\',id});throw Error(\'Жүктеу тоқтатылды\')}\n   status=await send({action:\'status\',id});\n   if(!status.ok)throw Error(status.msg||\'Өңдеу барысы алынбады\');\n  }\n  progress(status);\n  if(status.phase!==\'done\')throw Error(status.error||status.msg||\'Файл базаға енгізілген жоқ\');\n  return status;\n }catch(error){\n  try{await send({action:\'cancel\',id})}catch(_){}\n  throw error;\n }\n}\n(function(){\n const owner=()=>!!user?.isAdmin&&user.id===\'admin\';let busy=false,cancelled=false,jobId=null,offset=0;\n function mount(){\n  if(!owner()){document.getElementById(\'large-json-panel\')?.remove();return}\n  if(document.getElementById(\'large-json-panel\'))return;\n  const host=document.createElement(\'section\');host.id=\'large-json-panel\';host.className=\'card\';\n  host.innerHTML=\'<h3>JSON сұрақтар базасы · 1 ГБ дейін</h3><p class="sub">Файл серверге бөліктермен жіберіледі. Дайын сұрақтар пәндік және 140 форматтағы ҰБТ базасында көрінеді.</p><div class="fg"><label>Пән *</label><select data-large-subject><option value="">Пәнді таңдаңыз</option></select></div><div class="fg"><label>JSON файл · 1024 МБ дейін</label><input data-large-file type="file" accept=".json,application/json"></div><progress data-large-progress max="100" value="0"></progress><p data-large-status role="status" aria-live="polite" class="sub"></p><div class="row"><button type="button" class="btn btn-p" data-large-start>Серверге жүктеу</button><button type="button" class="btn btn-s" data-large-cancel disabled>Тоқтату</button></div><hr><h4>Үлкен JSON-нан қосылған сұрақтар</h4><div class="row"><button type="button" class="btn btn-s btn-sm" data-large-reload>Тізімді жаңарту</button><button type="button" class="btn btn-d btn-sm" data-large-delete>Таңдалғандарды толық жою</button></div><div data-large-list></div><div class="row"><button type="button" class="btn btn-s btn-sm" data-large-prev>Алдыңғы</button><span data-large-page class="sub"></span><button type="button" class="btn btn-s btn-sm" data-large-next>Келесі</button></div>\';\n  for(const [key,label]of subjectCatalogEntries())host.querySelector(\'[data-large-subject]\').add(new Option(label,key));\n  document.querySelector(\'#s-admin .wrap\').prepend(host);\n  host.querySelector(\'[data-large-start]\').onclick=()=>start(host.querySelector(\'[data-large-file]\').files[0],host.querySelector(\'[data-large-subject]\').value);\n  host.querySelector(\'[data-large-cancel]\').onclick=()=>{cancelled=true;if(jobId)authCall(\'large_json_import\',{action:\'cancel\',id:jobId});host.querySelector(\'[data-large-status]\').textContent=\'Жүктеу тоқтатылып жатыр…\'};\n  host.querySelector(\'[data-large-reload]\').onclick=()=>{offset=0;list()};\n  host.querySelector(\'[data-large-prev]\').onclick=()=>{offset=Math.max(0,offset-30);list()};\n  host.querySelector(\'[data-large-next]\').onclick=()=>{offset+=30;list()};\n  host.querySelector(\'[data-large-subject]\').onchange=()=>{offset=0;list()};\n  host.querySelector(\'[data-large-delete]\').onclick=async()=>{\n   const ids=Array.from(host.querySelectorAll(\'[data-large-list] input:checked\'),x=>x.value);\n   if(!ids.length)return alert(\'Сұрақтарды таңдаңыз\');\n   if(!confirm(ids.length+\' сұрақ барлық көшірмесімен біржола жойылсын ба?\'))return;\n   const r=await authCall(\'admin_question_purge\',{action:\'selected\',confirm:\'DELETE\',ids});\n   if(!r.ok)return alert(r.msg||\'Жою орындалмады\');await window.__bridge.refresh();await list();\n  };\n  list();\n }\n async function list(){\n  const host=document.getElementById(\'large-json-panel\');if(!host||!owner())return;\n  const r=await authCall(\'large_json_import\',{action:\'inventory\',subject:host.querySelector(\'[data-large-subject]\').value,offset});\n  if(!r.ok){host.querySelector(\'[data-large-list]\').textContent=r.msg||\'Тізім алынбады\';return}\n  if(offset>=r.total&&offset){offset=Math.max(0,Math.floor((r.total-1)/30)*30);return list()}\n  const box=host.querySelector(\'[data-large-list]\');box.replaceChildren();\n  for(const q of r.items){const row=document.createElement(\'label\');row.className=\'large-question\';const check=document.createElement(\'input\');check.type=\'checkbox\';check.value=q.id;const text=document.createElement(\'span\');text.textContent=q.text;row.append(check,text);box.append(row)}\n  if(!r.items.length)box.textContent=\'Әзірге үлкен файлдан қосылған сұрақ жоқ.\';\n  host.querySelector(\'[data-large-page]\').textContent=r.total?(offset+1)+\'–\'+Math.min(r.total,offset+30)+\' / \'+r.total:\'0 сұрақ\';\n  host.querySelector(\'[data-large-prev]\').disabled=offset===0;host.querySelector(\'[data-large-next]\').disabled=offset+30>=r.total;\n }\n async function start(file,subject){\n  if(!owner()||busy)return;\n  if(!subject||subject===\'other\')return alert(\'Алдымен нақты пәнді таңдаңыз\');\n  mount();const host=document.getElementById(\'large-json-panel\');if(!host)return;\n  host.querySelector(\'[data-large-subject]\').value=subject;host.scrollIntoView({behavior:\'smooth\',block:\'start\'});\n  busy=true;cancelled=false;jobId=null;host.querySelector(\'[data-large-start]\').disabled=true;host.querySelector(\'[data-large-cancel]\').disabled=false;\n  const status=host.querySelector(\'[data-large-status]\'),bar=host.querySelector(\'[data-large-progress]\');\n  try{\n   const r=await ubtLargeTransfer(file,d=>authCall(\'large_json_import\',{...d,subject}),s=>{\n    bar.value=s.size?100*s.received/s.size:0;\n    status.textContent=s.phase===\'receiving\'?\'Жүктелді: \'+Math.floor(s.received/1024**2)+\' / \'+Math.ceil(s.size/1024**2)+\' МБ\':s.phase===\'done\'?s.msg:\'Тексерілді: \'+(s.scanned||0)+\' · Дайындалды: \'+(s.added||0)+\' · Қайталанған: \'+(s.duplicates||0);\n   },()=>cancelled,id=>{jobId=id});\n   status.textContent=\'✅ \'+r.msg;await window.__bridge.refresh();offset=0;await list();\n  }catch(e){status.textContent=e.message||\'Жүктеу аяқталмады\'}\n  finally{busy=false;jobId=null;host.querySelector(\'[data-large-start]\').disabled=false;host.querySelector(\'[data-large-cancel]\').disabled=true}\n }\n window.ubtLargeJSONStart=start;\n // Preserve the familiar owner upload button for large question JSON files.\n document.addEventListener(\'click\',event=>{\n  if(!owner()||!event.target.closest(\'#owner-json-save\'))return;\n  const kind=document.getElementById(\'owner-json-kind\')?.value,file=document.getElementById(\'owner-json-file\')?.files[0];\n  if(kind===\'real_tests\'&&file){event.preventDefault();event.stopImmediatePropagation();start(file,document.getElementById(\'owner-json-subject\').value)}\n },true);\n const oldAdmin=showAdmin;showAdmin=function(){const r=oldAdmin.apply(this,arguments);mount();return r};\n const oldShow=showScr;showScr=function(id){const r=oldShow.apply(this,arguments);if(!owner())document.getElementById(\'large-json-panel\')?.remove();return r};\n})();\n</script>\n'
 
 @st.cache_resource
 def _write_frontend(digest):
