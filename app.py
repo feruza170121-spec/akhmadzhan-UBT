@@ -13,6 +13,7 @@ SUBJECTS = {'history':'Қазақстан тарихы','reading':'Оқу сау
 PROFILE = ('math','informatics')
 ADMIN_RESET_HASH = {'alg': 'pbkdf2_sha256', 'it': 200000, 'salt': 'a69c1717cb94a52f8fe92c5d7d423971', 'hash': 'd0c062e6d1271f04360f55e64612af2ccc679cdd59f2e79d9675746135bfd69d'}
 ADMIN_RESET_TAG = 'botanical-password-20261118-1'
+APP_RUNTIME_VERSION = 'repository-v3-20261118-fresh-index'
 MAX_UPLOAD = 1024**3
 CHUNK = 768*1024
 def _jdump(v): return json.dumps(v,ensure_ascii=False,separators=(',',':'))
@@ -207,7 +208,7 @@ def _chrome_css(manage=False,dark=False):
     backdrop='html,body,.stApp,[data-testid="stAppViewContainer"]{background:transparent!important}[data-testid="stAppViewContainer"]::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;background:#1c2d42 url('+photo+') center/100% 100% no-repeat;animation:none}@keyframes photo-enter{from{opacity:0}to{opacity:1}}[data-testid="stMain"]{position:relative;z-index:1;background:transparent!important}@media(prefers-reduced-motion:reduce){[data-testid="stAppViewContainer"]::before{animation:none}}'
     return '<style>'+hidden+'html,body,.stApp,[data-testid="stAppViewContainer"]{background:'+bg+'!important}.block-container{padding:0!important;max-width:100%!important}iframe{border:0!important;background:transparent!important}'+backdrop+'[data-testid="stElementContainer"][data-stale="true"], [data-testid="stCustomComponentV1"],[data-stale="true"]{opacity:1!important}iframe{opacity:1!important}</style>'
 @st.cache_resource
-def runtime(reset_version=ADMIN_RESET_TAG):
+def runtime(reset_version=ADMIN_RESET_TAG,build_version=APP_RUNTIME_VERSION):
     repo=Repository(DATA_FILE,_sb_conf());initialise(repo);_apply_admin_reset(repo);_repair_folder_links(repo)
     repo.require_remote=True
     return {'repo':repo,'lock':repo.lock,'sessions':{},'fails':{},'uploads':{},'exams':{},'question_cache':{}}
@@ -911,7 +912,7 @@ HTML = '<!doctype html><html lang="kk"><head><meta charset="utf-8"><meta name="v
 st.set_page_config(page_title='ҰБТ PLUS · Инфо–мат',page_icon='📘',layout='wide')
 
 try:
-    _rt=runtime(ADMIN_RESET_TAG)
+    _rt=runtime(ADMIN_RESET_TAG,APP_RUNTIME_VERSION)
 except Exception as exc:
     st.error(str(exc));st.stop()
 _front=os.path.join(_HERE,'ubt_files_frontend')
