@@ -10,8 +10,8 @@ _META = _PREFIX+'index'
 _PBKDF_ITER = 200_000
 SUBJECTS = {'history':'Қазақстан тарихы','reading':'Оқу сауаттылығы','mathlit':'Математикалық сауаттылық','math':'Математика','informatics':'Информатика'}
 PROFILE = ('math','informatics')
-ADMIN_RESET_HASH = {'alg': 'pbkdf2_sha256', 'it': 200000, 'salt': '12773753ee064c80753573fe1986df77', 'hash': '89e00cb8fe4ae7f7573ddd48373efae2a0ff588ce83047f881ee1974355f4c98'}
-ADMIN_RESET_TAG = 'password-login-fix-20261118-3'
+ADMIN_RESET_HASH = {'alg': 'pbkdf2_sha256', 'it': 200000, 'salt': '69d1bc7f91e3c35bc76021530dd22634', 'hash': 'fa5654ab99cdb980a1beb4d6819e430493f68d355d41cd45af69b58607f6909a'}
+ADMIN_RESET_TAG = 'admin-reset-20261118-a0e01f641de9'
 MAX_UPLOAD = 1024**3
 CHUNK = 768*1024
 def _jdump(v): return json.dumps(v,ensure_ascii=False,separators=(',',':'))
